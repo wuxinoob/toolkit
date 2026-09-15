@@ -31,9 +31,13 @@ export class MessageHub {
 
   // ------------------------------ control plane ------------------------------
 
-  /** One request/response round trip through the gateway. */
-  request(pluginId, svc, act, params = null) {
-    return transport('rpc').request({ pluginId, svc, act, params });
+  /**
+   * One request/response round trip through the gateway.
+   * `opts.timeoutMs` bounds how long the CALLER waits (0 = forever); it cannot
+   * cancel the host, which is why the timeout lives here and not in the envelope.
+   */
+  request(pluginId, svc, act, params = null, opts = {}) {
+    return transport('rpc').request({ pluginId, svc, act, params, ...opts });
   }
 
   // ------------------------------- data plane --------------------------------
@@ -128,6 +132,35 @@ export class MessageHub {
   /** Same-window, zero-IPC event (a thin alias that makes the intent explicit). */
   local(pluginId, topic, onEvent) {
     return this.subscribe(pluginId, topic, onEvent, { scheme: 'in-process' });
+  }
+
+  /**
+   * Subscribe for exactly one delivery. Same signature as `subscribe`, so a
+   * caller can swap between them — and between schemes — without changing shape.
+   */
+  async once(pluginId, topic, onEvent, { scheme = 'event-bus' } = {}) {
+    let off;
+    off = await this.subscribe(
+      pluginId,
+      topic,
+      (payload) => {
+        off?.();
+        onEvent(payload);
+      },
+      { scheme },
+    );
+    return off;
+  }
+
+  /**
+   * What the host supports: protocol version, every service with its actions,
+   * and the stream providers (from the native side) plus the scheme table (from
+   * here). This is the negotiation surface — a plugin asks what exists instead
+   * of discovering the surface by failing.
+   */
+  async schema(pluginId) {
+    const host = await this.request(pluginId, 'host', 'schema');
+    return { ...host, schemes: describeSchemes(), transports: transportIds() };
   }
 
   /** Drop every subscription a plugin registered. */

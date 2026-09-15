@@ -189,6 +189,100 @@ test('rpc: a non-envelope reply is a protocol error, not a silent undefined', as
   await assert.rejects(() => hub.request('p.rpc', 'host', 'info'), /non-envelope reply/);
 });
 
+test('rpc: a wedged service times out instead of hanging the caller', async () => {
+  invokeImpl = () => new Promise(() => {}); // never settles
+  await assert.rejects(
+    () => hub.request('p.slow', 'host', 'info', null, { timeoutMs: 40 }),
+    (e) => {
+      assert.equal(e.code, 'timeout');
+      // the message must not imply the host was cancelled
+      assert.match(e.message, /stopped waiting/);
+      assert.match(e.message, /cannot be cancelled/);
+      return true;
+    },
+  );
+});
+
+test('rpc: timeoutMs 0 opts out and waits indefinitely', async () => {
+  invokeImpl = async (cmd, { msg }) => ({ v: 1, kind: 'res', id: msg.id, p: { ok: true } });
+  assert.deepEqual(await hub.request('p.nowait', 'host', 'info', null, { timeoutMs: 0 }), { ok: true });
+});
+
+test('rpc: a fast call is unaffected by the default timeout', async () => {
+  invokeImpl = async (cmd, { msg }) => ({ v: 1, kind: 'res', id: msg.id, p: 1 });
+  assert.equal(await hub.request('p.fast', 'host', 'info'), 1);
+});
+
+test('hub: once delivers exactly one event, then detaches', async () => {
+  const got = [];
+  const off = await hub.once('p.once', 'topic', (x) => got.push(x), { scheme: 'in-process' });
+  await hub.publish('p.once', 'topic', { n: 1 }, { scheme: 'in-process' });
+  await hub.publish('p.once', 'topic', { n: 2 }, { scheme: 'in-process' });
+  assert.deepEqual(got, [{ n: 1 }], 'exactly one delivery');
+  off(); // idempotent
+});
+
+test('hub: schema composes the native surface with the local scheme table', async () => {
+  invokeImpl = async (cmd, { msg }) => ({
+    v: 1,
+    kind: 'res',
+    id: msg.id,
+    p: { protocol: 1, services: { storage: ['get'] }, providers: ['ticker'] },
+  });
+  const schema = await hub.schema('p.schema');
+  assert.equal(schema.protocol, 1, 'native half');
+  assert.deepEqual(schema.services.storage, ['get'], 'native half');
+  assert.equal(schema.schemes.length, 7, 'local half: the scheme table');
+  assert.equal(schema.transports.length, 7, 'local half: transport ids');
+});
+
+test('rpc: a wedged service times out instead of hanging the caller', async () => {
+  invokeImpl = () => new Promise(() => {}); // never settles
+  await assert.rejects(
+    () => hub.request('p.slow', 'host', 'info', null, { timeoutMs: 40 }),
+    (e) => {
+      assert.equal(e.code, 'timeout');
+      // the message must not imply the host was cancelled
+      assert.match(e.message, /stopped waiting/);
+      assert.match(e.message, /cannot be cancelled/);
+      return true;
+    },
+  );
+});
+
+test('rpc: timeoutMs 0 opts out and waits indefinitely', async () => {
+  invokeImpl = async (cmd, { msg }) => ({ v: 1, kind: 'res', id: msg.id, p: { ok: true } });
+  assert.deepEqual(await hub.request('p.nowait', 'host', 'info', null, { timeoutMs: 0 }), { ok: true });
+});
+
+test('rpc: a fast call is unaffected by the default timeout', async () => {
+  invokeImpl = async (cmd, { msg }) => ({ v: 1, kind: 'res', id: msg.id, p: 1 });
+  assert.equal(await hub.request('p.fast', 'host', 'info'), 1);
+});
+
+test('hub: once delivers exactly one event, then detaches', async () => {
+  const got = [];
+  const off = await hub.once('p.once', 'topic', (x) => got.push(x), { scheme: 'in-process' });
+  await hub.publish('p.once', 'topic', { n: 1 }, { scheme: 'in-process' });
+  await hub.publish('p.once', 'topic', { n: 2 }, { scheme: 'in-process' });
+  assert.deepEqual(got, [{ n: 1 }], 'exactly one delivery');
+  off(); // idempotent
+});
+
+test('hub: schema composes the native surface with the local scheme table', async () => {
+  invokeImpl = async (cmd, { msg }) => ({
+    v: 1,
+    kind: 'res',
+    id: msg.id,
+    p: { protocol: 1, services: { storage: ['get'] }, providers: ['ticker'] },
+  });
+  const schema = await hub.schema('p.schema');
+  assert.equal(schema.protocol, 1, 'native half');
+  assert.deepEqual(schema.services.storage, ['get'], 'native half');
+  assert.equal(schema.schemes.length, 7, 'local half: the scheme table');
+  assert.equal(schema.transports.length, 7, 'local half: transport ids');
+});
+
 // ------------------------------ channel-json scheme ----------------------------
 
 test('channel-json: frames arrive as envelopes and a terminal frame ends the stream', async () => {

@@ -86,7 +86,10 @@ export async function activate(ctx) {
   });
 
   // A broadcast from ANY window lands here (this is the cross-window path).
-  ctx.bus.subscribe('hello.ping', (env) => log(`broadcast from ${env.svc}: ${JSON.stringify(env.p)}`, '#9fe8a9'));
+  // Subscriptions are async on every scheme, so this is awaited like any other.
+  await ctx.bus.subscribe('hello.ping', (env) =>
+    log(`broadcast from ${env.svc}: ${JSON.stringify(env.p)}`, '#9fe8a9'),
+  );
 
   ctx.registerView('hello', (el) => {
     el.innerHTML = `

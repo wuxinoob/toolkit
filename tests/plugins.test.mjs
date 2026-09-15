@@ -39,6 +39,7 @@ const KNOWN_PERMISSIONS = new Set([
   'rpc:proc',
   'rpc:stream',
   'rpc:bus',
+  'rpc:hotkey',
   'win:manage',
 ]);
 

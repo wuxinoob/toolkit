@@ -122,8 +122,10 @@ async function runBroadcast() {
 async function runLocal() {
   const { ctx } = state;
   log('tx', 'in-process → emit lab.local');
-  const off = ctx.events.on('lab.local', (p) => log('rx', `in-process ← ${JSON.stringify(p)} (synchronous)`));
-  ctx.events.emit('lab.local', { n: 1 });
+  // every subscription is async and every scheme has the same shape, so this
+  // call site is identical to the event-bus one above
+  const off = await ctx.events.on('lab.local', (p) => log('rx', `in-process ← ${JSON.stringify(p)}`));
+  await ctx.events.emit('lab.local', { n: 1 });
   off();
 }
 

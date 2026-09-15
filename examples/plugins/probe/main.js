@@ -22,8 +22,11 @@ export const manifest = {
   description: 'Drives every frontend<->backend interface in one pass and reports the result.',
   contributes: {
     views: [{ slot: 'tool', id: 'probe', title: 'Plane Probe', icon: '🧭' }],
+    // Declared here and registered by the HOST at activate — a plugin never
+    // touches the shortcut API itself.
+    hotkeys: [{ key: 'ctrl+alt+shift+p', action: 'probe' }],
   },
-  permissions: ['rpc:storage', 'rpc:host', 'rpc:stream', 'rpc:bus'],
+  permissions: ['rpc:storage', 'rpc:host', 'rpc:stream', 'rpc:bus', 'rpc:hotkey'],
 };
 
 const BTN =
@@ -140,11 +143,31 @@ async function sweep(ctx) {
   // ---- 5. window-local event (no IPC at all) ----
   await step('local event', 'in-process', async () => {
     let got = null;
-    const off = ctx.events.on('probe.local', (p) => (got = p));
-    ctx.events.emit('probe.local', { n: 1 });
+    const off = await ctx.events.on('probe.local', (p) => (got = p));
+    await ctx.events.emit('probe.local', { n: 1 });
     off();
-    if (got?.n !== 1) throw new Error('not delivered synchronously');
-    return 'delivered synchronously, zero IPC';
+    if (got?.n !== 1) throw new Error('not delivered');
+    return 'delivered over the in-process scheme, zero IPC';
+  });
+
+  // ---- 7. negotiation surface: ask what the host supports ----
+  await step('host schema', 'rpc', async () => {
+    const schema = await ctx.schema();
+    if (schema.protocol !== 1) throw new Error('protocol version not reported');
+    const services = Object.keys(schema.services || {});
+    if (services.length < 5) throw new Error('services not listed: ' + JSON.stringify(services));
+    if (!schema.services.storage?.includes('get')) throw new Error('storage actions missing');
+    if (!Array.isArray(schema.schemes) || schema.schemes.length !== 7) throw new Error('schemes missing');
+    return services.length + ' services, ' + schema.schemes.length + ' schemes, providers=' + schema.providers;
+  });
+
+  // ---- 8. a declared hotkey is registered by the host on our behalf ----
+  await step('hotkey registration', 'rpc', async () => {
+    const { keys } = await ctx.rpc('hotkey', 'list', {});
+    if (!Array.isArray(keys) || keys.length === 0) {
+      throw new Error('no hotkey registered (declared in contributes.hotkeys)');
+    }
+    return 'host holds ' + JSON.stringify(keys) + ' for this plugin';
   });
 
   // ---- 6. permission gate is real ----

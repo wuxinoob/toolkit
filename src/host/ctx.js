@@ -4,8 +4,7 @@ import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi';
 
 import { hub } from '../protocol/hub.js';
 import { Capability, assertSupports } from '../protocol/registry.js';
-import * as Envelope from '../protocol/envelope.js';
-import { events } from './events.js';
+import { protocolContract } from '../protocol/contract.js';
 import { store, toast } from './store.js';
 
 /**
@@ -20,6 +19,12 @@ import { store, toast } from './store.js';
  *   1. this JS gate, which fails fast with a readable message
  *   2. the Rust permission registry, which is authoritative and cannot be
  *      bypassed by calling invoke() directly
+ *
+ * API shape rule: **the scheme never changes the shape of a call.** `subscribe`
+ * and `publish` are async on every scheme (even the synchronous in-process one),
+ * and `ctx.events` / `ctx.bus` differ only in their default scheme — so a caller
+ * can move between them, or be pointed at another scheme entirely, without
+ * rewriting the call site.
  */
 export function buildCtx(plugin, disposer) {
   const { manifest } = plugin;
@@ -27,17 +32,6 @@ export function buildCtx(plugin, disposer) {
   const prefix = `[plugin:${id}]`;
   const perms = manifest.permissions || [];
   const hasPermission = (perm) => perms.includes(perm);
-
-  /** Gate for every request/response service call. */
-  const gatedRpc = (svc, act, params) => {
-    if (!hasPermission(`rpc:${svc}`)) {
-      return Promise.reject(new Error(`${prefix} missing permission "rpc:${svc}" in manifest`));
-    }
-    return hub.request(id, svc, act, params);
-  };
-
-  /** Gate for the push data plane (channel streams and ptys). */
-  const gatedStream = (fn) => gated(fn, 'rpc:stream');
 
   /** Gate for an arbitrary declared permission. */
   const gated = (fn, perm) => {
@@ -47,13 +41,11 @@ export function buildCtx(plugin, disposer) {
     return fn();
   };
 
+  /** Gate for the push data plane (channel streams and ptys). */
+  const gatedStream = (fn) => gated(fn, 'rpc:stream');
+
   /** Gate for the multi-window API. */
-  const gatedWin = (fn) => {
-    if (!hasPermission('win:manage')) {
-      return Promise.reject(new Error(`${prefix} missing permission "win:manage" in manifest`));
-    }
-    return fn();
-  };
+  const gatedWin = (fn) => gated(fn, 'win:manage');
 
   /** Streams opened by this plugin, closed on deactivate. */
   const openStreams = new Set();
@@ -62,33 +54,57 @@ export function buildCtx(plugin, disposer) {
     return handle;
   };
 
+  // ------------------------------- events ------------------------------------
+
+  /**
+   * The one subscribe path. Async on every scheme, and the returned function is
+   * tracked for auto-cleanup on deactivate.
+   *
+   * Receiving is deliberately NOT gated: a passive listener costs nothing and
+   * cannot affect another window. Publishing is the privileged act and carries
+   * the permission (see `publishBroadcast`).
+   */
+  const subscribeWith = (scheme, topic, fn) => {
+    const p = hub.subscribe(id, topic, fn, { scheme });
+    p.then((off) => disposer.track(off)).catch(() => {});
+    return p;
+  };
+
+  const onceWith = (scheme, topic, fn) => {
+    const p = hub.once(id, topic, fn, { scheme });
+    p.then((off) => disposer.track(off)).catch(() => {});
+    return p;
+  };
+
+  const publishWith = (scheme, topic, payload) => hub.publish(id, topic, payload, { scheme });
+
+  /** Publishing reaches other windows, so that is the capability which is gated. */
+  const publishBroadcast = (topic, payload) =>
+    gated(() => publishWith('event-bus', topic, payload), 'rpc:bus');
+
+  // -------------------------------- streams ----------------------------------
+
+  const streamVia = (scheme, capabilities, provider, ch, handlers) =>
+    gatedStream(async () => {
+      assertSupports(scheme, Capability.PUSH, ...capabilities);
+      const h = await hub.stream(id, scheme, { provider, ch, ...handlers });
+      disposer.track(() => h.close().catch(() => {}));
+      return trackStream(h);
+    });
+
   const ctx = {
     id,
     manifest,
 
     /**
-     * The wire contract, handed to the plugin rather than imported.
+     * The wire contract, handed over rather than imported.
      *
-     * External plugins are loaded from a Blob URL as a single-file ESM, so
-     * they cannot `import` the protocol barrel. Exposing it here means a
-     * drop-in plugin builds and inspects envelopes with the same code the host
-     * uses, instead of hard-coding the shape and drifting.
+     * External plugins are loaded from a Blob URL as a single-file ESM, so they
+     * cannot `import` the protocol barrel. Exposing it here means a drop-in
+     * plugin builds and inspects envelopes with the same code the host uses,
+     * instead of hard-coding the shape and drifting.
      */
-    protocol: {
-      version: Envelope.PROTOCOL_VERSION,
-      broadcastEvent: Envelope.BROADCAST_EVENT,
-      Kind: Envelope.Kind,
-      req: Envelope.req,
-      res: Envelope.res,
-      err: Envelope.err,
-      evt: Envelope.evt,
-      data: Envelope.data,
-      end: Envelope.end,
-      exit: Envelope.exit,
-      validate: Envelope.validate,
-      isTerminal: Envelope.isTerminal,
-      nextId: Envelope.nextId,
-    },
+    protocol: protocolContract(),
 
     log: {
       info: (...a) => console.info(prefix, ...a),
@@ -96,52 +112,58 @@ export function buildCtx(plugin, disposer) {
       error: (...a) => console.error(prefix, ...a),
     },
 
+    /**
+     * Permission-gated native service call, e.g. `ctx.rpc('host', 'info')`.
+     * `opts.timeoutMs` bounds how long THIS caller waits (0 = forever); the host
+     * cannot be cancelled, so a timeout means "I stopped waiting".
+     */
+    rpc: (svc, act, params = null, opts = {}) => gated(() => hub.request(id, svc, act, params, opts), `rpc:${svc}`),
+
     /** Namespaced persistent storage (Rust-side, per-plugin data.json). */
     storage: {
-      get: (key) => gatedRpc('storage', 'get', { key }),
-      set: (key, value) => gatedRpc('storage', 'set', { key, value }),
-      remove: (key) => gatedRpc('storage', 'remove', { key }),
-      keys: () => gatedRpc('storage', 'keys', {}),
+      get: (key) => ctx.rpc('storage', 'get', { key }),
+      set: (key, value) => ctx.rpc('storage', 'set', { key, value }),
+      remove: (key) => ctx.rpc('storage', 'remove', { key }),
+      keys: () => ctx.rpc('storage', 'keys', {}),
     },
 
-    /**
-     * Window-local events (the `in-process` scheme): synchronous, no IPC.
-     * Listeners registered here are auto-removed on deactivate.
-     */
+    // ---------------- events: one shape, the scheme picks the wire ----------------
+
+    /** Subscribe on the cross-window bus (default scheme `event-bus`). */
+    subscribe: (topic, fn, { scheme = 'event-bus' } = {}) => subscribeWith(scheme, topic, fn),
+    /** Subscribe for exactly one delivery. Same shape as `subscribe`. */
+    once: (topic, fn, { scheme = 'event-bus' } = {}) => onceWith(scheme, topic, fn),
+    /** Publish to every window (default `event-bus`, needs `rpc:bus`). */
+    publish: (topic, payload = null, { scheme = 'event-bus' } = {}) =>
+      scheme === 'event-bus' ? publishBroadcast(topic, payload) : publishWith(scheme, topic, payload),
+
+    /** Window-local events (`in-process`): the same async shape, zero IPC. */
     events: {
-      on: (topic, fn) => {
-        const off = events.on(topic, fn);
-        disposer.track(off);
-        return off;
-      },
-      once: (topic, fn) => {
-        const off = events.once(topic, fn);
-        disposer.track(off);
-        return off;
-      },
-      off: events.off,
-      emit: events.emit,
+      on: (topic, fn) => subscribeWith('in-process', topic, fn),
+      once: (topic, fn) => onceWith('in-process', topic, fn),
+      emit: (topic, payload = null) => publishWith('in-process', topic, payload),
+    },
+
+    /** Cross-window events (`event-bus`): the same calls, a different default. */
+    bus: {
+      subscribe: (topic, fn) => subscribeWith('event-bus', topic, fn),
+      once: (topic, fn) => onceWith('event-bus', topic, fn),
+      publish: publishBroadcast,
     },
 
     /**
-     * Cross-window events (the `event-bus` scheme). The same call works from
-     * the main window and from a secondary window, which is what makes a
-     * floating widget or an external plugin window possible without polling.
+     * A global hotkey declared in `contributes.hotkeys`, delivered as an `evt`
+     * envelope on `hotkey:<action>`. The host registers it at activate, so the
+     * plugin never touches the shortcut API; receiving is ungated like any other
+     * subscription.
      */
-    bus: {
-      publish: (topic, payload) => gatedRpc('bus', 'publish', { topic, payload }),
-      subscribe: async (topic, fn) => {
-        if (!hasPermission('rpc:bus')) {
-          throw new Error(`${prefix} missing permission "rpc:bus" in manifest`);
-        }
-        const off = await hub.subscribe(id, topic, fn);
-        disposer.track(off);
-        return off;
-      },
-    },
-
-    /** Permission-gated native service calls, e.g. ctx.rpc('host', 'info'). */
-    rpc: gatedRpc,
+    onHotkey: (action, fn) =>
+      subscribeWith('event-bus', `hotkey:${action}`, (env) => {
+        // the owner travels with the event: ignore another plugin's hotkey that
+        // happens to use the same action name
+        if (env.svc && env.svc !== id) return;
+        fn(env);
+      }),
 
     ui: {
       notify: (message, type = 'info') => toast(`${manifest.name}: ${message}`, type),
@@ -174,9 +196,9 @@ export function buildCtx(plugin, disposer) {
       exists: (label) => gatedWin(async () => !!(await WebviewWindow.getByLabel(label))),
 
       /**
-       * Run `fn` when THIS window is asked to close, so a plugin can tear down
-       * a companion window and let the app exit cleanly. Exposed here so a
-       * plugin never has to import a Tauri API for window lifecycle.
+       * Run `fn` when THIS window is asked to close, so a plugin can tear down a
+       * companion window and let the app exit cleanly. Exposed here so a plugin
+       * never has to import a Tauri API for window lifecycle.
        */
       onCloseRequested: (fn) =>
         gatedWin(async () => {
@@ -204,32 +226,18 @@ export function buildCtx(plugin, disposer) {
         }),
     },
 
-    // ---------------------------- the data plane ----------------------------
+    // ----------------------------- the data plane -----------------------------
+
+    /** A host push stream over the structured codec (channel + json-envelope). */
+    stream: (provider, ch, handlers = {}) => streamVia('channel-json', [], provider, ch, handlers),
 
     /**
-     * A host push stream over the structured codec (channel + json-envelope).
-     * Providers are named, so a plugin asks for a capability, not a wire.
+     * The same push stream over the binary codec (channel + raw-binary). Frames
+     * arrive as `{kind, ch, p: Uint8Array}` — the same envelope shape, so a
+     * consumer can be switched between the two codecs unchanged.
      */
-    stream: (provider, ch, { params, onFrame, onEnd } = {}) =>
-      gatedStream(async () => {
-        assertSupports('channel-json', Capability.PUSH);
-        const h = await hub.stream(id, 'channel-json', { provider, ch, params, onFrame, onEnd });
-        disposer.track(() => h.close().catch(() => {}));
-        return trackStream(h);
-      }),
-
-    /**
-     * The same push stream over the binary codec (channel + raw-binary).
-     * Frames arrive as `{kind, ch, p: Uint8Array}` — the same envelope shape,
-     * so a consumer can be switched between the two codecs unchanged.
-     */
-    streamRaw: (provider, ch, { params, onFrame, onEnd } = {}) =>
-      gatedStream(async () => {
-        assertSupports('channel-raw', Capability.PUSH, Capability.BINARY);
-        const h = await hub.stream(id, 'channel-raw', { provider, ch, params, onFrame, onEnd });
-        disposer.track(() => h.close().catch(() => {}));
-        return trackStream(h);
-      }),
+    streamRaw: (provider, ch, handlers = {}) =>
+      streamVia('channel-raw', [Capability.BINARY], provider, ch, handlers),
 
     /**
      * Talk to a helper executable shipped inside this plugin's folder.
@@ -256,10 +264,10 @@ export function buildCtx(plugin, disposer) {
     /**
      * Close a stream this plugin opened.
      *
-     * Deliberately ungated: opening it already required the capability, and
-     * this can only ever touch streams this plugin registered (the hub keys
-     * them by plugin id). Closing is strictly weaker than opening, so a gate
-     * here would only make the permission model harder to reason about.
+     * Deliberately ungated: opening it already required the capability, and this
+     * can only ever touch streams this plugin registered (the hub keys them by
+     * plugin id). Closing is strictly weaker than opening, so a gate here would
+     * only make the permission model harder to reason about.
      */
     closeStream: (ch) => {
       if (!openStreams.has(ch)) return Promise.resolve(false);
@@ -268,10 +276,20 @@ export function buildCtx(plugin, disposer) {
     },
 
     /** Every live endpoint the host knows about, across all transports. */
-    sessions: () => gatedRpc('host', 'sessions'),
+    sessions: () => ctx.rpc('host', 'sessions', {}),
 
-    /** The scheme table, so a plugin can show which wires it is using. */
+    /** The scheme table (local knowledge, no IPC). */
     schemes: () => hub.schemes(),
+
+    /**
+     * What this host supports: protocol version, services + actions, stream
+     * providers and the scheme table. Ask instead of guessing — this is the
+     * negotiation surface.
+     *
+     * The native side supplies services/actions/providers; the hub adds the
+     * scheme table, which only the frontend knows.
+     */
+    schema: () => gated(() => hub.schema(id), 'rpc:host'),
 
     /** Register render functions for views declared in contributes.views. */
     registerView: (viewId, render) => {
@@ -295,7 +313,10 @@ export function buildCtx(plugin, disposer) {
     },
   };
 
-  /** React to changes made in the host Settings page for this plugin's form. */
+  /**
+   * React to changes made in the host Settings page for this plugin's form.
+   * Async, like every other subscription.
+   */
   ctx.onSettingsChanged = (cb) => ctx.events.on(`settings:changed:${id}`, cb);
 
   /** Register an arbitrary cleanup fn that runs on deactivate. */

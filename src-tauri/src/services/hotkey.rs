@@ -24,7 +24,30 @@ use tauri::Emitter;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use super::Service;
+use crate::host::registry::HOST_IDENTITY;
 use crate::protocol::envelope::{Envelope, BROADCAST_EVENT};
+
+/// Who a registration belongs to.
+///
+/// Normally the caller itself. The host may pass an explicit `owner` to
+/// register ON BEHALF OF a plugin — that is how a declared
+/// `contributes.hotkeys` entry gets wired up without the plugin needing a
+/// shortcut permission of its own. Only the host identity may do that, so a
+/// plugin cannot register shortcuts for another plugin.
+pub fn resolve_owner(caller: &str, params: &Value) -> Result<String, String> {
+    match params.get("owner").and_then(|v| v.as_str()) {
+        None => Ok(caller.to_string()),
+        Some(owner) if caller == HOST_IDENTITY => {
+            if owner.trim().is_empty() {
+                return Err("empty `owner`".into());
+            }
+            Ok(owner.to_string())
+        }
+        Some(_) => Err(format!(
+            "plugin `{caller}` may not register a hotkey for another plugin"
+        )),
+    }
+}
 
 /// plugin id -> the shortcut strings it holds, so a deactivate can release
 /// exactly its own and nothing else.
@@ -123,8 +146,8 @@ impl Service for HotkeyService {
                 let key = str_param("key")?;
                 let action_name = str_param("action")?;
                 let shortcut = parse_shortcut(&key)?;
-
-                let owner = plugin_id.to_string();
+                let owner = resolve_owner(plugin_id, &params)?;
+                let owner_for_handler = owner.clone();
                 let app_for_handler = app.clone();
                 let topic = topic_for(&action_name);
                 let key_for_event = key.clone();
@@ -136,23 +159,30 @@ impl Service for HotkeyService {
                         let mut env = Envelope::evt(topic.clone(), json!({ "key": key_for_event.clone() }));
                         // the owner travels with the event so a subscriber can
                         // ignore another plugin's hotkey with the same action
-                        env.svc = Some(owner.clone());
+                        env.svc = Some(owner_for_handler.clone());
                         let _ = app_for_handler.emit(BROADCAST_EVENT, &env);
                     })
                     .map_err(|e| format!("register `{key}`: {e}"))?;
 
-                remember(plugin_id, &key);
-                Ok(json!({ "registered": true, "key": key, "topic": topic_for(&action_name) }))
+                remember(&owner, &key);
+                Ok(json!({ "registered": true, "owner": owner, "key": key, "topic": topic_for(&action_name) }))
             }
             "unregister" => {
                 let key = str_param("key")?;
+                let owner = resolve_owner(plugin_id, &params)?;
                 if let Ok(sc) = parse_shortcut(&key) {
                     let _ = app.global_shortcut().unregister(sc);
                 }
-                Ok(json!({ "released": forget(plugin_id, &key) }))
+                Ok(json!({ "released": forget(&owner, &key) }))
             }
-            "unregister_all" => Ok(json!({ "released": release_all_for(app, plugin_id) })),
-            "list" => Ok(json!({ "keys": held_by(plugin_id) })),
+            "unregister_all" => {
+                let owner = resolve_owner(plugin_id, &params)?;
+                Ok(json!({ "released": release_all_for(app, &owner) }))
+            }
+            "list" => {
+                let owner = resolve_owner(plugin_id, &params)?;
+                Ok(json!({ "keys": held_by(&owner) }))
+            }
             _ => Err(format!("unknown action `hotkey/{action}`")),
         }
     }
@@ -170,6 +200,22 @@ mod tests {
         let err = parse_shortcut("not+a+key").unwrap_err();
         assert!(err.contains("invalid shortcut"), "got: {err}");
         assert!(parse_shortcut("").is_err());
+    }
+
+    #[test]
+    fn only_the_host_may_register_on_behalf_of_another_plugin() {
+        // a plugin registering for itself
+        assert_eq!(resolve_owner("a.plugin", &json!({})).unwrap(), "a.plugin");
+        // the host registering for a plugin (how contributes.hotkeys is wired)
+        assert_eq!(
+            resolve_owner(HOST_IDENTITY, &json!({ "owner": "a.plugin" })).unwrap(),
+            "a.plugin"
+        );
+        // a plugin trying to act for another plugin is refused
+        let err = resolve_owner("a.plugin", &json!({ "owner": "b.plugin" })).unwrap_err();
+        assert!(err.contains("may not register"), "got: {err}");
+        // an empty owner is refused
+        assert!(resolve_owner(HOST_IDENTITY, &json!({ "owner": "  " })).is_err());
     }
 
     #[test]

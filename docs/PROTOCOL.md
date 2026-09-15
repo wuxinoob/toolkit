@@ -115,25 +115,92 @@ Plugins never pick a wire format and never import a Tauri API. They declare
 what they need and the hub resolves the scheme:
 
 ```js
-ctx.rpc(svc, act, params)                 // rpc
+ctx.rpc(svc, act, params, { timeoutMs })  // rpc
 ctx.storage.get / set / remove / keys     // rpc
-ctx.bus.publish / subscribe               // event-bus
-ctx.events.on / emit                      // in-process
+ctx.subscribe / once / publish            // event-bus by default
+ctx.events.on / once / emit               // in-process
+ctx.bus.subscribe / once / publish        // event-bus
 ctx.stream(provider, ch, handlers)        // channel-json
 ctx.streamRaw(provider, ch, handlers)     // channel-raw
 ctx.sidecar(ch, { exe, args })            // stdio-line
 ctx.pty(ch, { program, args })            // pty-stream
 ctx.sessions()                            // rpc (host) — the unified registry
+ctx.schemes()                             // the scheme table (local, no IPC)
+ctx.schema()                              // what this host supports
+ctx.onHotkey(action, fn)                  // a declared global hotkey
 ctx.protocol                              // the envelope constructors + constants
 ```
+
+### The scheme never changes the shape of a call
+
+`subscribe` / `once` / `publish` are **async on every scheme** — including the
+synchronous in-process one — and `ctx.events` / `ctx.bus` differ only in their
+default scheme. That is deliberate: a caller can move a subscription between
+schemes, or be pointed at a different one entirely, without rewriting the call
+site. If one scheme were sync and another async, the scheme would be leaking
+into every caller.
+
+`ctx.events` and `ctx.bus` are conveniences over the same three methods; the
+underlying pair is `hub.subscribe(pluginId, topic, fn, { scheme })` and
+`hub.publish(pluginId, topic, payload, { scheme })`.
 
 `ctx.protocol` exists because external plugins are loaded from a Blob URL as a
 single-file ESM and **cannot import** the protocol module. Handing over the
 constructors keeps a drop-in plugin building envelopes with the same code the
-host uses, instead of hard-coding the shape.
+host uses, instead of hard-coding the shape. It comes from one module
+(`protocol/contract.js`) and is frozen, so the two window surfaces cannot drift
+apart.
 
 A secondary window gets the same surface through `bridge` (see
 `src/host/pluginwin-host.js`), so plugin code ports between the two contexts.
+
+### Timeouts
+
+`ctx.rpc(..., { timeoutMs })` bounds how long the **caller** waits; the default
+is 45 s and `0` waits indefinitely. It is enforced in the transport, not in the
+envelope, because the gateway is synchronous: the host cannot be told to abandon
+a call, so a `deadline` field would promise something the host cannot deliver. A
+timeout raises `ProtocolError` with code `timeout`, worded so it cannot be
+mistaken for a cancellation.
+
+### Hotkeys
+
+A plugin declares global shortcuts in its manifest and the **host registers them
+on its behalf** — a plugin may not import the shortcut API:
+
+```jsonc
+"contributes": { "hotkeys": [{ "key": "ctrl+alt+shift+p", "action": "probe" }] }
+```
+
+```js
+await ctx.onHotkey('probe', (env) => { /* env.p.key */ });
+```
+
+The manifest entry IS the declaration, so no extra permission is needed. The
+press arrives as an ordinary `evt` envelope on `hotkey:<action>` — the same
+downlink as everything else — carrying the owner in `svc` so a plugin can ignore
+another plugin's hotkey that happens to share an action name. Registration is
+released on deactivate, and a taken shortcut is reported rather than fatal.
+
+The host passes an explicit `owner` to the `hotkey` service; only the host
+identity may do that, so a plugin cannot register shortcuts for another plugin.
+
+### Negotiation
+
+`ctx.schema()` returns what this host supports — protocol version, every service
+with its actions, the stream providers, and the scheme table. A plugin asks
+instead of discovering the surface by failing.
+
+```jsonc
+{ "protocol": 1,
+  "services": { "storage": ["get","set","remove","keys"], "hotkey": ["register", …], … },
+  "providers": ["ticker", "blob"],
+  "schemes": [ … ], "transports": [ … ] }
+```
+
+The service/action half is authoritative: it is generated from the same
+`Service::actions()` lists the gateway validates against, so it cannot drift
+from what actually works.
 
 ---
 
@@ -167,12 +234,16 @@ Declares a plugin's permissions. Called once per plugin at load time.
 
 ```rust
 match table().iter().find(|s| s.name() == service) {
+    None => Err(format!("unknown service `{service}` (known: {})", names)),
+    Some(s) if !s.actions().contains(&action) =>
+        Err(format!("unknown action `{service}/{action}` (known: {})", s.actions().join(", "))),
     Some(s) => s.dispatch(app, plugin_id, action, params),
-    None    => Err(format!("unknown service `{service}` (known: {})", names)),
 }
 ```
 
 Adding a capability is a new table entry. `lib.rs` does not change.
+
+The six services: `storage`, `host`, `proc`, `stream`, `bus`, `hotkey`.
 
 ---
 
@@ -200,19 +271,41 @@ capability never requires two declarations:
 | `channel-json`, `channel-raw` | `rpc:stream` | the push data plane |
 | `pty-stream` | `rpc:stream` | same data plane (a terminal stream) |
 | `stdio-line` | `rpc:proc` | running a binary the plugin shipped is its own, stronger capability |
-| `event-bus` | `rpc:bus` | broadcast to every window |
+| `event-bus` **publish** | `rpc:bus` | publishing reaches every window |
+| `event-bus` **subscribe** | — | a passive listener costs nothing and cannot affect another window |
 | `in-process` | — | no IPC, nothing to gate |
 | window control (`ctx.windows`) | `win:manage` | |
-| `ctx.sessions()` (the list) | `rpc:host` | a host-wide query |
+| `ctx.sessions()` / `ctx.schema()` | `rpc:host` | host-wide queries |
 | `ctx.closeStream(ch)` | — | see below |
+| declared hotkeys | — | the manifest entry is the declaration |
 
-`ctx.closeStream` is deliberately ungated: opening a stream already required the
-capability, and it can only touch streams the plugin itself registered. Closing
-is strictly weaker than opening.
+Two rules make the set easy to reason about:
+
+- **Observation is not a capability.** Subscribing to a topic, reading your own
+  hotkey, and closing a stream you opened are all ungated. Only acts that reach
+  beyond the plugin — publishing to every window, running a binary, controlling
+  windows — carry a permission.
+- **`ctx.closeStream` is ungated** because opening a stream already required the
+  capability and it can only touch streams the plugin itself registered (the hub
+  keys them by plugin id). Closing is strictly weaker than opening.
 
 Session *lifecycle* (`stream/session_open`, `stream/session_close`) lives on the
 `stream` service rather than `host`, so `rpc:stream` alone covers opening a
 stream end to end — including a PTY, whose process the host does not own.
+
+### Action validation
+
+Each service declares its actions (`Service::actions`), and the gateway rejects
+anything not listed **before** dispatching:
+
+```json
+{"v":1,"kind":"err","id":3,"code":"storage/nope",
+ "msg":"unknown action `storage/nope` (known: get, set, remove, keys)"}
+```
+
+The declaration is authoritative rather than documentation: the same list backs
+`host/schema`, so what a plugin is told exists is exactly what the gateway
+accepts.
 
 A denial is a normal protocol outcome, not a transport failure:
 
@@ -274,7 +367,10 @@ Nothing in `host/`, `ctx.js` or the plugins changes.
 
 If the scheme needs a native producer, add a `StreamProvider` to
 `services/stream.rs` (override only the codecs it supports — the defaults are
-the capability declaration) or a `Service` to `services/mod.rs`.
+the capability declaration) or a `Service` to `services/mod.rs`. A `Service`
+must declare `name()` and `actions()`; the gateway validates the action against
+that list and `host/schema` advertises it, so there is nothing else to register
+or document separately.
 
 ---
 

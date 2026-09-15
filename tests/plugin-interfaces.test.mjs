@@ -43,7 +43,7 @@ function deliver(channel, message, index = 0) {
 }
 
 const kv = new Map();
-const seen = { streamJson: 0, streamRaw: 0, publish: 0, sessions: 0, info: 0 };
+const seen = { streamJson: 0, streamRaw: 0, publish: 0, sessions: 0, info: 0, schema: 0, hotkeys: 0 };
 let busHandler = null;
 
 const rawCounter = (n) => {
@@ -120,6 +120,48 @@ function installGateway() {
       if (svc === 'host' && act === 'sessions') {
         seen.sessions += 1;
         return res([]);
+      }
+      if (svc === 'host' && act === 'schema') {
+        seen.schema += 1;
+        // mirrors what the native `schema()` returns
+        return res({
+          protocol: 1,
+          services: {
+            storage: ['get', 'set', 'remove', 'keys'],
+            host: ['info', 'write_debug_log', 'sessions', 'plugins', 'schema'],
+            proc: ['spawn', 'send', 'recv', 'kill', 'kill_all', 'list'],
+            stream: ['close', 'providers', 'list', 'session_open', 'session_close'],
+            bus: ['publish'],
+            hotkey: ['register', 'unregister', 'unregister_all', 'list'],
+          },
+          providers: ['ticker', 'blob'],
+        });
+      }
+      if (svc === 'hotkey' && act === 'list') {
+        seen.hotkeys += 1;
+        // the host registers contributes.hotkeys on the plugin's behalf
+        return res({ keys: ['ctrl+alt+shift+p'] });
+      }
+      if (svc === 'host' && act === 'schema') {
+        seen.schema += 1;
+        // mirrors what the native `schema()` returns
+        return res({
+          protocol: 1,
+          services: {
+            storage: ['get', 'set', 'remove', 'keys'],
+            host: ['info', 'write_debug_log', 'sessions', 'plugins', 'schema'],
+            proc: ['spawn', 'send', 'recv', 'kill', 'kill_all', 'list'],
+            stream: ['close', 'providers', 'list', 'session_open', 'session_close'],
+            bus: ['publish'],
+            hotkey: ['register', 'unregister', 'unregister_all', 'list'],
+          },
+          providers: ['ticker', 'blob'],
+        });
+      }
+      if (svc === 'hotkey' && act === 'list') {
+        seen.hotkeys += 1;
+        // the host registers contributes.hotkeys on the plugin's behalf
+        return res({ keys: ['ctrl+alt+shift+p'] });
       }
       if (svc === 'storage' && act === 'set') {
         kv.set(p.key, p.value);
@@ -198,6 +240,10 @@ test('a new plugin can drive every existing interface with no host changes', asy
   assert.equal(seen.streamJson, 1, 'channel-json was not exercised');
   assert.equal(seen.streamRaw, 1, 'channel-raw was not exercised');
   assert.equal(seen.publish, 1, 'event-bus was not exercised');
+  assert.equal(seen.schema, 1, 'the negotiation surface (host/schema) was not exercised');
+  assert.equal(seen.hotkeys, 1, 'the declared hotkey was not readable back');
+  assert.equal(seen.schema, 1, 'the negotiation surface (host/schema) was not exercised');
+  assert.equal(seen.hotkeys, 1, 'the declared hotkey was not readable back');
   assert.ok(kv.has('probe'), 'storage round trip did not persist');
   assert.ok(kv.has('lastSweep'), 'the sweep result was not persisted');
   const sweep = kv.get('lastSweep');
@@ -212,7 +258,7 @@ test('a new plugin can drive every existing interface with no host changes', asy
 
 test('the plugin declared exactly the permissions it needed, and no more', async () => {
   const declared = probe.manifest.permissions.slice().sort();
-  assert.deepEqual(declared, ['rpc:bus', 'rpc:host', 'rpc:storage', 'rpc:stream']);
+  assert.deepEqual(declared, ['rpc:bus', 'rpc:host', 'rpc:hotkey', 'rpc:storage', 'rpc:stream']);
   // the sweep's deliberate negative test must have been rejected by the JS gate
   assert.ok(
     !invokeCalls.some((c) => c.args?.msg?.svc === 'nope'),

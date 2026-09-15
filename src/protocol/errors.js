@@ -30,6 +30,21 @@ export class ProtocolError extends Error {
   static protocol(message) {
     return new ProtocolError('protocol', message);
   }
+
+  /**
+   * The caller stopped waiting.
+   *
+   * Deliberately worded to avoid the impression that this cancelled anything:
+   * the request is already with the host and a synchronous service cannot be
+   * interrupted, so the work may still complete and its reply is discarded.
+   */
+  static timeout(what, ms) {
+    return new ProtocolError(
+      'timeout',
+      `${what} did not answer within ${ms}ms — the caller stopped waiting; ` +
+        'the host may still be working (synchronous services cannot be cancelled)',
+    );
+  }
 }
 
 /** Wrap a Tauri `invoke` rejection in the unified error type. */

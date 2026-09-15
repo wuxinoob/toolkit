@@ -9,10 +9,10 @@
 
 | 问题 | 结论 |
 |---|---|
-| **1. 协议是否统一了？** | **插件侧完全统一**；宿主侧有 4 个命令在网关之外（插件发现 + 权限上报），属于有理由的例外；窗口控制与全局热键不在协议内。 |
-| **2. 新插件能否直接调用已有接口？** | **能，且已验证**。新增 `examples/plugins/probe`，不 import 任何模块、不碰 Tauri API，一次调用覆盖 7 类接口全部通过。 |
-| **3. 接口有哪些？** | 8 个原生命令 · 5 个服务 / 20 个动作 · 7 个方案 · 2 个流提供者。见 §1–§4。 |
-| **4. 有改进空间吗？** | 有。2 个已当场修掉（死命令、虚假能力声明），其余按 P0/P1/P2 列在 §8。 |
+| **1. 协议是否统一了？** | **插件侧完全统一**；宿主侧有 4 个命令在网关之外（插件发现 + 权限上报），属于有理由的例外；窗口控制不在协议内（热键已收敛进 `hotkey` 服务）。 |
+| **2. 新插件能否直接调用已有接口？** | **能，且已验证**。`examples/plugins/probe` 不 import 任何模块、不碰 Tauri API，一次调用覆盖 11 项接口全部通过。 |
+| **3. 接口有哪些？** | 8 个原生命令 · 6 个服务 / 25 个动作 · 7 个方案 · 2 个流提供者。见 §1–§4。 |
+| **4. 有改进空间吗？** | 有。**P1 与 P2 本轮已全部完成**（见 §8），仅剩两项 P0 待你决定（上行无推送通道、错误码无闭集）。 |
 
 ---
 
@@ -33,17 +33,22 @@
 
 > 原先还有第 9 个 `plugin_registry`，核查时发现**没有任何调用方**（Settings 页走网关的 `host/plugins`），已删除，避免留一个无人使用、无人校验的入口。
 
-## 2. 网关背后的服务：5 个服务 / 20 个动作
+## 2. 网关背后的服务：6 个服务 / 25 个动作
 
 | 服务 | 动作 | 说明 |
 |---|---|---|
 | `storage` | `get` `set` `remove` `keys` | 每插件独立的磁盘 JSON KV（`plugin-data/<id>/data.json`） |
-| `host` | `info` `write_debug_log` `sessions` `plugins` | 路径/元数据、调试落盘、**统一会话表**、已授权插件与服务清单 |
+| `host` | `info` `write_debug_log` `sessions` `plugins` `schema` | 路径/元数据、调试落盘、**统一会话表**、已授权插件、**能力协商面** |
 | `proc` | `spawn` `send` `recv` `kill` `kill_all` `list` | sidecar 行 JSON 管道（`stdio-line` 方案的底层） |
 | `stream` | `close` `providers` `list` `session_open` `session_close` | 推送流生命周期 + 第三方进程的会话登记 |
 | `bus` | `publish` | 跨窗口广播（宿主 `app.emit` 扇出到所有窗口） |
+| `hotkey` | `register` `unregister` `unregister_all` `list` | 全局热键，**由宿主代插件注册**（`contributes.hotkeys`） |
 
-分发是**查表**的：`services::route` 按 `name()` 找 `Service` 实现，`lib.rs` 里没有任何 `if service == ...`。加一个能力 = 加一个表项。
+分发是**查表**的：`services::route` 按 `name()` 找 `Service` 实现，并用该服务自己声明的
+`actions()` 先校验动作，`lib.rs` 里没有任何 `if service == ...`。加一个能力 = 加一个表项。
+
+> 动作清单是**权威**的而不是文档：`host/schema` 直接由同一份 `actions()` 生成，所以
+> "告诉插件存在什么"与"网关实际接受什么"不可能漂移。
 
 ## 3. 方案表：7 个方案 + 2 个流提供者
 
@@ -69,11 +74,13 @@
 | `channel-json` / `channel-raw` | `rpc:stream` |
 | `pty-stream` | `rpc:stream` |
 | `stdio-line` | `rpc:proc`（运行插件自带的二进制是独立且更强的能力） |
-| `event-bus` | `rpc:bus` |
+| `event-bus` **发布** | `rpc:bus` |
+| `event-bus` **订阅** | —（被动监听不构成能力） |
 | `in-process` | —（无 IPC） |
 | 窗口控制 | `win:manage` |
-| `ctx.sessions()` | `rpc:host` |
+| `ctx.sessions()` / `ctx.schema()` | `rpc:host` |
 | `ctx.closeStream()` | —（关比开弱，且只能关自己开的流） |
+| `contributes.hotkeys` 声明的热键 | —（清单条目本身就是声明） |
 
 ---
 
@@ -137,27 +144,40 @@ event-bus 广播往返 · in-process 同步投递 · 权限闸口拒绝未声明
 
 ## 8. 改进空间
 
-### P0 — 已当场修掉
+### 已完成（本轮 P1 + P2）
 
-1. ~~`plugin_registry` 是死命令~~ → 已删除，字段并入 `host/plugins`。
-2. ~~`channel-json` 声明了未实现的 `backpressure`~~ → 已移除声明并注明原因。
+| # | 原问题 | 处理 |
+|---|---|---|
+| P1-1 | `ctx.events.on` 同步 vs `ctx.bus.subscribe` 异步，方案抽象泄漏到 API 形状 | **统一**：`subscribe` / `once` / `publish` 在所有方案上都是异步，`ctx.events` 与 `ctx.bus` 只差默认方案；底层统一为 `hub.subscribe/publish(…, {scheme})` |
+| P1-2 | `ctx.protocol` 在 `ctx.js` 与 `pluginwin-host.js` 各复制一份 | 抽成 `protocol/contract.js`，两处共用并 `Object.freeze`，加字段不会漏一处 |
+| P1-3 | 插件无法声明全局热键（原设计 `contributes.hotkeys` 未实现） | 新增 `hotkey` 服务 + `ctx.onHotkey(action, fn)`；宿主在 activate 时**代插件注册**、deactivate 时释放；按键以 `evt` 信封投递到 `hotkey:<action>`；冲突只告警不致命 |
+| P2-4 | `rpc` 无超时/取消 | `ctx.rpc(..., { timeoutMs })`，默认 45s，`0` 表示不限；在**传输层**强制并给出 `timeout` 错误码 |
+| P2-5 | 无 schema 内省 | `host/schema` + `ctx.schema()`：协议版本 / 服务与动作 / 流提供者 / 方案表 |
+| P2-6 | 版本协商只有"不匹配就拒绝" | 与 P2-5 合并：**先问后做**（`ctx.schema()` 即协商面），而不是靠失败去发现 |
 
-### P0 — 仍建议做
+顺带的两处收紧：
+- **动作校验进网关**：`Service::actions()` 声明 + 网关先校验再分发，错误信息直接列出合法动作。
+- **观察不等于能力**：订阅 / 读自己的热键 / 关闭自己开的流都不再需要权限；只有"发布到所有窗口""运行自带二进制""控制窗口"这类越出插件边界的动作才带权限。
 
-3. **上行没有推送通道。** 下行有 `Channel` 推流，上行只有 req/res——插件想持续向宿主灌数据只能反复调 `rpc`（如 `proc/send` 一行一次）。建议增加一个上行 `Channel` 方案（`channel-in`），否则"双向通信"在数据面是单向的。
-4. **错误码没有闭集。** 只有 `denied` / `transport` / `protocol` / `codec` 四个是稳定的；服务错误是 `{svc}/{act}` 字符串（如 `storage/get`）。调用方无法可靠地按码分支。建议引入错误码枚举，把 `{svc}/{act}` 降级为附加信息。
+### 仍待处理
 
-### P1 — 抽象泄漏
+**P0（未动，按你的要求：不影响架构层面）**
 
-5. **`ctx.events.on` 同步、`ctx.bus.subscribe` 异步**，两者不能互换——方案抽象在 API 层漏了出来。建议统一为异步，或在 hub 里给 in-process 一个同步快路径并统一签名。
-6. **`ctx.protocol` 在 `ctx.js` 与 `pluginwin-host.js` 各写一份**（复制粘贴）。应抽成一个模块，否则将来加字段必漏一处。
-7. **插件无法声明全局热键。** 原设计有 `contributes.hotkeys`，现在完全没实现。若要有，应走网关（Rust 侧注册、事件下行），而不是前端直接调插件 API。
+7. **上行没有推送通道。** 下行有 `Channel` 推流，上行只有 req/res——插件想持续向宿主灌数据只能反复调 `rpc`。建议增加上行 `channel-in` 方案，否则"双向通信"在数据面是单向的。
+8. **错误码没有闭集。** 只有 `denied` / `transport` / `protocol` / `codec` / `timeout` 是稳定的；服务错误仍是 `{svc}/{act}` 字符串。建议引入错误码枚举，把 `{svc}/{act}` 降级为附加信息。
 
-### P2 — 可增强
+**P2（剩余）**
 
-8. **`rpc` 无超时/取消。** 服务卡住则 promise 永远挂起。建议信封加可选 `timeout` 与取消帧。
-9. **无 schema 内省。** 插件只能看文档知道某服务有哪些 action。可加 `host/schema` 返回服务与动作清单（`service_names()` 已经有了，缺动作级）。
-10. **版本协商只有"不匹配就拒绝"**，没有能力降级或特性开关。
+9. **超时无法真正取消。** 目前只是调用方停止等待，宿主仍会做完。对同步服务无解；若将来服务改成异步，可在信封加 `deadline` 由宿主真正放弃。
+10. **无 schema 的字段级信息。** `host/schema` 只到"有哪些动作"，不含参数形状；插件仍需看文档。
+
+### 结构性例外（未变）
+
+| 例外 | 为什么 | 风险 |
+|---|---|---|
+| 插件发现 3 命令（`plugin_scan` / `plugin_read_entry` / `plugin_open_dir`） | 宿主要在"还没有插件"时读取插件目录 | 低：仅宿主调用，含路径逃逸防护 |
+| 窗口控制（`ctx.windows`） | Tauri 的 `WebviewWindow` 是命令式 API | 中：有 `win:manage` + ACL 两层，但不在信封体系内 |
+| 全局热键的**注册** | 必须由 Rust 侧持有 OS 句柄 | 低：已收敛到 `hotkey` 服务，且只有宿主能代注册 |
 
 ---
 

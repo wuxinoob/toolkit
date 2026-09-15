@@ -140,6 +140,75 @@ test('ctx: broadcast goes through the bus service', async () => {
   assert.deepEqual(msg.p, { topic: 'some.topic', payload: { n: 1 } });
 });
 
+test('ctx: events and bus have the same shape — only the default scheme differs', async () => {
+  // this test drives the event-bus scheme, which calls plugin:event|listen,
+  // so it needs its own gateway rather than whatever the previous test left
+  invokeImpl = async (cmd, args) => {
+    if (cmd === 'plugin:event|listen') return 1;
+    if (cmd === 'plugin:event|unlisten') return null;
+    if (cmd === 'plugin_rpc') return { v: 1, kind: 'res', id: args.msg.id, p: true };
+    throw new Error(`unexpected invoke: ${cmd}`);
+  };
+  const ctx = buildCtx(
+    { manifest: { id: 't.shapes', permissions: ['rpc:bus'] } },
+    { track() {} },
+  );
+  // every subscribe-style call is async and resolves to an unsubscribe fn
+  for (const call of [
+    () => ctx.events.on('t.a', () => {}),
+    () => ctx.events.once('t.b', () => {}),
+    () => ctx.bus.subscribe('t.c', () => {}),
+    () => ctx.subscribe('t.d', () => {}),
+  ]) {
+    const p = call();
+    assert.ok(p instanceof Promise, 'subscribe must be async on every scheme');
+    assert.equal(typeof (await p), 'function', 'must resolve to an unsubscribe fn');
+  }
+  // and every publish-style call is async too
+  for (const call of [() => ctx.events.emit('t.e', 1), () => ctx.publish('t.f', 1)]) {
+    assert.ok(call() instanceof Promise, 'publish must be async on every scheme');
+  }
+});
+
+test('ctx: receiving is passive, publishing is the gated capability', async () => {
+  invokeCalls.length = 0;
+  // this test drives the event-bus scheme, which calls plugin:event|listen,
+  // so it needs its own gateway rather than whatever the previous test left
+  invokeImpl = async (cmd, args) => {
+    if (cmd === 'plugin:event|listen') return 1;
+    if (cmd === 'plugin:event|unlisten') return null;
+    if (cmd === 'plugin_rpc') return { v: 1, kind: 'res', id: args.msg.id, p: { delivered: true } };
+    throw new Error(`unexpected invoke: ${cmd}`);
+  };
+  // declared: rpc:storage only — no rpc:bus
+  const ctx = buildCtx({ manifest: { id: 't.passive', permissions: ['rpc:storage'] } }, { track() {} });
+
+  // subscribing costs nothing and is allowed
+  const off = await ctx.bus.subscribe('some.topic', () => {});
+  assert.equal(typeof off, 'function', 'a passive listener needs no permission');
+  // publishing reaches other windows, so it is refused
+  await assert.rejects(() => ctx.bus.publish('some.topic', {}), /missing permission "rpc:bus"/);
+});
+
+test('ctx: rpc accepts a per-call timeout', async () => {
+  invokeCalls.length = 0;
+  invokeImpl = async (cmd, { msg }) => ({ v: 1, kind: 'res', id: msg.id, p: true });
+  const ctx = buildCtx({ manifest: { id: 't.to', permissions: ['rpc:host'] } }, { track() {} });
+  assert.equal(await ctx.rpc('host', 'info', {}, { timeoutMs: 0 }), true);
+  assert.equal(invokeCalls.at(-1).args.msg.svc, 'host');
+});
+
+test('ctx: the contract is handed over, not imported', () => {
+  const ctx = buildCtx({ manifest: { id: 't.contract', permissions: [] } }, { track() {} });
+  assert.equal(ctx.protocol.version, 1);
+  assert.equal(typeof ctx.protocol.req, 'function');
+  assert.equal(ctx.protocol.Kind.DATA, 'data');
+  // and it is frozen, so a plugin cannot mutate the contract for everyone
+  assert.throws(() => {
+    ctx.protocol.version = 99;
+  }, TypeError);
+});
+
 // ---------------------------------- lifecycle ----------------------------------
 
 test('lifecycle: load/activate/deactivate with full view cleanup', async () => {
@@ -173,6 +242,128 @@ test('lifecycle: load/activate/deactivate with full view cleanup', async () => {
   assert.equal(deactivated, true);
   assert.equal(store.views.some((v) => v.viewId === 'fake.a/v'), false, 'views must be removed');
   assert.equal(store.plugins.find((p) => p.manifest.id === 'fake.a')?.status, 'inactive');
+});
+
+test('lifecycle: declared hotkeys are registered by the host on the plugin\'s behalf', async () => {
+  ls.clear();
+  resetEvents();
+  store.plugins.length = 0;
+  store.views.length = 0;
+  invokeCalls.length = 0;
+  invokeImpl = async (cmd, { msg }) => ({ v: 1, kind: 'res', id: msg?.id ?? 1, p: true });
+
+  const plugin = await loadPlugin({
+    manifest: {
+      id: 'hk.plugin',
+      name: 'Hotkeyed',
+      permissions: [],
+      contributes: { views: [{ id: 'v', title: 'V' }], hotkeys: [{ key: 'ctrl+alt+shift+k', action: 'go' }] },
+    },
+    activate: (ctx) => ctx.registerView('v', () => {}),
+  });
+  await activate(plugin, { silent: true });
+
+  const reg = invokeCalls.find((c) => c.args?.msg?.svc === 'hotkey' && c.args.msg.act === 'register');
+  assert.ok(reg, 'the declared hotkey was never registered');
+  // the host acts for the plugin, and says so explicitly
+  assert.equal(reg.args.pluginId, '__host__');
+  assert.deepEqual(reg.args.msg.p, { key: 'ctrl+alt+shift+k', action: 'go', owner: 'hk.plugin' });
+
+  invokeCalls.length = 0;
+  await deactivate(plugin, { silent: true });
+  const rel = invokeCalls.find((c) => c.args?.msg?.svc === 'hotkey' && c.args.msg.act === 'unregister_all');
+  assert.ok(rel, 'deactivate must release the hotkeys');
+  assert.deepEqual(rel.args.msg.p, { owner: 'hk.plugin' });
+});
+
+test('lifecycle: a failing hotkey registration does not fail the activation', async () => {
+  ls.clear();
+  resetEvents();
+  store.plugins.length = 0;
+  store.views.length = 0;
+  invokeImpl = async (cmd, { msg }) => {
+    if (msg?.svc === 'hotkey') {
+      return { v: 1, kind: 'err', id: msg.id, code: 'hotkey/register', msg: 'shortcut already taken' };
+    }
+    return { v: 1, kind: 'res', id: msg?.id ?? 1, p: true };
+  };
+
+  const plugin = await loadPlugin({
+    manifest: {
+      id: 'hk.conflict',
+      name: 'Conflict',
+      permissions: [],
+      contributes: { views: [{ id: 'v', title: 'V' }], hotkeys: [{ key: 'ctrl+alt+shift+k', action: 'go' }] },
+    },
+    activate: (ctx) => ctx.registerView('v', () => {}),
+  });
+  await activate(plugin, { silent: true });
+  assert.equal(
+    store.plugins.find((p) => p.manifest.id === 'hk.conflict')?.status,
+    'active',
+    'a taken shortcut must not stop the plugin from activating',
+  );
+});
+
+test('lifecycle: declared hotkeys are registered by the host on the plugin\'s behalf', async () => {
+  ls.clear();
+  resetEvents();
+  store.plugins.length = 0;
+  store.views.length = 0;
+  invokeCalls.length = 0;
+  invokeImpl = async (cmd, { msg }) => ({ v: 1, kind: 'res', id: msg?.id ?? 1, p: true });
+
+  const plugin = await loadPlugin({
+    manifest: {
+      id: 'hk.plugin',
+      name: 'Hotkeyed',
+      permissions: [],
+      contributes: { views: [{ id: 'v', title: 'V' }], hotkeys: [{ key: 'ctrl+alt+shift+k', action: 'go' }] },
+    },
+    activate: (ctx) => ctx.registerView('v', () => {}),
+  });
+  await activate(plugin, { silent: true });
+
+  const reg = invokeCalls.find((c) => c.args?.msg?.svc === 'hotkey' && c.args.msg.act === 'register');
+  assert.ok(reg, 'the declared hotkey was never registered');
+  // the host acts for the plugin, and says so explicitly
+  assert.equal(reg.args.pluginId, '__host__');
+  assert.deepEqual(reg.args.msg.p, { key: 'ctrl+alt+shift+k', action: 'go', owner: 'hk.plugin' });
+
+  invokeCalls.length = 0;
+  await deactivate(plugin, { silent: true });
+  const rel = invokeCalls.find((c) => c.args?.msg?.svc === 'hotkey' && c.args.msg.act === 'unregister_all');
+  assert.ok(rel, 'deactivate must release the hotkeys');
+  assert.deepEqual(rel.args.msg.p, { owner: 'hk.plugin' });
+});
+
+test('lifecycle: a failing hotkey registration does not fail the activation', async () => {
+  ls.clear();
+  resetEvents();
+  store.plugins.length = 0;
+  store.views.length = 0;
+  invokeImpl = async (cmd, { msg }) => {
+    if (msg?.svc === 'hotkey') {
+      return { v: 1, kind: 'err', id: msg.id, code: 'hotkey/register', msg: 'shortcut already taken' };
+    }
+    return { v: 1, kind: 'res', id: msg?.id ?? 1, p: true };
+  };
+
+  const plugin = await loadPlugin({
+    manifest: {
+      id: 'hk.conflict',
+      name: 'Conflict',
+      permissions: [],
+      contributes: { views: [{ id: 'v', title: 'V' }], hotkeys: [{ key: 'ctrl+alt+shift+k', action: 'go' }] },
+    },
+    activate: (ctx) => ctx.registerView('v', () => {}),
+  });
+  await activate(plugin, { silent: true });
+  assert.equal(
+    store.plugins.find((p) => p.manifest.id === 'hk.conflict')?.status,
+    'active',
+    'a taken shortcut must not stop the plugin from activating',
+  );
 });
 
 test('lifecycle: loading a plugin declares its permissions to the native host', async () => {

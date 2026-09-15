@@ -5,7 +5,8 @@
   "entry": "main.js",
   "description": "Drives every frontend<->backend interface in one pass and reports the result.",
   "contributes": {
-    "views": [{ "slot": "tool", "id": "probe", "title": "Plane Probe", "icon": "🧭" }]
+    "views": [{ "slot": "tool", "id": "probe", "title": "Plane Probe", "icon": "🧭" }],
+    "hotkeys": [{ "key": "ctrl+alt+shift+p", "action": "probe" }]
   },
-  "permissions": ["rpc:storage", "rpc:host", "rpc:stream", "rpc:bus"]
+  "permissions": ["rpc:storage", "rpc:host", "rpc:stream", "rpc:bus", "rpc:hotkey"]
 }

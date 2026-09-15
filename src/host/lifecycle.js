@@ -5,6 +5,9 @@ import { store, toast } from './store.js';
 import { events } from './events.js';
 import { hub } from '../protocol/hub.js';
 
+/** Host identity: used for calls the host makes on a plugin's behalf. */
+const HOST_ID = '__host__';
+
 /**
  * Plugin lifecycle kernel.
  *   discovered -> loaded -> activated -> deactivated -> (dispose)
@@ -57,6 +60,41 @@ export async function registerWithHost(manifest) {
   });
 }
 
+/**
+ * Register the plugin's declared global hotkeys, and release them on deactivate.
+ *
+ * The host acts on the plugin's behalf: a plugin may not import the shortcut
+ * API, and the `contributes.hotkeys` entry IS the declaration, so no extra
+ * permission is needed. A conflict is reported, never fatal — one taken
+ * shortcut must not stop a plugin from activating.
+ */
+async function registerHotkeys(plugin, ctx) {
+  const declared = plugin.manifest.contributes?.hotkeys ?? [];
+  let ok = 0;
+  for (const hk of declared) {
+    if (!hk || !hk.key || !hk.action) continue;
+    try {
+      await hub.request(HOST_ID, 'hotkey', 'register', {
+        key: hk.key,
+        action: hk.action,
+        owner: plugin.manifest.id,
+      });
+      ok += 1;
+    } catch (e) {
+      ctx.log.warn('hotkey "' + hk.key + '" not registered: ' + (e?.message ?? e));
+    }
+  }
+  return ok;
+}
+
+async function releaseHotkeys(plugin) {
+  try {
+    await hub.request(HOST_ID, 'hotkey', 'unregister_all', { owner: plugin.manifest.id });
+  } catch {
+    /* nothing to release, or the host is going away */
+  }
+}
+
 export async function activate(plugin, { silent = false } = {}) {
   if (plugin._ctx) return; // already active
   try {
@@ -64,11 +102,15 @@ export async function activate(plugin, { silent = false } = {}) {
     const ctx = buildCtx(plugin, disposer);
     plugin._disposer = disposer;
     plugin._ctx = ctx;
+    // Declared hotkeys go live BEFORE activate runs, so a plugin can rely on
+    // them (and check them) during its own activation rather than racing it.
+    await registerHotkeys(plugin, ctx);
     await plugin.activate(ctx); // may be sync or async
     setPluginState(plugin.manifest.id, 'active');
     if (!silent) toast(`${plugin.manifest.name} enabled`, 'info', 2000);
   } catch (e) {
     plugin._ctx = null;
+    await releaseHotkeys(plugin);
     plugin._disposer?.run();
     plugin._disposer = null;
     setPluginState(plugin.manifest.id, 'error', String(e));
@@ -84,6 +126,7 @@ export async function deactivate(plugin, { silent = false } = {}) {
   } catch (e) {
     console.error(`[lifecycle] deactivate error for ${plugin.manifest.id}`, e);
   } finally {
+    await releaseHotkeys(plugin);
     plugin._disposer?.run();
     plugin._disposer = null;
     plugin._ctx = null;

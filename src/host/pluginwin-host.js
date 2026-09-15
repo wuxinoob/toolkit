@@ -6,11 +6,11 @@
  *
  * The window Blob-imports the plugin's entry module (single-file ESM, the same
  * constraint as the main-window loader) and calls its `mountWindow(bridge)`
- * export. The bridge is a window-scoped SDK built on the SAME protocol hub, so
- * a plugin window gets the same schemes as the main window:
+ * export. The bridge is a window-scoped SDK built on the SAME protocol hub and
+ * the SAME contract as `ctx`, so plugin code ports between the two contexts:
  *
  *   bridge.request(...)   control calls           (rpc)
- *   bridge.bus.*          cross-window events     (event-bus)
+ *   bridge.subscribe/...  cross-window events     (event-bus)
  *   bridge.events.*       window-local events     (in-process)
  *   bridge.sidecar/pty/stream(...)                (stdio-line / pty-stream / channel)
  *
@@ -21,8 +21,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { hub } from '../protocol/hub.js';
-import * as Envelope from '../protocol/envelope.js';
-import { events } from './events.js';
+import { protocolContract } from '../protocol/contract.js';
 
 function renderError(title, detail) {
   document.title = title;
@@ -39,7 +38,11 @@ function renderError(title, detail) {
   document.body.appendChild(box);
 }
 
-/** Window-scoped SDK. Mirrors `ctx` so plugin code ports between the two. */
+/**
+ * Window-scoped SDK. Mirrors `ctx` exactly — same method names, same async
+ * shapes, same permission rules — so `ctx.js` and this file stay two views of
+ * one contract rather than two dialects.
+ */
 function makeBridge(pluginId, label, manifest) {
   const perms = manifest?.permissions ?? [];
   const has = (perm) => perms.includes(perm);
@@ -54,55 +57,68 @@ function makeBridge(pluginId, label, manifest) {
     return off;
   };
 
+  const subscribeWith = (scheme, topic, fn) => {
+    const p = hub.subscribe(pluginId, topic, fn, { scheme });
+    p.then(track).catch(() => {});
+    return p;
+  };
+  const publishWith = (scheme, topic, payload) => hub.publish(pluginId, topic, payload, { scheme });
+
   return {
     pluginId,
     label,
     manifest,
 
-    /** The same wire contract `ctx.protocol` exposes, for a window-scoped plugin. */
-    protocol: {
-      version: Envelope.PROTOCOL_VERSION,
-      broadcastEvent: Envelope.BROADCAST_EVENT,
-      Kind: Envelope.Kind,
-      req: Envelope.req,
-      res: Envelope.res,
-      err: Envelope.err,
-      evt: Envelope.evt,
-      data: Envelope.data,
-      end: Envelope.end,
-      exit: Envelope.exit,
-      validate: Envelope.validate,
-      isTerminal: Envelope.isTerminal,
-      nextId: Envelope.nextId,
-    },
+    /** The same wire contract `ctx.protocol` exposes. */
+    protocol: protocolContract(),
 
-    request: (svc, act, params) => gate(svc, () => hub.request(pluginId, svc, act, params)),
+    request: (svc, act, params = null, opts = {}) =>
+      gate(svc, () => hub.request(pluginId, svc, act, params, opts)),
 
     storage: {
       get: (key) => gate('storage', () => hub.request(pluginId, 'storage', 'get', { key })),
       set: (key, value) => gate('storage', () => hub.request(pluginId, 'storage', 'set', { key, value })),
       remove: (key) => gate('storage', () => hub.request(pluginId, 'storage', 'remove', { key })),
+      keys: () => gate('storage', () => hub.request(pluginId, 'storage', 'keys', {})),
     },
 
+    // same three shapes as ctx: subscribe / once / publish
+    subscribe: (topic, fn, { scheme = 'event-bus' } = {}) => subscribeWith(scheme, topic, fn),
+    once: (topic, fn, { scheme = 'event-bus' } = {}) => hub.once(pluginId, topic, fn, { scheme }).then(track),
+    publish: (topic, payload = null, { scheme = 'event-bus' } = {}) =>
+      scheme === 'event-bus'
+        ? gate('bus', () => publishWith('event-bus', topic, payload))
+        : publishWith(scheme, topic, payload),
+
     events: {
-      on: (topic, fn) => track(events.on(topic, fn)),
-      once: (topic, fn) => track(events.once(topic, fn)),
-      off: events.off,
-      emit: events.emit,
+      on: (topic, fn) => subscribeWith('in-process', topic, fn),
+      once: (topic, fn) => hub.once(pluginId, topic, fn, { scheme: 'in-process' }).then(track),
+      emit: (topic, payload = null) => publishWith('in-process', topic, payload),
     },
 
     bus: {
-      publish: (topic, payload) => gate('bus', () => hub.publish(pluginId, topic, payload)),
-      subscribe: async (topic, fn) => track(await hub.subscribe(pluginId, topic, fn)),
+      subscribe: (topic, fn) => subscribeWith('event-bus', topic, fn),
+      once: (topic, fn) => hub.once(pluginId, topic, fn, { scheme: 'event-bus' }).then(track),
+      publish: (topic, payload = null) => gate('bus', () => publishWith('event-bus', topic, payload)),
     },
 
-    stream: (provider, ch, handlers) => gate('stream', () => hub.stream(pluginId, 'channel-json', { provider, ch, ...handlers })),
-    streamRaw: (provider, ch, handlers) => gate('stream', () => hub.stream(pluginId, 'channel-raw', { provider, ch, ...handlers })),
+    /** Hotkeys are registered by the host at activate; this only listens. */
+    onHotkey: (action, fn) =>
+      subscribeWith('event-bus', `hotkey:${action}`, (env) => {
+        if (env.svc && env.svc !== pluginId) return;
+        fn(env);
+      }),
+
+    stream: (provider, ch, handlers = {}) =>
+      gate('stream', () => hub.stream(pluginId, 'channel-json', { provider, ch, ...handlers })),
+    streamRaw: (provider, ch, handlers = {}) =>
+      gate('stream', () => hub.stream(pluginId, 'channel-raw', { provider, ch, ...handlers })),
     sidecar: (ch, opts) => gate('proc', () => hub.sidecar(pluginId, ch, opts)),
     pty: (ch, opts) => gate('stream', () => hub.pty(pluginId, ch, opts)),
 
     sessions: () => gate('host', () => hub.sessions(pluginId)),
     schemes: () => hub.schemes(),
+    schema: () => gate('host', () => hub.schema(pluginId)),
 
     close: () => getCurrentWindow().close(),
     drag: () => getCurrentWindow().startDragging(),

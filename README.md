@@ -32,7 +32,7 @@ id through `src/protocol/registry.js`.
 
 ```bash
 npm install
-npm run test          # 39 node tests: scheme conformance, host kernel, real boot, plugin audit
+npm run test          # 60 node tests: scheme conformance, host kernel, real boot, plugin audit
 npm run build         # build the frontend
 npm run tauri dev     # run the app
 ```
@@ -51,7 +51,7 @@ readable from outside the webview. Re-run it any time with
 `await window.__toolbox.selftest()` in the webview console.
 
 Last verified end to end: `15/15` in-app, 7 plugins and 7 views active,
-`cargo test` 39, `node --test` 39, zero code warnings.
+`cargo test` 39, `node --test` 60, zero code warnings.
 
 ## Layout
 
