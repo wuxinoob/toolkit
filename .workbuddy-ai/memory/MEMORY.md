@@ -50,7 +50,8 @@
 - 应用数据目录：`%APPDATA%\com.tan18.toolbox\{debug.log, plugins/, plugin-data/}`；WebView2 配置目录 `%LOCALAPPDATA%\com.tan18.toolbox\EBWebView`。
 - 静态审计支持 `// audit-ignore-next-line` 标记（用于插件里的故意负向测试）。
 - 本环境限制：`wmic` 被安全策略禁用；PowerShell 工具不返回 stdout → 让它把结果写入文件再读。
-- **本机 `cargo test` / `cargo run --example` 的二进制无法加载**（STATUS_ENTRYPOINT_NOT_FOUND），而 `cargo build` 出的 app 二进制正常 → 用 `cargo run --example host-checks` 做纯逻辑自检。
+- **本机 `cargo test` 的测试二进制无法加载**（STATUS_ENTRYPOINT_NOT_FOUND）：根因是 tauri-build 的 manifest 只链进 bin 目标（无 manifest → 绑 comctl32 v5，代码导入 v6）。`build.rs` 已把 `resource.lib` 转发给 `-examples` → **用 `cargo run --example host-checks` 做 Rust 侧验证**（16 项）。cargo 没有 `-tests` link-arg，通用 `rustc-link-arg` 会与 bin 冲突（LNK1123）。
+- rustc ICE / `拒绝访问` = 增量缓存被杀软损坏 → `rm -rf target/debug/incremental` + `CARGO_INCREMENTAL=0`。
 - 排查"应用起来了但 JS 不执行"：Rust 侧 `eprintln!` 探针 → `webview.eval()` 写 `document.title` 再 `w.title()` 读回 → `tasklist` 比对 `msedgewebview2` 数量是否随应用启动而增加。
 
 ## 验证命令
