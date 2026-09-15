@@ -1,10 +1,14 @@
 //! Headless checks for the host's pure logic.
 //!
-//! `cargo test` needs the test harness to load, which is unreliable in some
-//! locked-down environments; a normal binary target is not. This runs the same
-//! assertions as the unit tests through a plain executable, so the host's
-//! protocol, service table, session registry and hotkey bookkeeping can still be
-//! verified — and it doubles as a quick smoke check on a new machine:
+//! Why this is an EXAMPLE and not `#[cfg(test)]` unit tests: on Windows,
+//! tauri-build embeds the app manifest into **bin** targets only, so this
+//! crate's test binaries have no manifest and Windows binds them to comctl32 v5
+//! while the linked code imports v6 symbols — `cargo test` dies at load with
+//! `STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139)`. Cargo has no `-tests` link-arg
+//! kind, and the generic one also applies to bins (which already link the
+//! manifest, so a second copy fails with LNK1123), so `build.rs` forwards the
+//! resource to `-examples` instead. Hence: the same assertions, run through a
+//! target that can actually load.
 //!
 //! ```text
 //! cargo run --manifest-path src-tauri/Cargo.toml --example host-checks

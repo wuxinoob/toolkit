@@ -276,6 +276,42 @@ test('lifecycle: declared hotkeys are registered by the host on the plugin\'s be
   assert.deepEqual(rel.args.msg.p, { owner: 'hk.plugin' });
 });
 
+test('lifecycle: declared hotkeys go live BEFORE activate runs', async () => {
+  // A plugin must be able to rely on its own hotkeys during activation, so the
+  // host has to register them first. This was a real bug: registering after
+  // activate() meant a plugin that checked its own hotkey saw none.
+  ls.clear();
+  resetEvents();
+  store.plugins.length = 0;
+  store.views.length = 0;
+  invokeCalls.length = 0;
+  invokeImpl = async (cmd, { msg }) => ({ v: 1, kind: 'res', id: msg?.id ?? 1, p: true });
+
+  const plugin = await loadPlugin({
+    manifest: {
+      id: 'hk.order',
+      name: 'Ordered',
+      permissions: ['rpc:storage'],
+      contributes: { views: [{ id: 'v', title: 'V' }], hotkeys: [{ key: 'ctrl+alt+shift+o', action: 'go' }] },
+    },
+    activate: async (ctx) => {
+      // a gateway call, so the invoke log shows where activate sat
+      await ctx.storage.get('probe');
+      ctx.registerView('v', () => {});
+    },
+  });
+  await activate(plugin, { silent: true });
+
+  const regIdx = invokeCalls.findIndex((c) => c.args?.msg?.svc === 'hotkey' && c.args.msg.act === 'register');
+  const rpcIdx = invokeCalls.findIndex((c) => c.cmd === 'plugin_rpc' && c.args?.msg?.svc === 'storage');
+  assert.ok(regIdx >= 0, 'hotkey was never registered');
+  assert.ok(rpcIdx >= 0, 'activate never reached the gateway');
+  assert.ok(
+    regIdx < rpcIdx,
+    `hotkeys must be registered before activate() runs (hotkey at ${regIdx}, activate at ${rpcIdx})`,
+  );
+});
+
 test('lifecycle: a failing hotkey registration does not fail the activation', async () => {
   ls.clear();
   resetEvents();

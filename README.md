@@ -43,6 +43,7 @@ Rust side:
 cd src-tauri
 cargo test            # 39 tests: protocol, codecs, services, sessions, sidecar e2e
 cargo check --all-targets
+cargo run --example host-checks   # the same pure-logic assertions, no test harness
 ```
 
 Dev builds run an in-app conformance suite (15 checks) at boot and write the
