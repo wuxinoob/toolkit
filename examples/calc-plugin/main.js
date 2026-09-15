@@ -77,6 +77,7 @@ export const manifest = {
   id: 'calc.demo',
   name: 'Calculator',
   version: '0.1.0',
+  api: 2,
   description: 'Integer calculator: window frontend + calc.exe sidecar backend, both speaking the same protocol.',
   contributes: {
     views: [{ slot: 'tool', id: 'calc', title: '计算器', icon: '🧮' }],

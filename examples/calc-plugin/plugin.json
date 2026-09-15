@@ -2,6 +2,7 @@
   "id": "calc.demo",
   "name": "Calculator",
   "version": "0.1.0",
+  "api": 2,
   "entry": "main.js",
   "description": "Integer calculator: window frontend + calc.exe sidecar backend, both speaking the same protocol.",
   "contributes": {

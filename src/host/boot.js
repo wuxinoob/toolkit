@@ -63,7 +63,8 @@ export async function boot() {
     logger.info('boot', line);
     await report(line);
     for (const p of store.plugins) {
-      await report(`  plugin ${p.manifest.id}: ${p.status}${p.error ? ` — ${p.error}` : ''}`);
+      const note = p.note ? ` [${p.note}]` : '';
+      await report(`  plugin ${p.manifest.id}: ${p.status}${p.error ? ` — ${p.error}` : ''}${note}`);
     }
     // `import.meta.env` is injected by Vite; the optional chain keeps this
     // module importable outside a bundler (node --test boot smoke test).

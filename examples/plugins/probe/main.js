@@ -19,6 +19,7 @@ export const manifest = {
   id: 'probe.demo',
   name: 'Plane Probe',
   version: '0.1.0',
+  api: 2,
   description: 'Drives every frontend<->backend interface in one pass and reports the result.',
   contributes: {
     views: [{ slot: 'tool', id: 'probe', title: 'Plane Probe', icon: '🧭' }],

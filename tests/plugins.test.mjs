@@ -259,6 +259,11 @@ test('example plugins: plugin.json and the in-code manifest agree', () => {
     const declared = JSON.parse(read(`${dir}/plugin.json`));
     const inCode = extractManifest(read(`${dir}/main.js`), dir);
     assert.equal(inCode.id, declared.id, `${dir}: id differs between plugin.json and the module`);
+    assert.equal(
+      inCode.api,
+      declared.api,
+      `${dir}: host API version differs between plugin.json and the module`,
+    );
     assert.deepEqual(
       [...(inCode.permissions ?? [])].sort(),
       [...(declared.permissions ?? [])].sort(),

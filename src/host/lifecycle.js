@@ -4,6 +4,7 @@ import { buildCtx } from './ctx.js';
 import { store, toast } from './store.js';
 import { events } from './events.js';
 import { hub } from '../protocol/hub.js';
+import { HOST_API } from '../protocol/contract.js';
 
 /** Host identity: used for calls the host makes on a plugin's behalf. */
 const HOST_ID = '__host__';
@@ -175,10 +176,22 @@ export async function loadPlugin(source, { declarative = null } = {}) {
   }
   plugin.manifest = mergeManifest(plugin.manifest, declarative);
   plugin.manifest.builtin = typeof source !== 'string';
+
+  // A plugin codes against the HOST API shape, which changes independently of
+  // the wire protocol. Record a mismatch on the plugin row so the boot trace
+  // says why a plugin misbehaves, instead of leaving a cryptic runtime error
+  // (a plugin built for api 1 calling the now-async `ctx.events.on` gets
+  // "off is not a function").
+  const declaredApi = plugin.manifest.api;
+  const apiNote =
+    typeof declaredApi === 'number' && declaredApi !== HOST_API
+      ? 'built for host API ' + declaredApi + ', this host provides ' + HOST_API + ' — re-deploy the plugin if it misbehaves'
+      : null;
+  if (apiNote) console.warn('[lifecycle] ' + plugin.manifest.id + ': ' + apiNote);
   // Register before anything can call: the host gate is fail-closed.
   await registerWithHost(plugin.manifest);
   if (!store.plugins.some((p) => p.manifest.id === plugin.manifest.id)) {
-    store.plugins.push({ manifest: plugin.manifest, status: 'inactive', error: null });
+    store.plugins.push({ manifest: plugin.manifest, status: 'inactive', error: null, note: apiNote });
   }
   return plugin;
 }

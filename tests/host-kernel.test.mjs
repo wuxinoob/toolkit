@@ -200,7 +200,8 @@ test('ctx: rpc accepts a per-call timeout', async () => {
 
 test('ctx: the contract is handed over, not imported', () => {
   const ctx = buildCtx({ manifest: { id: 't.contract', permissions: [] } }, { track() {} });
-  assert.equal(ctx.protocol.version, 1);
+  assert.equal(ctx.protocol.version, 1, 'wire protocol version');
+  assert.equal(ctx.protocol.api, 2, 'host API version');
   assert.equal(typeof ctx.protocol.req, 'function');
   assert.equal(ctx.protocol.Kind.DATA, 'data');
   // and it is frozen, so a plugin cannot mutate the contract for everyone
@@ -427,6 +428,36 @@ test('lifecycle: a newly discovered plugin defaults to enabled, a disable sticks
 
   // and a brand-new plugin is still adopted enabled
   assert.equal(adoptNewPlugin('user.another'), true);
+});
+
+test('lifecycle: a plugin built for another host API is flagged, not silently broken', async () => {
+  // The host API shape changes independently of the wire protocol. A plugin
+  // built against an older shape must be *diagnosable*: this is what turned a
+  // real failure ("off is not a function") into a mystery.
+  ls.clear();
+  resetEvents();
+  store.plugins.length = 0;
+  store.views.length = 0;
+  invokeImpl = async () => null;
+
+  await loadPlugin({
+    manifest: { id: 'old.api', name: 'Old', api: 1, permissions: [], contributes: { views: [{ id: 'v', title: 'V' }] } },
+    activate: () => {},
+  });
+  const stale = store.plugins.find((p) => p.manifest.id === 'old.api');
+  assert.match(stale.note, /built for host API 1/, 'the mismatch must be recorded');
+  assert.match(stale.note, /provides 2/);
+  assert.equal(stale.status, 'inactive', 'a mismatch is a warning, not a failure');
+
+  await loadPlugin({
+    manifest: { id: 'new.api', name: 'New', api: 2, permissions: [], contributes: { views: [{ id: 'v2', title: 'V' }] } },
+    activate: () => {},
+  });
+  assert.equal(
+    store.plugins.find((p) => p.manifest.id === 'new.api').note,
+    null,
+    'a current plugin carries no note',
+  );
 });
 
 test('lifecycle: invalid module shape is rejected', async () => {

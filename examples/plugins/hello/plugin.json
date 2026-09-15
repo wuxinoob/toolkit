@@ -2,6 +2,7 @@
   "id": "hello.demo",
   "name": "Hello",
   "version": "0.1.0",
+  "api": 2,
   "entry": "main.js",
   "description": "Drop-in demo plugin: storage, settings form, broadcast and both stream codecs.",
   "contributes": {

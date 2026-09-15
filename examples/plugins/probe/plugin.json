@@ -2,11 +2,30 @@
   "id": "probe.demo",
   "name": "Plane Probe",
   "version": "0.1.0",
+  "api": 2,
   "entry": "main.js",
   "description": "Drives every frontend<->backend interface in one pass and reports the result.",
   "contributes": {
-    "views": [{ "slot": "tool", "id": "probe", "title": "Plane Probe", "icon": "🧭" }],
-    "hotkeys": [{ "key": "ctrl+alt+shift+p", "action": "probe" }]
+    "views": [
+      {
+        "slot": "tool",
+        "id": "probe",
+        "title": "Plane Probe",
+        "icon": "🧭"
+      }
+    ],
+    "hotkeys": [
+      {
+        "key": "ctrl+alt+shift+p",
+        "action": "probe"
+      }
+    ]
   },
-  "permissions": ["rpc:storage", "rpc:host", "rpc:stream", "rpc:bus", "rpc:hotkey"]
+  "permissions": [
+    "rpc:storage",
+    "rpc:host",
+    "rpc:stream",
+    "rpc:bus",
+    "rpc:hotkey"
+  ]
 }

@@ -151,6 +151,36 @@ host uses, instead of hard-coding the shape. It comes from one module
 (`protocol/contract.js`) and is frozen, so the two window surfaces cannot drift
 apart.
 
+### Two version numbers
+
+| version | what it covers | where |
+|---|---|---|
+| `protocol.version` | the **envelope shape on the wire** | `protocol/envelope.rs` / `envelope.js` |
+| `protocol.api` | the **JavaScript surface** a plugin codes against (`ctx` / `bridge`) | `protocol/contract.js` |
+
+They move independently, so they are tracked separately. A plugin declares the
+host API it was built for in its manifest:
+
+```jsonc
+{ "id": "probe.demo", "version": "0.1.0", "api": 2, … }
+```
+
+If the declaration does not match, the host records it on the plugin row and the
+boot trace says so:
+
+```
+  plugin probe.demo: active [built for host API 1, this host provides 2 — re-deploy the plugin if it misbehaves]
+```
+
+A mismatch is a **warning, not a failure** — a plugin built for an older shape
+may work fine for what it uses. The point is that it is diagnosable. This was
+added after a real incident: `ctx.events.on` became async (api 2), and an
+already-deployed plugin calling the returned value directly failed with the
+cryptic `off is not a function`. **API 2 is a breaking change** — any plugin
+built for api 1 that calls the result of `subscribe`/`on` synchronously must be
+re-deployed. Built-in plugins ship with the host and cannot go stale, which is
+why only external examples declare `api`.
+
 A secondary window gets the same surface through `bridge` (see
 `src/host/pluginwin-host.js`), so plugin code ports between the two contexts.
 

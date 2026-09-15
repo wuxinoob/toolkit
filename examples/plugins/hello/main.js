@@ -19,6 +19,7 @@ export const manifest = {
   id: 'hello.demo',
   name: 'Hello',
   version: '0.1.0',
+  api: 2,
   description: 'Drop-in demo plugin: storage, settings form, broadcast and both stream codecs.',
   contributes: {
     views: [{ slot: 'tool', id: 'hello', title: 'Hello', icon: '👋' }],
