@@ -1,0 +1,11 @@
+{
+  "id": "probe.demo",
+  "name": "Plane Probe",
+  "version": "0.1.0",
+  "entry": "main.js",
+  "description": "Drives every frontend<->backend interface in one pass and reports the result.",
+  "contributes": {
+    "views": [{ "slot": "tool", "id": "probe", "title": "Plane Probe", "icon": "🧭" }]
+  },
+  "permissions": ["rpc:storage", "rpc:host", "rpc:stream", "rpc:bus"]
+}

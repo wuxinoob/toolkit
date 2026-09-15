@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "pluginwin",
+  "description": "Capability for external-plugin windows (label glob plugin-*): the generic pluginwin host page renders plugin UI from a Blob import of the plugin entry, reaches services through the app-level plugin_rpc gateway (app commands are not ACL-gated) and may drag/close itself. Window-level ops (size/position/alwaysOnTop/...) stay with the CREATING window (main).",
+  "windows": ["plugin-*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging"
+  ]
+}

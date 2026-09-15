@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "floatwin",
+  "description": "Capability for the floating widget window (transparent overlay created by builtin.floatwin). The widget renders itself and reaches services through the app-level plugin_rpc gateway (app commands are not ACL-gated); it may drag and close itself.",
+  "windows": ["floatwin"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-close"
+  ]
+}

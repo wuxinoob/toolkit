@@ -1,0 +1,45 @@
+{
+  "id": "hello.demo",
+  "name": "Hello",
+  "version": "0.1.0",
+  "entry": "main.js",
+  "description": "Drop-in demo plugin: storage, settings form, broadcast and both stream codecs.",
+  "contributes": {
+    "views": [
+      {
+        "slot": "tool",
+        "id": "hello",
+        "title": "Hello",
+        "icon": "👋"
+      }
+    ],
+    "settings": [
+      {
+        "key": "greeting",
+        "label": "Greeting",
+        "type": "text",
+        "default": "Hello"
+      },
+      {
+        "key": "loud",
+        "label": "Shout it",
+        "type": "boolean",
+        "default": false
+      },
+      {
+        "key": "intervalMs",
+        "label": "Ticker interval (ms)",
+        "type": "number",
+        "default": 400,
+        "min": 50,
+        "max": 5000
+      }
+    ]
+  },
+  "permissions": [
+    "rpc:storage",
+    "rpc:bus",
+    "rpc:stream",
+    "rpc:host"
+  ]
+}
