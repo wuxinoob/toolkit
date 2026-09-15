@@ -21,10 +21,19 @@
 
 ## 接口清单（详见 docs/INTERFACES.md）
 - **8 个原生命令**：`plugin_rpc`（网关）· `plugin_stream_open{,_raw}` · `plugin_stream_close` · `plugin_register` · `plugin_scan` · `plugin_read_entry` · `plugin_open_dir`。
-- **5 服务 / 20 动作**：storage(get/set/remove/keys) · host(info/write_debug_log/sessions/plugins) · proc(spawn/send/recv/kill/kill_all/list) · stream(close/providers/list/session_open/session_close) · bus(publish)。
+- **6 服务 / 25 动作**：storage(get/set/remove/keys) · host(info/write_debug_log/sessions/plugins/schema) · proc(spawn/send/recv/kill/kill_all/list) · stream(close/providers/list/session_open/session_close) · bus(publish) · hotkey(register/unregister/unregister_all/list)。
 - **7 方案**：rpc · channel-json · channel-raw · event-bus · stdio-line · pty-stream · in-process。流提供者：ticker / blob。
-- 示例 **`examples/plugins/probe`（Plane Probe）**：一次调用跑完 9 项接口检查，失败即 `activate()` 抛错 → 启动日志显示 error。既是"新插件零改动复用接口"的证据，也是活的集成检查。
+- 示例 **`examples/plugins/probe`（Plane Probe）**：一次调用跑完 11 项接口检查，失败即 `activate()` 抛错 → 启动日志显示 error。既是"新插件零改动复用接口"的证据，也是活的集成检查。
 - **能力声明必须为真**：曾声明 `channel-json` 支持 backpressure 但无实现，已移除。不要声明调用方无法依赖的能力。
+- **观察不等于能力**：订阅 / 读自己的热键 / 关闭自己开的流都不需要权限；只有发布广播、运行自带二进制、控制窗口才带权限。
+- **动作清单权威**：`Service::actions()` 同时用于网关校验与 `host/schema`，不可能漂移。
+
+## API 形状规则（不要倒退）
+- **方案差异只能体现在"默认值"上，不能体现在"形状"上**：`subscribe`/`once`/`publish` 在所有方案上都是异步，`ctx.events` 与 `ctx.bus` 只差默认方案。
+- 插件声明式能力（`contributes.hotkeys`）由**宿主代注册**，且必须在 `plugin.activate()` **之前**完成。
+- `ctx.protocol` 由 `protocol/contract.js` 单点提供并 freeze，两个窗口面共用。
+- `rpc` 超时在**传输层**强制（默认 45s，0=不限）；**不要在信封加 `deadline`** —— 同步网关无法兑现。
+- 插件的故意负向测试用 `// audit-ignore-next-line` 标记（静态审计会跳过下一行）。
 
 ## 调试闭环（关键基建，别删）
 - `boot()` 把启动过程自报到 `{appData}/debug.log`：`--- boot ---` / `message plane:` / `boot ok:` / 每插件状态 / `BOOT FAILED: <stack>`。**排查运行期问题先看这个文件。**
@@ -41,10 +50,11 @@
 - 应用数据目录：`%APPDATA%\com.tan18.toolbox\{debug.log, plugins/, plugin-data/}`；WebView2 配置目录 `%LOCALAPPDATA%\com.tan18.toolbox\EBWebView`。
 - 静态审计支持 `// audit-ignore-next-line` 标记（用于插件里的故意负向测试）。
 - 本环境限制：`wmic` 被安全策略禁用；PowerShell 工具不返回 stdout → 让它把结果写入文件再读。
+- **本机 `cargo test` / `cargo run --example` 的二进制无法加载**（STATUS_ENTRYPOINT_NOT_FOUND），而 `cargo build` 出的 app 二进制正常 → 用 `cargo run --example host-checks` 做纯逻辑自检。
 - 排查"应用起来了但 JS 不执行"：Rust 侧 `eprintln!` 探针 → `webview.eval()` 写 `document.title` 再 `w.title()` 读回 → `tasklist` 比对 `msedgewebview2` 数量是否随应用启动而增加。
 
 ## 验证命令
-`cargo test`（39）· `cargo check --all-targets`（零代码警告）· `node --test`（42）· `npm run build` · `cargo build`
+`cargo test`（39）· `cargo check --all-targets`（零代码警告）· `node --test`（60）· `npm run build` · `cargo build`
 应用内：`npm run tauri dev` 后看 `%APPDATA%\com.tan18.toolbox\debug.log` 的 15/15。
 
 详细协议见 `docs/PROTOCOL.md`；接口清单与统一性核查见 `docs/INTERFACES.md`；设计与现状分析见 `docs/MESSAGE-FRAMEWORK.md`。
