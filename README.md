@@ -32,7 +32,8 @@ id through `src/protocol/registry.js`.
 
 ```bash
 npm install
-npm run test          # 60 node tests: scheme conformance, host kernel, real boot, plugin audit
+npm run test          # 62 node tests: scheme conformance, host kernel, real boot, plugin audit
+npm run bench         # codec experiment: what each codec costs per message
 npm run build         # build the frontend
 npm run tauri dev     # run the app
 ```

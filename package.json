@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "node --test",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "bench": "node bench/codec.mjs"
   },
   "dependencies": {
     "vue": "^3.5.13",

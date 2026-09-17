@@ -64,6 +64,39 @@ Keeping these apart is what makes the schemes interchangeable: the same
 producer serves `channel-json` and `channel-raw` unchanged, because only the
 sink changes.
 
+### Measured: what the codec choice actually costs
+
+`npm run bench` runs the codecs directly (pure JavaScript, identical in the app
+and in Node) and reports median ns/op. It is deliberately **not** part of
+`npm test`: it is timing-dependent, and a flaky benchmark in CI is worse than no
+benchmark. It measures the codec only — `invoke` / `Channel` / `emit` cost needs
+a live webview and is excluded.
+
+On a 4 KiB PTY-shaped chunk (node v22, x64):
+
+| path | ns/op | wire size |
+|---|---|---|
+| `json-envelope` (byte array as JSON numbers) | 178 982 | 14 660 B |
+| `raw-binary` | 1 415 | 4 097 B |
+| `rawToEnvelope` (consumer decode path) | **41** | — |
+
+Three things worth knowing:
+
+- **Byte streams must go raw.** JSON is ~126× slower and inflates the frame
+  3.6× for a 4 KiB chunk. This is why `pty-stream` is `raw-binary`.
+- **Raw decoding is nearly free** (41 ns) because it hands back a `subarray`
+  *view*, not a copy. The cost is on the producing side, where the frame is
+  allocated and copied. So a raw consumer is cheap even at high frame rates.
+- **`line-json` is not free**: +25 % over `json-envelope` for a small frame and
+  +60 % for a 1 KB document (the same codec plus a newline and a trailing-newline
+  trim). It exists because a sidecar pipe needs a delimiter, not because it is
+  cheap.
+
+For tiny control frames, `raw-binary` is ~20 % *costlier* than `json-envelope`
+(more per-field work, no JSON fast path) — but it cannot carry a nested object
+at all, so for control messages that is a capability limit rather than a
+trade-off. The scheme table encodes exactly this split.
+
 ---
 
 ## 3. The scheme table
