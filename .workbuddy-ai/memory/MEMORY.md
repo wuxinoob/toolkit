@@ -55,7 +55,11 @@
 - 排查"应用起来了但 JS 不执行"：Rust 侧 `eprintln!` 探针 → `webview.eval()` 写 `document.title` 再 `w.title()` 读回 → `tasklist` 比对 `msedgewebview2` 数量是否随应用启动而增加。
 
 ## 验证命令
-`cargo test`（39）· `cargo check --all-targets`（零代码警告）· `node --test`（60）· `npm run build` · `cargo build`
+`cargo test`（39，本机不可用见下）· `cargo check --all-targets`（零代码警告）· `node --test`（62）· `npm run build` · `cargo build`
+`cargo run --example host-checks`（16 项，替代不可用的 cargo test）· `npm run bench`（codec 实验，**刻意不并入 npm test**：时间敏感）
 应用内：`npm run tauri dev` 后看 `%APPDATA%\com.tan18.toolbox\debug.log` 的 15/15。
+
+**codec 实测结论**（详见 PROTOCOL.md §2）：字节流必须 raw（4 KiB 块 JSON 慢 126×、大 3.6×）；
+raw 解码返回 subarray 视图故几乎免费（41 ns），成本在产出侧；line-json 比 json-envelope 贵 25–60%，它存在是因为 sidecar 需要分隔符。
 
 详细协议见 `docs/PROTOCOL.md`；接口清单与统一性核查见 `docs/INTERFACES.md`；设计与现状分析见 `docs/MESSAGE-FRAMEWORK.md`。
