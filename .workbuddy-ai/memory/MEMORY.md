@@ -41,12 +41,22 @@
 - `window.__toolbox`：store/events/logger/logs/schemes/transports/sessions/openStreams/selftest。
 
 ## 约定与坑
+- **会话的停止必须 `take_stop`，不能 `close` 之后再 `stop_one`**：`close()` 会把 Session
+  连同 stop 闭包一起 remove（"只注销不停止"），再 `stop_one` 找不到记录、闭包永不执行。
+  `proc/kill_all` 曾因此一个进程都没杀却回报 `{"killed": N}`。
+- **Rust 侧杀进程按 pid（`session::pid_stop`），不要抢 `Mutex<Child>`**：reader 线程在
+  stdout EOF 后会**持锁**阻塞在 `wait()`，抢锁的 kill 会永久挂住（连退出流程一起）。
+- **`Disposer.run()` 会 await 异步清理且幂等**：调用点必须 `await`，否则资源可能在
+  拆卸之后才完成登记。
 - 外部插件是 **Blob URL 单文件 ESM**，不能 import 协议模块 → 用 `ctx.protocol` / `bridge.protocol`。
 - `tauri-pty` 包没有 `main`/`exports` 字段，必须写 `tauri-pty/dist/index.es.js` 才能在 bundler 与 `node --test` 下都解析。
 - 涉及全局态的 Rust 测试用 `services::serial()` 串行化；JS 侧跑真实 boot 前必须 `resetHost()`（清 store + deactivate 释放定时器），否则进程不退出、`node --test` 会被 SIGTERM。
 - `npm run test` = `node --test`（不要写 `node --test tests/`，Windows 下会被当模块路径）。
 - 浏览器专用依赖在 Node 下要 stub：`tests/browser-stubs-loader.mjs` + `module.register()`。
 - `target/` 可能被杀软/文件锁干扰，出现 `拒绝访问` 或 rustc ICE → `rm -rf target/debug/incremental` 后重编。
+- **本机无法在 `.git/refs/heads/` 下创建新目录**：`git branch a/b` 静默失败（`update-ref` 甚至返回 0），
+  手动 mkdir 出的目录下一条命令就消失 → **用不带斜杠的分支名**。另有 `tests/`、`docs/` 整个目录被删过
+  （`git checkout -- .` 可恢复）、`.git` 整个消失过（见 2026-09-15）。写 `.git` 的操作建议放到沙箱外执行。
 - 应用数据目录：`%APPDATA%\com.tan18.toolbox\{debug.log, plugins/, plugin-data/}`；WebView2 配置目录 `%LOCALAPPDATA%\com.tan18.toolbox\EBWebView`。
 - 静态审计支持 `// audit-ignore-next-line` 标记（用于插件里的故意负向测试）。
 - 本环境限制：`wmic` 被安全策略禁用；PowerShell 工具不返回 stdout → 让它把结果写入文件再读。
