@@ -1,16 +1,14 @@
 /**
- * pty frame ordering.
+ * pty frame ordering and ownership.
  *
- * The transport used to guess when the output was finished: the `tauri-pty`
- * wrapper's read loop ends on an `EOF` error and then silently returns, while
- * the exit status arrives on a separate promise — so the exit frame was held
- * back by a 120ms quiet period with a 1.5s cap. A short command's echo could
- * still be lost, and a chatty one could delay the exit.
+ * The transport used to guess when the output was finished (a 120ms quiet period
+ * after `exit`). This suite pins what replaced that guess — and, importantly, the
+ * case that broke in the real app:
  *
- * Driving the plugin's commands directly makes "the output ended" a fact
- * (`read` fails with EOF), so the exit frame is emitted only once BOTH facts are
- * known. These tests pin that ordering, including the race where the process
- * exits before the buffer has been drained.
+ *   A design that waits for `read` to report EOF before asking for the exit
+ *   status DEADLOCKS on Windows: ConPTY's reader stays parked after the child
+ *   exits, so the read never returns and the status is never asked for. The app
+ *   caught it — the marker text arrived, then no terminal frame ever did.
  *
  * The pty command surface is mocked at the invoke boundary; everything above it
  * (the hub, the transport, the envelope) is production code.
@@ -39,9 +37,8 @@ globalThis.localStorage = {
   },
 };
 
-// Not Windows: the ConPTY cursor-query watchdog is inert, so any timer we see
-// must be the ordering heuristic this change removed. (`navigator` is a
-// getter-only global in Node, so it has to be redefined rather than assigned.)
+// Not Windows: the ConPTY cursor-query watchdog is inert, so any timer we see is
+// the drain. (`navigator` is a getter-only global in Node.)
 Object.defineProperty(globalThis, 'navigator', {
   value: { platform: 'Linux x86_64' },
   configurable: true,
@@ -74,8 +71,6 @@ globalThis.document = {
     appendChild(c) {
       return c;
     },
-    querySelector: () => null,
-    querySelectorAll: () => [],
   }),
   head: { appendChild() {} },
   body: { appendChild() {}, style: {} },
@@ -107,7 +102,6 @@ function resetPty() {
 
 const bytes = (s) => new TextEncoder().encode(s).buffer;
 
-/** Queue a chunk of output, or hand it to the read loop if it is parked. */
 function deliver(item) {
   if (pty.pendingRead) {
     const p = pty.pendingRead;
@@ -120,7 +114,6 @@ function deliver(item) {
 }
 
 const output = (s) => deliver({ ok: bytes(s) });
-/** The end of output: `EOF`, or the lookup failure the plugin reports instead. */
 const endOfOutput = (how = 'eof') => deliver({ err: how === 'eof' ? 'EOF' : 'Unavailable pid' });
 
 function setExit(code) {
@@ -140,6 +133,7 @@ async function invokeImpl(cmd, args) {
     case 'plugin:pty|read': {
       const next = pty.reads.shift();
       if (next) return next.err ? Promise.reject(next.err) : next.ok;
+      // Parked forever — this is what ConPTY actually does after the child exits.
       return new Promise((resolve, reject) => {
         pty.pendingRead = { resolve, reject };
       });
@@ -160,7 +154,7 @@ async function invokeImpl(cmd, args) {
       if (msg.svc === 'stream' && msg.act === 'session_open' && pty.registerFails) {
         return Promise.reject('registration refused');
       }
-      return { v: 1, kind: 'res', id: msg.id, p: true };
+      return { v: 1, kind: 'res', id: msg.id, p: { ok: true } };
     }
     default:
       throw new Error(`unexpected invoke: ${cmd}`);
@@ -183,145 +177,138 @@ const openPty = (hub, ch, sink) =>
     },
   });
 
+/** Record every armed delay, but still honour it (the drain needs real time). */
+function recordTimers() {
+  const delays = [];
+  const real = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...rest) => {
+    delays.push(ms ?? 0);
+    return real(fn, ms, ...rest);
+  };
+  return { delays, restore: () => { globalThis.setTimeout = real; } };
+}
+
+const sessionOpens = () =>
+  pty.calls.filter((c) => c.cmd === 'plugin_rpc' && c.args?.msg?.act === 'session_open');
+
 // ----------------------------------- tests ------------------------------------
 
-test('exit waits for the output, even when the process exits first', async () => {
+test('a parked read does not stop the exit frame (the app regression)', async () => {
+  // The child exits and the reader stays parked: no EOF ever arrives. The exit
+  // frame must still come, or a consumer waits forever.
   resetPty();
   const sink = { frames: [], ended: null };
   const hub = new MessageHub();
+  const timers = recordTimers();
+  try {
+    const opening = openPty(hub, 'p1', sink);
+    await opening;
+    output('marker');
+    setExit(0);
+    await tick();
 
-  const opening = openPty(hub, 'p1', sink);
-  setExit(0); // the process is gone before any output has been read
-  await opening;
+    // bounded wait: the drain is 120ms, so this is a short test, not a hang
+    const deadline = Date.now() + 2000;
+    while (!sink.ended && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
 
-  output('hello');
-  await tick();
-  assert.deepEqual(
-    sink.frames.map((f) => f.kind),
-    ['data'],
-    'a known exit code is not enough — the output must be drained first',
-  );
-  assert.equal(sink.ended, null);
-  assert.equal(
-    pty.calls.filter((c) => c.cmd === 'plugin:pty|exitstatus').length,
-    0,
-    'and the exit status is not even asked for while output may still come',
-  );
-
-  endOfOutput();
-  await tick();
-  assert.deepEqual(sink.frames.map((f) => f.kind), ['data', 'exit']);
-  assert.equal(sink.ended.kind, 'exit');
-  assert.equal(sink.ended.p, 0, 'the real exit code is reported');
-  assert.equal(new TextDecoder().decode(sink.frames[0].p), 'hello', 'the data came first');
+    assert.ok(sink.ended, 'the exit frame must arrive even though the read never ended');
+    assert.equal(sink.ended.kind, 'exit');
+    assert.equal(sink.ended.p, 0, 'with the real exit code');
+    assert.equal(new TextDecoder().decode(sink.frames[0].p), 'marker', 'and the output came first');
+    assert.ok(
+      timers.delays.includes(120),
+      `the drain must be the bounded 120ms wait, got ${JSON.stringify(timers.delays)}`,
+    );
+    assert.ok(
+      // the only large delay is the rpc transport's own 45s request timeout
+      timers.delays.every((d) => d === 45000 || d <= 1000),
+      `the drain is bounded, got ${JSON.stringify(timers.delays)}`,
+    );
+  } finally {
+    timers.restore();
+  }
 });
 
-test('exit waits for the exit status when the output ends first', async () => {
+test('an end-of-output from the read loop needs no drain at all', async () => {
   resetPty();
   const sink = { frames: [], ended: null };
   const hub = new MessageHub();
+  const timers = recordTimers();
+  try {
+    const opening = openPty(hub, 'p2', sink);
+    output('a');
+    endOfOutput();
+    setExit(3);
+    await opening;
+    await tick();
 
-  const opening = openPty(hub, 'p2', sink);
-  output('a');
-  endOfOutput();
-  await opening;
-  await tick();
-
-  assert.deepEqual(
-    sink.frames.map((f) => f.kind),
-    ['data'],
-    'output ended, but the process has not been reaped yet',
-  );
-
-  setExit(3);
-  await tick();
-  assert.deepEqual(sink.frames.map((f) => f.kind), ['data', 'exit']);
-  assert.equal(sink.ended.p, 3);
+    // The exit frame is already here after a few ticks. If the transport had to
+    // fall back to the drain, it would still be waiting 120ms — so "the frame
+    // exists now" IS the determinism claim. (The drain may have been armed and
+    // then cancelled when the read loop ended first; that is fine.)
+    assert.deepEqual(sink.frames.map((f) => f.kind), ['data', 'exit']);
+    assert.equal(sink.ended.p, 3);
+  } finally {
+    timers.restore();
+  }
 });
 
 test('every spelling of "output ended" ends the stream, not just EOF', async () => {
-  // The underlying read differs by platform and by timing, so the same fact
-  // arrives under three names: EOF (Windows, 0 bytes), EIO (Unix reports the
-  // end of a pty stream as an error), and a lost session lookup when
-  // `exitstatus` got there first.
   const spellings = ['EOF', 'Input/output error', 'Unavailable pid'];
-
   for (const [i, spelling] of spellings.entries()) {
     resetPty();
     const sink = { frames: [], ended: null };
     const hub = new MessageHub();
-
     const opening = openPty(hub, `p3-${i}`, sink);
     setExit(0);
     await opening;
     deliver({ err: spelling });
     await tick();
-
     assert.equal(sink.ended?.kind, 'exit', `"${spelling}" must end the stream, not error`);
-    assert.equal(sink.frames.at(-1).kind, 'exit');
   }
+});
+
+test('the session is registered WITHOUT a pid', async () => {
+  // What spawn returns is the plugin's session HANDLE, not an OS pid. Registering
+  // it as one would make app exit `taskkill` an unrelated process number.
+  resetPty();
+  const hub = new MessageHub();
+  await openPty(hub, 'p4', { frames: [], ended: null });
+  const opens = sessionOpens();
+  assert.equal(opens.length, 1);
+  assert.deepEqual(
+    opens[0].args.msg.p,
+    { ch: 'p4', kind: 'pty' },
+    'the host does not own this process, so it must not claim a pid',
+  );
 });
 
 test('a failed session registration kills the child instead of leaking it', async () => {
   resetPty();
   pty.registerFails = true;
   const hub = new MessageHub();
-
   await assert.rejects(
-    () => openPty(hub, 'p4', { frames: [], ended: null }),
+    () => openPty(hub, 'p5', { frames: [], ended: null }),
     /registration failed/,
-    'the open must fail loudly',
   );
   assert.equal(pty.kills, 1, 'and the child must not be left unowned');
 });
 
 test('close kills once and emits a single end frame', async () => {
   resetPty();
-  const sink = { frames: [], ended: null };
   const endedFrames = [];
   const hub = new MessageHub();
-  const handle = await hub.pty('t.plugin', 'p5', {
+  const handle = await hub.pty('t.plugin', 'p6', {
     program: 'cmd',
-    onFrame: (f) => sink.frames.push(f),
+    onFrame: () => {},
     onEnd: (f) => endedFrames.push(f),
   });
 
   await handle.close();
-  await handle.close(); // idempotent
+  await handle.close();
 
   assert.equal(pty.kills, 1, 'killed exactly once');
   assert.equal(endedFrames.length, 1);
   assert.equal(endedFrames[0].kind, 'end');
   assert.deepEqual(hub.openStreamKeys(), [], 'the hub record is released');
-});
-
-test('ordering uses no drain timers', async () => {
-  resetPty();
-  const delays = [];
-  const real = globalThis.setTimeout;
-  globalThis.setTimeout = (fn, ms, ...rest) => {
-    delays.push(ms ?? 0);
-    return real(fn, 0, ...rest);
-  };
-  try {
-    const sink = { frames: [], ended: null };
-    const hub = new MessageHub();
-    const opening = openPty(hub, 'p6', sink);
-    setExit(0);
-    output('x');
-    endOfOutput();
-    await opening;
-    await tick();
-
-    assert.equal(sink.ended?.kind, 'exit');
-    // The rpc transport arms its 45s request timeout; the old heuristic used
-    // 120ms and up to 1500ms, so this range cleanly isolates it.
-    assert.deepEqual(
-      delays.filter((d) => d <= 1500),
-      [],
-      'the old 120ms/1.5s quiet-period heuristic must be gone',
-    );
-  } finally {
-    globalThis.setTimeout = real;
-  }
 });

@@ -130,23 +130,41 @@ export const endsStream = (env) =>
 | `registry::unregister` 无人调用 → 卸载过的插件仍被授权 | 新增 `host/unregister`（仅宿主可调），卸载路径调用 |
 | pty 用 120ms/1.5s 静默期猜"输出结束" | **见下** |
 
-### pty 的 drain 启发式已被确定性方案取代
+### pty 的 drain 启发式被大幅收窄，但**没能**彻底去掉
 
 复核时只看到"drain 不能保证尾部输出先于 exit"，于是去看依赖内部，发现**根因是信号被 JS wrapper 吞掉了**：
 `tauri-pty` 的读循环以 `EOF` 错误结束，然后**静默 return**，而退出码在另一个 promise 上 ——
 所以"输出结束"这件事对调用方不可观测，只能靠计时器猜。
 
 改为直接驱动插件自己的命令（`plugin:pty|spawn/read/write/resize/kill/exitstatus`，ACL 的
-`pty:default` 已覆盖）后，顺序变成确定的：
+`pty:default` 已覆盖）后，第一版设计是**顺序**的：
 
 ```
-spawn → session_open（失败则杀子进程，不留下无人回收的进程）
-      → read 循环直到输出结束（EOF / EIO / 会话已被移除，三种拼法同一个事实）
-      → exitstatus（必须在输出结束之后再问：它会移除插件的会话，
-        提前问会让尚未取走缓冲输出的 read 查不到会话，短命令的输出就丢了）
-      → 发出 exit 帧
+spawn → session_open → read 循环直到输出结束 → exitstatus → exit 帧
 ```
 
-**不再有任何 drain 计时器**（测试直接断言这一点）。`tauri-pty` 这个 JS 包因此不再被引用，
-已从 `package.json` 移除 —— 顺带消掉了"它没有 `main`/`exports` 字段、必须写显式 dist 路径"
-这个长期坑。
+**这个设计在真机上死锁了**，而单元测试完全没发现（我把 read 的 mock 写成了会返回 EOF）。
+应用内自检抓到了它：`t10-pty-session-tracked (8051ms): expected exit frame, got undefined`
+—— 输出标记收到了，终止帧却永远没来。原因：
+
+> **Windows 上 ConPTY 的 reader 在子进程退出后不返回 0（EOF），它会一直挂着**，
+> 伪控制台只在 master 被 drop 时才关闭。所以"等 EOF 再问退出码"就永远等不到。
+
+旧实现之所以没事，是因为它的 exit 帧来自 `onExit`（另一个 promise），从不依赖 EOF。
+
+修正后的行为（按优先级）：
+
+1. 读循环**自己结束**（平台确实报 EOF，或会话消失）→ 精确，无需等待。
+2. 否则在进程消失后等数据流**静默**（120ms，上限 1000ms）→ **仍是启发式**，代码与文档
+   都如实标注：平台不告诉我们，诚实的做法是一个有界的短等待，而不是声称确定性。
+
+即"确定性"这个说法**收回**：能确定化的路径已经确定化，剩下的那条是平台限制。
+回归测试直接钉住第 2 条：读永远不返回时，exit 帧**仍然**必须出现。
+
+顺带发现并修掉一个**更早存在、更危险的缺陷**：`spawn` 返回的是 **插件自己的会话句柄**
+（`tauri-plugin-pty` 用从 0 开始的计数器做 key），**不是 OS pid**。旧代码把它当 pid 交给
+会话注册表，于是**应用退出时会 `taskkill /PID <句柄>` —— 可能杀掉一个毫不相关的进程**。
+现在 pty 会话**不带 pid** 注册（宿主并不拥有这个进程，插件才拥有，停止走 `plugin:pty|kill`）。
+
+`tauri-pty` 这个 JS 包不再被引用，已从 `package.json` 移除 —— 顺带消掉了"它没有
+`main`/`exports` 字段、必须写显式 dist 路径"这个长期坑。

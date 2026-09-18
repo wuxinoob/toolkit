@@ -531,11 +531,14 @@ test('pty-stream: subprocess bytes become data frames and the exit code an exit 
     onEnd: (f) => (ended = f),
   });
 
-  assert.equal(handle.pid, 4242, 'the async pid must be resolved before returning');
-  // the pid is registered with the unified session registry, which is what
-  // makes shutdown reap pty children instead of orphaning them
+  assert.equal(handle.pid, 4242, 'the handle must be resolved before returning');
+  // The session IS registered (so the stream is visible and released uniformly),
+  // but WITHOUT a pid: what spawn returns is the plugin's session HANDLE — a
+  // counter starting at 0 — not an OS pid. Registering it as one would make app
+  // exit run `taskkill` against an unrelated process number. The host does not
+  // own this process; the plugin does, and `plugin:pty|kill` stops it.
   assert.equal(sessionOpened.kind, 'pty');
-  assert.equal(sessionOpened.pid, 4242);
+  assert.equal(sessionOpened.pid, undefined, 'a pty session must not claim a pid');
 
   await waitFor(() => ended, 3000, 'the pty exit frame');
   const data = frames.filter((f) => f.kind === 'data');
