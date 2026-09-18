@@ -14,7 +14,8 @@
 use serde_json::{json, Value};
 use tauri::Emitter;
 
-use super::Service;
+use super::{Service, ServiceError};
+use crate::protocol::codes::code;
 use crate::protocol::envelope::{Envelope, BROADCAST_EVENT};
 
 pub struct BusService;
@@ -33,13 +34,13 @@ impl Service for BusService {
         plugin_id: &str,
         action: &str,
         params: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, ServiceError> {
         match action {
             "publish" => {
                 let topic = params
                     .get("topic")
                     .and_then(|v| v.as_str())
-                    .ok_or("missing string param `topic`")?;
+                    .ok_or_else(|| ServiceError::bad_params("missing string param `topic`"))?;
                 let payload = params.get("payload").cloned().unwrap_or(Value::Null);
                 // The publisher travels with the event so subscribers can
                 // ignore their own echoes without guessing.
@@ -49,7 +50,7 @@ impl Service for BusService {
                     .map_err(|e| format!("broadcast: {e}"))?;
                 Ok(json!({ "topic": topic, "delivered": true }))
             }
-            _ => Err(format!("unknown action `bus/{action}`")),
+            _ => Err(ServiceError::new(code::UNKNOWN_ACTION, format!("unknown action `bus/{action}`"))),
         }
     }
 }

@@ -14,6 +14,7 @@
  */
 
 import * as Envelope from '../envelope.js';
+import { Code } from '../codes.js';
 import { lineJson } from '../codec.js';
 import { descriptor } from '../registry.js';
 import { ProtocolError } from '../errors.js';
@@ -83,7 +84,7 @@ export const stdioLineTransport = {
       } catch (e) {
         if (stopped) return;
         // A host-level failure ends the stream with a proper terminal frame.
-        const env = Envelope.streamErr(ch, e.code ?? 'transport', String(e.message ?? e));
+        const env = Envelope.streamErr(ch, e.code ?? Code.TRANSPORT, String(e.message ?? e));
         onFrame?.(env);
         return finish(env);
       }

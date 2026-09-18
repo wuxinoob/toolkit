@@ -22,7 +22,8 @@ use std::sync::Arc;
 
 use toolbox_lib::protocol::codec::{json_envelope, line_json, raw_binary};
 use toolbox_lib::protocol::envelope::{Envelope, Kind};
-use toolbox_lib::services::{hotkey, schema, session, stream, table};
+use toolbox_lib::protocol::codes;
+use toolbox_lib::services::{hotkey, schema, session, stream, table, ServiceError};
 
 static FAILED: AtomicBool = AtomicBool::new(false);
 static PASSED: AtomicU64 = AtomicU64::new(0);
@@ -218,6 +219,38 @@ fn main() {
         "why callers that mean to STOP must take, not close",
     );
     session::kill_all();
+
+    // ---- the error vocabulary ----
+    let declared = codes::ALL;
+    check(
+        "codes-declared",
+        declared.len() >= 10 && declared.iter().all(|c| codes::is_known(c)),
+        &format!("{} codes, all self-consistent", declared.len()),
+    );
+    check(
+        "codes-reject-the-old-svc-act-form",
+        !codes::is_known("storage/get") && !codes::is_known("proc/spawn"),
+        "a service failure no longer masquerades as a `svc/act` code",
+    );
+    let produced = [
+        ServiceError::bad_params("x"),
+        ServiceError::not_found("x"),
+        ServiceError::conflict("x"),
+        ServiceError::unsupported("x"),
+        ServiceError::io("x"),
+        ServiceError::spawn_failed("x"),
+        ServiceError::internal("x"),
+    ];
+    check(
+        "every-constructor-produces-a-declared-code",
+        produced.iter().all(|e| codes::is_known(e.code)),
+        "so a caller can branch on any code the host hands out",
+    );
+    check(
+        "schema-advertises-the-vocabulary",
+        sch["codes"] == json!(codes::ALL),
+        "a caller is told the codes instead of guessing at strings",
+    );
 
     let passed = PASSED.load(Ordering::SeqCst);
     if FAILED.load(Ordering::SeqCst) {

@@ -17,6 +17,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use super::ServiceError;
+
 /// What kind of endpoint a session is. Purely descriptive — the host never
 /// branches on it, it is for the UI and for diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -82,11 +84,11 @@ pub fn open(
     kind: SessionKind,
     pid: Option<u32>,
     stop: StopFn,
-) -> Result<Arc<AtomicU64>, String> {
+) -> Result<Arc<AtomicU64>, ServiceError> {
     let id = id_of(plugin, ch);
     let mut map = lock();
     if map.contains_key(&id) {
-        return Err(format!("session `{id}` is already open"));
+        return Err(ServiceError::conflict(format!("session `{id}` is already open")));
     }
     let bytes_out = Arc::new(AtomicU64::new(0));
     map.insert(
@@ -205,6 +207,7 @@ pub fn kill_all() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::codes::code;
     use std::sync::atomic::AtomicBool;
 
     fn noop() -> StopFn {
@@ -218,7 +221,8 @@ mod tests {
         open("p", "a", SessionKind::Stream, None, noop()).unwrap();
         assert_eq!(count(), 1);
         let err = open("p", "a", SessionKind::Stream, None, noop()).unwrap_err();
-        assert!(err.contains("already open"), "got: {err}");
+        assert_eq!(err.code, code::CONFLICT);
+        assert!(err.msg.contains("already open"), "got: {err}");
         assert!(close("p", "a"));
         assert!(!close("p", "a"));
         assert_eq!(count(), 0);

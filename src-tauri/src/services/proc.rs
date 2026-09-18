@@ -33,7 +33,8 @@ use std::time::{Duration, Instant};
 use super::external;
 use super::session::{self, SessionKind};
 use super::storage::validate_plugin_id;
-use super::Service;
+use super::{Service, ServiceError};
+use crate::protocol::codes::code;
 
 const MAX_PROCS_PER_PLUGIN: usize = 4;
 /// Defense-in-depth: one stdout line may never exceed 1 MiB.
@@ -82,12 +83,12 @@ fn registry() -> &'static Mutex<HashMap<ProcKey, ProcHandle>> {
     REG.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn params_str(params: &Value, key: &str) -> Result<String, String> {
+fn params_str(params: &Value, key: &str) -> Result<String, ServiceError> {
     params
         .get(key)
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("missing string param `{key}`"))
+        .ok_or_else(|| ServiceError::bad_params(format!("missing string param `{key}`")))
 }
 
 /// Read one `\n`-terminated line, bounded. `Ok(None)` on clean EOF.
@@ -168,7 +169,7 @@ fn reader_thread(stdout: std::process::ChildStdout, child: Arc<Mutex<Child>>, sh
 
 /// Spawn the sidecar. No path validation here — callers validate; tests use
 /// this directly with system binaries.
-fn spawn_handle(exe: &Path, args: &[String], cwd: &Path) -> Result<ProcHandle, String> {
+fn spawn_handle(exe: &Path, args: &[String], cwd: &Path) -> Result<ProcHandle, ServiceError> {
     let mut child = Command::new(exe)
         .args(args)
         .current_dir(cwd)
@@ -176,9 +177,15 @@ fn spawn_handle(exe: &Path, args: &[String], cwd: &Path) -> Result<ProcHandle, S
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit()) // sidecar diagnostics land in the host console
         .spawn()
-        .map_err(|e| format!("spawn {}: {e}", exe.display()))?;
-    let stdin = child.stdin.take().ok_or("child stdin unavailable")?;
-    let stdout = child.stdout.take().ok_or("child stdout unavailable")?;
+        .map_err(|e| ServiceError::spawn_failed(format!("spawn {}: {e}", exe.display())))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| ServiceError::spawn_failed("child stdin unavailable"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ServiceError::spawn_failed("child stdout unavailable"))?;
     let pid = child.id();
     let shared = Arc::new(ProcShared {
         state: Mutex::new(ProcState::default()),
@@ -190,7 +197,7 @@ fn spawn_handle(exe: &Path, args: &[String], cwd: &Path) -> Result<ProcHandle, S
     std::thread::Builder::new()
         .name(format!("proc-reader-{pid}"))
         .spawn(move || reader_thread(stdout, reader_child, reader_shared))
-        .map_err(|e| format!("spawn reader thread: {e}"))?;
+        .map_err(|e| ServiceError::spawn_failed(format!("spawn reader thread: {e}")))?;
     Ok(ProcHandle {
         pid,
         stdin: Arc::new(Mutex::new(stdin)),
@@ -202,27 +209,27 @@ fn spawn_handle(exe: &Path, args: &[String], cwd: &Path) -> Result<ProcHandle, S
 /// Pure path core: `exe` (relative to the plugin dir, subfolders allowed) must
 /// resolve to a file that stays INSIDE the plugin dir. Canonicalize-then-prefix
 /// check, mirroring external::read_entry_at (folds `..` and follows symlinks).
-pub fn resolve_exe_at(plugin_dir: &Path, exe: &str) -> Result<PathBuf, String> {
+pub fn resolve_exe_at(plugin_dir: &Path, exe: &str) -> Result<PathBuf, ServiceError> {
     if exe.is_empty() {
-        return Err("empty exe path".into());
+        return Err(ServiceError::bad_params("empty exe path"));
     }
     let dir_canon = plugin_dir
         .canonicalize()
-        .map_err(|e| format!("resolve plugin dir: {e}"))?;
+        .map_err(|e| ServiceError::io(format!("resolve plugin dir: {e}")))?;
     let file = dir_canon
         .join(exe)
         .canonicalize()
-        .map_err(|e| format!("resolve exe: {e}"))?;
+        .map_err(|e| ServiceError::bad_params(format!("resolve exe: {e}")))?;
     if !file.starts_with(&dir_canon) {
-        return Err("exe escapes plugin dir".into()); // traversal guard
+        return Err(ServiceError::bad_params("exe escapes plugin dir")); // traversal guard
     }
     if !file.is_file() {
-        return Err("exe is not a file".into());
+        return Err(ServiceError::not_found("exe is not a file"));
     }
     Ok(file)
 }
 
-fn write_line(h: &ProcHandle, line: &str) -> Result<(), String> {
+fn write_line(h: &ProcHandle, line: &str) -> Result<(), ServiceError> {
     let mut sin = h.stdin.lock().unwrap_or_else(|e| e.into_inner());
     match writeln!(sin, "{line}").and_then(|_| sin.flush()) {
         Ok(()) => Ok(()),
@@ -236,10 +243,10 @@ fn write_line(h: &ProcHandle, line: &str) -> Result<(), String> {
                 .ok()
                 .flatten()
                 .and_then(|s| s.code());
-            Err(match code {
+            Err(ServiceError::io(match code {
                 Some(c) => format!("sidecar exited (code {c}): {e}"),
                 None => format!("write sidecar: {e}"),
-            })
+            }))
         }
     }
 }
@@ -337,7 +344,7 @@ fn kill_all_for(plugin: &str) -> usize {
 
 // ------------------------------- actions --------------------------------------
 
-fn action_spawn(root: &Path, plugin_id: &str, params: &Value) -> Result<Value, String> {
+fn action_spawn(root: &Path, plugin_id: &str, params: &Value) -> Result<Value, ServiceError> {
     let key = params_str(params, "key")?;
     let exe = params_str(params, "exe")?;
     let args: Vec<String> = params
@@ -347,10 +354,14 @@ fn action_spawn(root: &Path, plugin_id: &str, params: &Value) -> Result<Value, S
         .unwrap_or_default();
 
     // Locate the plugin's source dir by manifest id (scan is cheap: few dirs).
-    let dir = external::scan_at(root)?
+    let dir = external::scan_at(root).map_err(ServiceError::io)?
         .into_iter()
         .find(|p| p.id == plugin_id)
-        .ok_or("plugin not found in plugins root — install its folder (plugin.json) first")?
+        .ok_or_else(|| {
+            ServiceError::not_found(
+                "plugin not found in plugins root — install its folder (plugin.json) first",
+            )
+        })?
         .dir;
     let exe_path = resolve_exe_at(Path::new(&dir), &exe)?;
 
@@ -361,9 +372,9 @@ fn action_spawn(root: &Path, plugin_id: &str, params: &Value) -> Result<Value, S
     }
     let per_plugin = map.keys().filter(|k| k.plugin == plugin_id).count();
     if per_plugin >= MAX_PROCS_PER_PLUGIN {
-        return Err(format!(
+        return Err(ServiceError::conflict(format!(
             "too many sidecars for `{plugin_id}` (max {MAX_PROCS_PER_PLUGIN}) — proc.killAll() first"
-        ));
+        )));
     }
     let handle = spawn_handle(&exe_path, &args, Path::new(&dir))?;
     let pid = handle.pid;
@@ -377,7 +388,7 @@ fn action_spawn(root: &Path, plugin_id: &str, params: &Value) -> Result<Value, S
     Ok(json!({ "reused": false, "pid": pid }))
 }
 
-fn action_send(plugin_id: &str, params: &Value) -> Result<Value, String> {
+fn action_send(plugin_id: &str, params: &Value) -> Result<Value, ServiceError> {
     let key = params_str(params, "key")?;
     let line = params_str(params, "line")?;
     let h = registry()
@@ -385,12 +396,12 @@ fn action_send(plugin_id: &str, params: &Value) -> Result<Value, String> {
         .unwrap_or_else(|e| e.into_inner())
         .get(&ProcKey { plugin: plugin_id.into(), key })
         .cloned()
-        .ok_or("sidecar not running — spawn first")?;
+        .ok_or_else(|| ServiceError::not_found("sidecar not running — spawn first"))?;
     write_line(&h, &line)?;
     Ok(Value::Bool(true))
 }
 
-fn action_recv(plugin_id: &str, params: &Value) -> Result<Value, String> {
+fn action_recv(plugin_id: &str, params: &Value) -> Result<Value, ServiceError> {
     let key = params_str(params, "key")?;
     let ms = params
         .get("timeoutMs")
@@ -402,7 +413,7 @@ fn action_recv(plugin_id: &str, params: &Value) -> Result<Value, String> {
         .unwrap_or_else(|e| e.into_inner())
         .get(&ProcKey { plugin: plugin_id.into(), key })
         .cloned()
-        .ok_or("sidecar not running — spawn first")?;
+        .ok_or_else(|| ServiceError::not_found("sidecar not running — spawn first"))?;
     Ok(recv_from(&h.shared, Duration::from_millis(ms)))
 }
 
@@ -423,16 +434,16 @@ impl Service for ProcService {
         plugin_id: &str,
         action: &str,
         params: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, ServiceError> {
         validate_plugin_id(plugin_id)?;
-        let root = external::plugins_root(app)?;
+        let root = external::plugins_root(app).map_err(ServiceError::io)?;
         dispatch_at(&root, plugin_id, action, params)
     }
 }
 
 /// Core dispatch (root-based; spawn performs a real process spawn, the rest is
 /// cheap bookkeeping — see the tests for which parts are exercised how).
-pub fn dispatch_at(root: &Path, plugin_id: &str, action: &str, params: Value) -> Result<Value, String> {
+pub fn dispatch_at(root: &Path, plugin_id: &str, action: &str, params: Value) -> Result<Value, ServiceError> {
     match action {
         "spawn" => action_spawn(root, plugin_id, &params),
         "send" => action_send(plugin_id, &params),
@@ -448,7 +459,7 @@ pub fn dispatch_at(root: &Path, plugin_id: &str, action: &str, params: Value) ->
                     .collect(),
             ))
         }
-        _ => Err(format!("unknown action `proc/{action}`")),
+        _ => Err(ServiceError::new(code::UNKNOWN_ACTION, format!("unknown action `proc/{action}`"))),
     }
 }
 

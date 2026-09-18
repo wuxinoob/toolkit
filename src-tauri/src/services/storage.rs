@@ -13,11 +13,12 @@ use std::{
 use tauri::Manager;
 
 use super::session;
-use super::Service;
+use super::{Service, ServiceError};
+use crate::protocol::codes::code;
 
 const DEBUG_LOG_MAX: u64 = 1_000_000; // keep debug.log a debug artifact, not a data store
 
-pub(crate) fn validate_plugin_id(plugin_id: &str) -> Result<(), String> {
+pub(crate) fn validate_plugin_id(plugin_id: &str) -> Result<(), ServiceError> {
     let valid_chars = plugin_id
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
@@ -26,47 +27,47 @@ pub(crate) fn validate_plugin_id(plugin_id: &str) -> Result<(), String> {
     // escape the plugin-data root via Path::join.
     let no_traversal = !plugin_id.is_empty() && plugin_id.split('.').all(|seg| !seg.is_empty());
     if !valid_chars || !no_traversal {
-        return Err(format!("invalid plugin id: `{plugin_id}`"));
+        return Err(ServiceError::bad_params(format!("invalid plugin id: `{plugin_id}`")));
     }
     Ok(())
 }
 
-fn plugin_data_dir_at(data_root: &Path, plugin_id: &str) -> Result<PathBuf, String> {
+fn plugin_data_dir_at(data_root: &Path, plugin_id: &str) -> Result<PathBuf, ServiceError> {
     validate_plugin_id(plugin_id)?;
     let dir = data_root.join("plugin-data").join(plugin_id);
     fs::create_dir_all(&dir).map_err(|e| format!("create dir: {e}"))?;
     Ok(dir)
 }
 
-fn store_path_at(data_root: &Path, plugin_id: &str) -> Result<PathBuf, String> {
+fn store_path_at(data_root: &Path, plugin_id: &str) -> Result<PathBuf, ServiceError> {
     Ok(plugin_data_dir_at(data_root, plugin_id)?.join("data.json"))
 }
 
-fn read_store(path: &Path) -> Result<Map<String, Value>, String> {
+fn read_store(path: &Path) -> Result<Map<String, Value>, ServiceError> {
     match fs::read_to_string(path) {
         Ok(text) => {
-            let v: Value = serde_json::from_str(&text).map_err(|e| format!("corrupt store: {e}"))?;
+            let v: Value = serde_json::from_str(&text).map_err(|e| ServiceError::io(format!("corrupt store: {e}")))?;
             Ok(v.as_object().cloned().unwrap_or_default())
         }
         Err(_) => Ok(Map::new()), // not exists -> empty
     }
 }
 
-fn write_store(path: &Path, map: &Map<String, Value>) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(map).map_err(|e| e.to_string())?;
-    fs::write(path, text).map_err(|e| format!("write store: {e}"))?;
+fn write_store(path: &Path, map: &Map<String, Value>) -> Result<(), ServiceError> {
+    let text = serde_json::to_string_pretty(map).map_err(|e| ServiceError::internal(format!("serialize store: {e}")))?;
+    fs::write(path, text).map_err(|e| ServiceError::io(format!("write store: {e}")))?;
     Ok(())
 }
 
-fn params_str(params: &Value, key: &str) -> Result<String, String> {
+fn params_str(params: &Value, key: &str) -> Result<String, ServiceError> {
     params
         .get(key)
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("missing string param `{key}`"))
+        .ok_or_else(|| ServiceError::bad_params(format!("missing string param `{key}`")))
 }
 
-fn append_debug_log_at(data_root: &Path, content: &str) -> Result<(), String> {
+fn append_debug_log_at(data_root: &Path, content: &str) -> Result<(), ServiceError> {
     let path = data_root.join("debug.log");
     if let Ok(meta) = fs::metadata(&path) {
         if meta.len() > DEBUG_LOG_MAX {
@@ -88,10 +89,10 @@ pub struct StorageService;
 /// `host` service: paths / metadata / the unified session list / debug artifacts.
 pub struct HostService;
 
-fn data_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+fn data_root(app: &tauri::AppHandle) -> Result<PathBuf, ServiceError> {
     app.path()
         .app_data_dir()
-        .map_err(|e| format!("app data dir: {e}"))
+        .map_err(|e| ServiceError::io(format!("app data dir: {e}")))
 }
 
 impl Service for StorageService {
@@ -107,7 +108,7 @@ impl Service for StorageService {
         plugin_id: &str,
         action: &str,
         params: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, ServiceError> {
         dispatch_at(&data_root(app)?, plugin_id, self.name(), action, params)
     }
 }
@@ -125,7 +126,7 @@ impl Service for HostService {
         plugin_id: &str,
         action: &str,
         params: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, ServiceError> {
         match action {
             // The unified session list: one view over sidecars, streams and
             // PTYs, whichever mechanism created them. A host-wide query, hence
@@ -150,8 +151,9 @@ impl Service for HostService {
             // permissions.
             "unregister" => {
                 if plugin_id != crate::host::registry::HOST_IDENTITY {
-                    return Err(format!(
-                        "plugin `{plugin_id}` may not revoke a plugin registration"
+                    return Err(ServiceError::new(
+                        code::DENIED,
+                        format!("plugin `{plugin_id}` may not revoke a plugin registration"),
                     ));
                 }
                 let target = params_str(&params, "plugin")?;
@@ -171,7 +173,7 @@ pub fn dispatch_at(
     service: &str,
     action: &str,
     params: Value,
-) -> Result<Value, String> {
+) -> Result<Value, ServiceError> {
     match (service, action) {
         // ---- storage: namespaced JSON KV, persisted on disk ----
         ("storage", "get") => {
@@ -216,7 +218,7 @@ pub fn dispatch_at(
             append_debug_log_at(data_root, &content)?;
             Ok(Value::Bool(true))
         }
-        _ => Err(format!("unknown action `{service}/{action}`")),
+        _ => Err(ServiceError::new(code::UNKNOWN_ACTION, format!("unknown action `{service}/{action}`"))),
     }
 }
 
@@ -282,7 +284,7 @@ mod tests {
         }
         assert!(dispatch_at(&root, "ok.id", "storage", "nope", Value::Null)
             .unwrap_err()
-            .contains("unknown action"));
+            .msg.contains("unknown action"));
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -362,13 +362,54 @@ Each service declares its actions (`Service::actions`), and the gateway rejects
 anything not listed **before** dispatching:
 
 ```json
-{"v":1,"kind":"err","id":3,"code":"storage/nope",
+{"v":1,"kind":"err","id":3,"code":"unknown_action",
  "msg":"unknown action `storage/nope` (known: get, set, remove, keys)"}
 ```
 
 The declaration is authoritative rather than documentation: the same list backs
 `host/schema`, so what a plugin is told exists is exactly what the gateway
 accepts.
+
+### Error codes
+
+Every `err` envelope the host produces carries one of a **closed set of 14
+codes**, declared in `protocol/codes.rs` and mirrored in `protocol/codes.js`:
+
+| code | means |
+|---|---|
+| `denied` | the caller lacks a permission its manifest declares |
+| `unknown_service` / `unknown_action` | no such service / no such action on it |
+| `bad_params` | a required parameter is missing or malformed |
+| `not_found` | the addressed key, window, session or process does not exist |
+| `conflict` | contradicts current state (duplicate id, already open) |
+| `unsupported` | the scheme, provider or codec cannot do what was asked |
+| `io` | a filesystem or OS operation failed |
+| `spawn_failed` | a child process could not be started |
+| `timeout` | the caller stopped waiting (never means the host was cancelled) |
+| `transport` / `protocol` / `codec` | the plumbing: IPC failure, contract violation, undecodable frame |
+| `internal` | an unexpected host-side failure |
+
+Three properties make it usable:
+
+- **The code describes the KIND of failure.** Where it happened is already in the
+  envelope (`svc`/`act`), so it is not repeated in the code. Service failures used
+  to report `{svc}/{act}` (e.g. `storage/get`), which told a caller nothing it
+  could branch on.
+- **It is advertised.** `host/schema` returns `codes`, so a caller is told the
+  vocabulary instead of guessing at strings. `ctx.protocol.Code` exposes the same
+  names to plugin code.
+- **It cannot drift.** A Rust unit test keeps `ALL` and the declarations in step;
+  `tests/codes.test.mjs` parses *both* files and fails if the two languages
+  disagree. A duplicated declaration is acceptable only when something checks it.
+
+Two boundaries worth knowing:
+
+- A plugin's **own backend** may define its own codes on top (the calc example
+  answers `div_by_zero`). This set is the host's vocabulary, not a cap on a
+  plugin's.
+- The **stream commands** (`plugin_stream_open*`) report failures as invoke
+  rejections rather than `err` envelopes, so their messages stay plain strings.
+  Only what flows through `plugin_rpc` is coded.
 
 A denial is a normal protocol outcome, not a transport failure:
 

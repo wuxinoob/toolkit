@@ -27,7 +27,7 @@ use protocol::envelope::Envelope;
 /// nothing.
 #[tauri::command]
 fn plugin_register(plugin_id: String, permissions: Vec<String>) -> Result<(), String> {
-    services::storage::validate_plugin_id(&plugin_id)?;
+    services::storage::validate_plugin_id(&plugin_id).map_err(|e| e.msg)?;
     host::registry::register(&plugin_id, &permissions);
     Ok(())
 }
@@ -40,7 +40,7 @@ fn plugin_register(plugin_id: String, permissions: Vec<String>) -> Result<(), St
 /// envelope or an unknown service — which no well-behaved caller can hit.
 #[tauri::command]
 fn plugin_rpc(app: tauri::AppHandle, plugin_id: String, msg: Envelope) -> Result<Envelope, String> {
-    services::storage::validate_plugin_id(&plugin_id)?;
+    services::storage::validate_plugin_id(&plugin_id).map_err(|e| e.msg)?;
     msg.validate()?;
     if !msg.kind.is_uplink() {
         return Err(format!(
@@ -60,7 +60,9 @@ fn plugin_rpc(app: tauri::AppHandle, plugin_id: String, msg: Envelope) -> Result
 
     match services::route(&app, &plugin_id, &svc, &act, msg.p) {
         Ok(v) => Ok(Envelope::res(id, v)),
-        Err(e) => Ok(Envelope::err(Some(id), format!("{svc}/{act}"), e)),
+        // The service classified it; the caller gets that code, not a
+        // synthesized `svc/act` string it cannot branch on.
+        Err(e) => Ok(Envelope::err(Some(id), e.code, e.msg)),
     }
 }
 

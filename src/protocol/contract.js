@@ -11,6 +11,7 @@
  */
 
 import * as Envelope from './envelope.js';
+import { Code, ALL_CODES } from './codes.js';
 
 /**
  * Host API version — the shape of `ctx` / `bridge`, NOT the wire format.
@@ -47,6 +48,12 @@ export function protocolContract() {
     validate: Envelope.validate,
     isTerminal: Envelope.isTerminal,
     endsStream: Envelope.endsStream,
+    /**
+     * The error vocabulary, so a plugin writes `protocol.Code.DENIED` rather
+     * than the literal `'denied'` — and can see the whole set it may receive.
+     */
+    Code,
+    codes: ALL_CODES,
     nextId: Envelope.nextId,
   });
 }

@@ -28,6 +28,76 @@ use std::sync::OnceLock;
 
 pub use stream::{JsonSink, RawSink, StreamProvider};
 
+/// A service failure, carrying a code from the closed set in
+/// [`crate::protocol::codes`].
+///
+/// The code says what KIND of thing went wrong; where it happened is already in
+/// the envelope. Services used to return bare strings, which forced the gateway
+/// to invent a code from the service and action names — so every service failure
+/// looked alike to a caller and none of them could be branched on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceError {
+    pub code: &'static str,
+    pub msg: String,
+}
+
+impl ServiceError {
+    pub fn new(code: &'static str, msg: impl Into<String>) -> Self {
+        debug_assert!(
+            crate::protocol::codes::is_known(code),
+            "service error code `{code}` is not in the declared set"
+        );
+        Self { code, msg: msg.into() }
+    }
+    pub fn bad_params(msg: impl Into<String>) -> Self {
+        Self::new(crate::protocol::codes::code::BAD_PARAMS, msg)
+    }
+    pub fn not_found(msg: impl Into<String>) -> Self {
+        Self::new(crate::protocol::codes::code::NOT_FOUND, msg)
+    }
+    pub fn conflict(msg: impl Into<String>) -> Self {
+        Self::new(crate::protocol::codes::code::CONFLICT, msg)
+    }
+    pub fn unsupported(msg: impl Into<String>) -> Self {
+        Self::new(crate::protocol::codes::code::UNSUPPORTED, msg)
+    }
+    pub fn io(msg: impl Into<String>) -> Self {
+        Self::new(crate::protocol::codes::code::IO, msg)
+    }
+    pub fn spawn_failed(msg: impl Into<String>) -> Self {
+        Self::new(crate::protocol::codes::code::SPAWN_FAILED, msg)
+    }
+    pub fn internal(msg: impl Into<String>) -> Self {
+        Self::new(crate::protocol::codes::code::INTERNAL, msg)
+    }
+}
+
+impl std::fmt::Display for ServiceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.msg)
+    }
+}
+
+/// Anything that already produced a plain string becomes `internal` — the
+/// honest code for "the host did not classify this". Sites that can do better
+/// should construct a typed error instead.
+impl From<std::io::Error> for ServiceError {
+    fn from(e: std::io::Error) -> Self {
+        Self::io(e.to_string())
+    }
+}
+
+impl From<String> for ServiceError {
+    fn from(msg: String) -> Self {
+        Self::internal(msg)
+    }
+}
+impl From<&str> for ServiceError {
+    fn from(msg: &str) -> Self {
+        Self::internal(msg)
+    }
+}
+
 /// A plugin-facing request/response service behind the `plugin_rpc` gateway.
 ///
 /// Implementations resolve their own root (app data dir / plugins dir) from
@@ -47,7 +117,7 @@ pub trait Service: Send + Sync {
         plugin_id: &str,
         action: &str,
         params: Value,
-    ) -> Result<Value, String>;
+    ) -> Result<Value, ServiceError>;
 }
 
 /// The `plugin_rpc` routing table — the only place a service name is bound to
@@ -70,9 +140,10 @@ pub fn service_names() -> Vec<&'static str> {
     table().iter().map(|s| s.name()).collect()
 }
 
-/// What the host offers: protocol version, every service with its actions, and
-/// the stream providers. Backs `host/schema`, which doubles as the negotiation
-/// surface — a plugin asks what exists instead of discovering it by failing.
+/// What the host offers: protocol version, every service with its actions, the
+/// stream providers, and the error codes it may produce. Backs `host/schema`,
+/// which doubles as the negotiation surface — a plugin asks what exists instead
+/// of discovering it by failing.
 pub fn schema() -> Value {
     let services: serde_json::Map<String, Value> = table()
         .iter()
@@ -82,6 +153,9 @@ pub fn schema() -> Value {
         "protocol": crate::protocol::envelope::PROTOCOL_VERSION,
         "services": services,
         "providers": stream::providers().iter().map(|p| p.name()).collect::<Vec<_>>(),
+        // The error vocabulary, so a caller can branch on codes it has actually
+        // been told about rather than guessing at strings.
+        "codes": crate::protocol::codes::ALL,
     })
 }
 
@@ -94,15 +168,19 @@ pub fn route(
     service: &str,
     action: &str,
     params: Value,
-) -> Result<Value, String> {
+) -> Result<Value, ServiceError> {
+    use crate::protocol::codes::code;
     match table().iter().find(|s| s.name() == service) {
-        None => Err(format!(
-            "unknown service `{service}` (known: {})",
-            service_names().join(", ")
+        None => Err(ServiceError::new(
+            code::UNKNOWN_SERVICE,
+            format!("unknown service `{service}` (known: {})", service_names().join(", ")),
         )),
-        Some(s) if !s.actions().contains(&action) => Err(format!(
-            "unknown action `{service}/{action}` (known: {})",
-            s.actions().join(", ")
+        Some(s) if !s.actions().contains(&action) => Err(ServiceError::new(
+            code::UNKNOWN_ACTION,
+            format!(
+                "unknown action `{service}/{action}` (known: {})",
+                s.actions().join(", ")
+            ),
         )),
         Some(s) => s.dispatch(app, plugin_id, action, params),
     }

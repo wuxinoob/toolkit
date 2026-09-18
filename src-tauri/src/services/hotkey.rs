@@ -23,7 +23,8 @@ use serde_json::{json, Value};
 use tauri::Emitter;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
-use super::Service;
+use super::{Service, ServiceError};
+use crate::protocol::codes::code;
 use crate::host::registry::HOST_IDENTITY;
 use crate::protocol::envelope::{Envelope, BROADCAST_EVENT};
 
@@ -34,17 +35,18 @@ use crate::protocol::envelope::{Envelope, BROADCAST_EVENT};
 /// `contributes.hotkeys` entry gets wired up without the plugin needing a
 /// shortcut permission of its own. Only the host identity may do that, so a
 /// plugin cannot register shortcuts for another plugin.
-pub fn resolve_owner(caller: &str, params: &Value) -> Result<String, String> {
+pub fn resolve_owner(caller: &str, params: &Value) -> Result<String, ServiceError> {
     match params.get("owner").and_then(|v| v.as_str()) {
         None => Ok(caller.to_string()),
         Some(owner) if caller == HOST_IDENTITY => {
             if owner.trim().is_empty() {
-                return Err("empty `owner`".into());
+                return Err(ServiceError::bad_params("empty `owner`"));
             }
             Ok(owner.to_string())
         }
-        Some(_) => Err(format!(
-            "plugin `{caller}` may not register a hotkey for another plugin"
+        Some(_) => Err(ServiceError::new(
+            code::DENIED,
+            format!("plugin `{caller}` may not register a hotkey for another plugin"),
         )),
     }
 }
@@ -67,12 +69,12 @@ pub fn topic_for(action: &str) -> String {
 }
 
 /// Validate a shortcut string without touching the OS. Pure, so it is testable.
-pub fn parse_shortcut(key: &str) -> Result<Shortcut, String> {
+pub fn parse_shortcut(key: &str) -> Result<Shortcut, ServiceError> {
     if key.trim().is_empty() {
-        return Err("empty shortcut".into());
+        return Err(ServiceError::bad_params("empty shortcut"));
     }
     key.parse::<Shortcut>()
-        .map_err(|e| format!("invalid shortcut `{key}`: {e}"))
+        .map_err(|e| ServiceError::bad_params(format!("invalid shortcut `{key}`: {e}")))
 }
 
 /// Remember that `plugin` holds `key` (idempotent).
@@ -132,13 +134,13 @@ impl Service for HotkeyService {
         plugin_id: &str,
         action: &str,
         params: Value,
-    ) -> Result<Value, String> {
-        let str_param = |key: &str| -> Result<String, String> {
+    ) -> Result<Value, ServiceError> {
+        let str_param = |key: &str| -> Result<String, ServiceError> {
             params
                 .get(key)
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
-                .ok_or_else(|| format!("missing string param `{key}`"))
+                .ok_or_else(|| ServiceError::bad_params(format!("missing string param `{key}`")))
         };
 
         match action {
@@ -183,7 +185,7 @@ impl Service for HotkeyService {
                 let owner = resolve_owner(plugin_id, &params)?;
                 Ok(json!({ "keys": held_by(&owner) }))
             }
-            _ => Err(format!("unknown action `hotkey/{action}`")),
+            _ => Err(ServiceError::new(code::UNKNOWN_ACTION, format!("unknown action `hotkey/{action}`"))),
         }
     }
 }
@@ -198,7 +200,8 @@ mod tests {
         assert!(parse_shortcut("Ctrl+Alt+T").is_ok());
         assert!(parse_shortcut("F9").is_ok());
         let err = parse_shortcut("not+a+key").unwrap_err();
-        assert!(err.contains("invalid shortcut"), "got: {err}");
+        assert_eq!(err.code, code::BAD_PARAMS);
+        assert!(err.msg.contains("invalid shortcut"), "got: {err}");
         assert!(parse_shortcut("").is_err());
     }
 
@@ -213,7 +216,8 @@ mod tests {
         );
         // a plugin trying to act for another plugin is refused
         let err = resolve_owner("a.plugin", &json!({ "owner": "b.plugin" })).unwrap_err();
-        assert!(err.contains("may not register"), "got: {err}");
+        assert_eq!(err.code, code::DENIED, "acting for another plugin is an authorization failure");
+        assert!(err.msg.contains("may not register"), "got: {err}");
         // an empty owner is refused
         assert!(resolve_owner(HOST_IDENTITY, &json!({ "owner": "  " })).is_err());
     }

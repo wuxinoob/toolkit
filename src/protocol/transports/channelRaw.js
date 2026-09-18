@@ -9,6 +9,7 @@
 
 import { invoke, Channel } from '@tauri-apps/api/core';
 import * as Envelope from '../envelope.js';
+import { Code } from '../codes.js';
 import { rawToEnvelope } from '../codec.js';
 import { descriptor } from '../registry.js';
 import { guard } from '../errors.js';
@@ -39,7 +40,7 @@ export const channelRawTransport = {
       try {
         env = rawToEnvelope(toBytes(raw), ch);
       } catch (e) {
-        finish(Envelope.streamErr(ch, 'codec', String(e?.message ?? e)));
+        finish(Envelope.streamErr(ch, Code.CODEC, String(e?.message ?? e)));
         return;
       }
       onFrame?.(env);
@@ -62,7 +63,7 @@ export const channelRawTransport = {
       provider,
       async close() {
         await guard(invoke('plugin_stream_close', { pluginId, ch }), `close ${ch}`).catch((e) => {
-          if (e.code !== 'transport') throw e;
+          if (e.code !== Code.TRANSPORT) throw e;
         });
         finish(Envelope.end(ch));
       },

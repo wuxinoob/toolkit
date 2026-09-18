@@ -13,4 +13,5 @@
 //! branch in the host. See docs/MESSAGE-FRAMEWORK.md.
 
 pub mod codec;
+pub mod codes;
 pub mod envelope;

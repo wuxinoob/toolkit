@@ -28,7 +28,8 @@ use serde_json::{json, Value};
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 use super::session::{self, SessionKind};
-use super::Service;
+use super::{Service, ServiceError};
+use crate::protocol::codes::code;
 use crate::protocol::codec::raw_binary;
 use crate::protocol::envelope::Envelope;
 
@@ -78,6 +79,8 @@ impl Sink {
                     .map_err(|e| format!("encode: {e}"))?;
                 c.send(InvokeResponseBody::Raw(framed)).map_err(|e| format!("channel: {e}"))
             }
+            // NOT a coded error: this surfaces through the stream COMMANDS as an
+            // invoke rejection, not as an `err` envelope, so it stays a plain string.
             Sink::Json(_) => Err("the json-envelope codec cannot carry raw bytes".into()),
         }
     }
@@ -256,7 +259,8 @@ where
         SessionKind::Stream,
         None,
         Arc::new(move || cancel_for_stop.store(true, Ordering::SeqCst)),
-    )?;
+    )
+    .map_err(|e| e.msg)?;
 
     let pid = plugin_id.to_string();
     let cid = ch.to_string();
@@ -307,13 +311,13 @@ impl Service for StreamService {
         plugin_id: &str,
         action: &str,
         params: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, ServiceError> {
         match action {
             "close" => {
                 let ch = params
                     .get("ch")
                     .and_then(|v| v.as_str())
-                    .ok_or("missing string param `ch`")?;
+                    .ok_or_else(|| ServiceError::bad_params("missing string param `ch`"))?;
                 Ok(json!({ "stopped": session::stop_one(plugin_id, ch) }))
             }
             // Session lifecycle for an endpoint whose process the host does NOT
@@ -324,7 +328,7 @@ impl Service for StreamService {
                 let ch = params
                     .get("ch")
                     .and_then(|v| v.as_str())
-                    .ok_or("missing string param `ch`")?;
+                    .ok_or_else(|| ServiceError::bad_params("missing string param `ch`"))?;
                 let kind = match params.get("kind").and_then(|v| v.as_str()).unwrap_or("stream") {
                     "pty" => SessionKind::Pty,
                     "sidecar" => SessionKind::Sidecar,
@@ -342,7 +346,7 @@ impl Service for StreamService {
                 let ch = params
                     .get("ch")
                     .and_then(|v| v.as_str())
-                    .ok_or("missing string param `ch`")?;
+                    .ok_or_else(|| ServiceError::bad_params("missing string param `ch`"))?;
                 Ok(Value::Bool(session::close(plugin_id, ch)))
             }
             "providers" => Ok(json!(
@@ -354,7 +358,7 @@ impl Service for StreamService {
                     .filter(|s| s["kind"] == json!("stream"))
                     .collect(),
             )),
-            _ => Err(format!("unknown action `stream/{action}`")),
+            _ => Err(ServiceError::new(code::UNKNOWN_ACTION, format!("unknown action `stream/{action}`"))),
         }
     }
 }

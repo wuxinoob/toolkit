@@ -9,6 +9,7 @@
 
 import { invoke, Channel } from '@tauri-apps/api/core';
 import * as Envelope from '../envelope.js';
+import { Code } from '../codes.js';
 import { descriptor } from '../registry.js';
 import { ProtocolError, guard } from '../errors.js';
 
@@ -34,7 +35,7 @@ export const channelJsonTransport = {
       try {
         env = typeof raw === 'string' ? Envelope.validate(JSON.parse(raw)) : Envelope.validate(raw);
       } catch (e) {
-        finish(Envelope.streamErr(ch, 'codec', String(e?.message ?? e)));
+        finish(Envelope.streamErr(ch, Code.CODEC, String(e?.message ?? e)));
         return;
       }
       onFrame?.(env);
@@ -58,7 +59,7 @@ export const channelJsonTransport = {
       async close() {
         await guard(invoke('plugin_stream_close', { pluginId, ch }), `close ${ch}`).catch((e) => {
           // The producer may already have finished; that is not an error.
-          if (e.code !== 'transport') throw e;
+          if (e.code !== Code.TRANSPORT) throw e;
         });
         finish(Envelope.end(ch));
       },

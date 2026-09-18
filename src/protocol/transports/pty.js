@@ -40,6 +40,7 @@
 import { invoke } from '@tauri-apps/api/core';
 
 import * as Envelope from '../envelope.js';
+import { Code } from '../codes.js';
 import { descriptor } from '../registry.js';
 import { ProtocolError } from '../errors.js';
 import { rpcTransport } from './rpc.js';
@@ -187,7 +188,7 @@ export const ptyStreamTransport = {
           if (stopped) return;
           const s = String(e);
           if (isEndOfOutput(s)) break;
-          finish(Envelope.streamErr(ch, 'transport', `pty read failed: ${s}`));
+          finish(Envelope.streamErr(ch, Code.TRANSPORT, `pty read failed: ${s}`));
           return;
         }
         if (stopped) return;
