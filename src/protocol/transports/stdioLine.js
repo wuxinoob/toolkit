@@ -34,9 +34,12 @@ export const stdioLineTransport = {
     });
 
     let stopped = false;
+    let ended = false;
+    let closing = null;
     let timer = null;
     const finish = (env) => {
-      if (stopped) return;
+      if (ended) return;
+      ended = true;
       stopped = true;
       if (timer) clearTimeout(timer);
       onEnd?.(env);
@@ -51,6 +54,7 @@ export const stdioLineTransport = {
           act: 'recv',
           params: { key: ch, timeoutMs },
         });
+        if (stopped) return;
         if (r && typeof r.line === 'string') {
           let env;
           try {
@@ -59,13 +63,17 @@ export const stdioLineTransport = {
             env = Envelope.data(ch, r.line); // plain-text backend: wrap it
           }
           onFrame?.(env);
-          if (Envelope.isTerminal(env.kind)) return finish(env);
+          const isRequestReply =
+            (env.kind === Envelope.Kind.RES || env.kind === Envelope.Kind.ERR) &&
+            env.id !== undefined && env.id !== null;
+          if (!isRequestReply && Envelope.isTerminal(env.kind)) return finish(env);
         } else if (r && r.exited) {
           const env = Envelope.exit(ch, r.code);
           onFrame?.(env);
           return finish(env);
         }
       } catch (e) {
+        if (stopped) return;
         // A host-level failure ends the stream with a proper terminal frame.
         const env = Envelope.streamErr(ch, e.code ?? 'transport', String(e.message ?? e));
         onFrame?.(env);
@@ -87,13 +95,17 @@ export const stdioLineTransport = {
           params: { key: ch, line: lineJson.encode(env) },
         });
       },
-      async close() {
+      close() {
+        if (closing) return closing;
         stopped = true;
         if (timer) clearTimeout(timer);
-        await rpcTransport
+        closing = rpcTransport
           .request({ pluginId, svc: 'proc', act: 'kill', params: { key: ch } })
-          .catch(() => {});
-        finish(Envelope.end(ch));
+          .catch(() => {})
+          .then(() => {
+            finish(Envelope.end(ch));
+          });
+        return closing;
       },
     };
   },
