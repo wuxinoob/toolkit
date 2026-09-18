@@ -202,7 +202,17 @@ export function buildCtx(plugin, disposer) {
        */
       onCloseRequested: (fn) =>
         gatedWin(async () => {
-          const un = await getCurrentWindow().onCloseRequested(fn);
+          // Contain a handler failure. Tauri's own implementation calls
+          // `destroy()` only AFTER the handler resolves, so a throw here would
+          // leave the window impossible to close — a plugin bug must not wedge
+          // the window. The handler still runs; only its failure is contained.
+          const un = await getCurrentWindow().onCloseRequested(async (event) => {
+            try {
+              await fn(event);
+            } catch (e) {
+              console.error(`${prefix} onCloseRequested handler failed`, e);
+            }
+          });
           disposer.track(() => un());
           return un;
         }),

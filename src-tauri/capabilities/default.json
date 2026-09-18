@@ -1,8 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main"],
+  "description": "Capability for the main window. Note `allow-destroy`: Tauri's `onCloseRequested` closes the window by calling `destroy()` after the JS handler resolves — not `close()`. Without it the close button silently does nothing once any plugin listens for the close event.",
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-show",
@@ -15,6 +17,7 @@
     "core:window:allow-set-always-on-top",
     "core:window:allow-set-skip-taskbar",
     "core:window:allow-close",
+    "core:window:allow-destroy",
     "opener:default",
     "pty:default",
     "global-shortcut:allow-register",
