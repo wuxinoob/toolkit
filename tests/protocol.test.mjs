@@ -270,8 +270,9 @@ test('hub: schema composes the native surface with the local scheme table', asyn
   const schema = await hub.schema('p.schema');
   assert.equal(schema.protocol, 1, 'native half');
   assert.deepEqual(schema.services.storage, ['get'], 'native half');
-  assert.equal(schema.schemes.length, 7, 'local half: the scheme table');
-  assert.equal(schema.transports.length, 7, 'local half: transport ids');
+  // derived: a hardcoded count here goes stale the moment a scheme is added
+  assert.equal(schema.schemes.length, descriptors().length, 'local half: the scheme table');
+  assert.equal(schema.transports.length, descriptors().length, 'local half: transport ids');
 });
 
 test('rpc: a wedged service times out instead of hanging the caller', async () => {
@@ -306,22 +307,6 @@ test('hub: once delivers exactly one event, then detaches', async () => {
   assert.deepEqual(got, [{ n: 1 }], 'exactly one delivery');
   off(); // idempotent
 });
-
-test('hub: schema composes the native surface with the local scheme table', async () => {
-  invokeImpl = async (cmd, { msg }) => ({
-    v: 1,
-    kind: 'res',
-    id: msg.id,
-    p: { protocol: 1, services: { storage: ['get'] }, providers: ['ticker'] },
-  });
-  const schema = await hub.schema('p.schema');
-  assert.equal(schema.protocol, 1, 'native half');
-  assert.deepEqual(schema.services.storage, ['get'], 'native half');
-  assert.equal(schema.schemes.length, 7, 'local half: the scheme table');
-  assert.equal(schema.transports.length, 7, 'local half: transport ids');
-});
-
-// ------------------------------ channel-json scheme ----------------------------
 
 test('channel-json: frames arrive as envelopes and a terminal frame ends the stream', async () => {
   let captured = null;

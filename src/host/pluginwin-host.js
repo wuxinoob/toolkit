@@ -114,6 +114,9 @@ function makeBridge(pluginId, label, manifest) {
     streamRaw: (provider, ch, handlers = {}) =>
       gate('stream', () => hub.stream(pluginId, 'channel-raw', { provider, ch, ...handlers })),
     sidecar: (ch, opts) => gate('proc', () => hub.sidecar(pluginId, ch, opts)),
+    /** Uplink: push frames to a host-side sink (same shape as ctx.uplink). */
+    uplink: (ch, opts = {}) =>
+      gate('stream', () => hub.uplink(pluginId, ch, { sink: opts.sink, params: opts.params })),
     pty: (ch, opts) => gate('stream', () => hub.pty(pluginId, ch, opts)),
 
     sessions: () => gate('host', () => hub.sessions(pluginId)),

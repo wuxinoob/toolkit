@@ -89,8 +89,23 @@ async function sweep(ctx) {
 
   await step('scheme table', 'registry', async () => {
     const schemes = ctx.schemes();
-    if (!Array.isArray(schemes) || schemes.length !== 7) throw new Error(`expected 7 schemes, got ${schemes?.length}`);
-    return schemes.map((s) => s.id).join(', ');
+    if (!Array.isArray(schemes) || !schemes.length) throw new Error('scheme table is empty');
+    // Assert the schemes this plugin DEPENDS ON, not a total: the count is not
+    // part of the contract, but "these exist and are usable" is.
+    const required = [
+      'rpc',
+      'channel-json',
+      'channel-raw',
+      'channel-in',
+      'event-bus',
+      'stdio-line',
+      'pty-stream',
+      'in-process',
+    ];
+    const ids = schemes.map((s) => s.id);
+    const missing = required.filter((id) => !ids.includes(id));
+    if (missing.length) throw new Error(`missing schemes: ${missing.join(', ')} (have: ${ids.join(', ')})`);
+    return ids.join(', ');
   });
 
   await step('session registry', 'rpc', async () => {
@@ -158,7 +173,11 @@ async function sweep(ctx) {
     const services = Object.keys(schema.services || {});
     if (services.length < 5) throw new Error('services not listed: ' + JSON.stringify(services));
     if (!schema.services.storage?.includes('get')) throw new Error('storage actions missing');
-    if (!Array.isArray(schema.schemes) || schema.schemes.length !== 7) throw new Error('schemes missing');
+    if (!Array.isArray(schema.schemes) || !schema.schemes.length) throw new Error('schemes missing');
+    if (!Array.isArray(schema.sinks) || !schema.sinks.includes('proc')) {
+      throw new Error(`host advertises no \`proc\` uplink sink: ${JSON.stringify(schema.sinks)}`);
+    }
+    if (typeof ctx.uplink !== 'function') throw new Error('ctx.uplink is missing');
     return services.length + ' services, ' + schema.schemes.length + ' schemes, providers=' + schema.providers;
   });
 

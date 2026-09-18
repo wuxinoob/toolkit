@@ -135,6 +135,7 @@ function installGateway() {
             hotkey: ['register', 'unregister', 'unregister_all', 'list'],
           },
           providers: ['ticker', 'blob'],
+          sinks: ['proc'],
         });
       }
       if (svc === 'hotkey' && act === 'list') {
@@ -156,6 +157,7 @@ function installGateway() {
             hotkey: ['register', 'unregister', 'unregister_all', 'list'],
           },
           providers: ['ticker', 'blob'],
+          sinks: ['proc'],
         });
       }
       if (svc === 'hotkey' && act === 'list') {

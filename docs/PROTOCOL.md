@@ -107,12 +107,46 @@ Declared in `src/protocol/registry.js`, one implementation per scheme in
 | id | transport · codec | dir | capabilities |
 |---|---|---|---|
 | `rpc` | invoke · json-envelope | up | `requestResponse`, `ordered` |
-| `channel-json` | channel · json-envelope | down | `push`, `ordered`, `crossWindow`, `backpressure` |
+| `channel-in` | invoke (batched) · json-envelope | **up** | `uplink`, `ordered` |
+| `channel-json` | channel · json-envelope | down | `push`, `ordered`, `crossWindow` |
 | `channel-raw` | channel · raw-binary | down | `push`, `binary`, `ordered`, `crossWindow` |
 | `event-bus` | event · json-envelope | down | `push`, `crossWindow` |
 | `stdio-line` | stdio · line-json | both | `requestResponse`, `push`, `pull`, `ordered` |
 | `pty-stream` | pty · raw-binary | both | `push`, `binary`, `ordered`, `requestResponse` |
 | `in-process` | in-process · object | down | `push` |
+
+Every scheme but one moves data **host → plugin**. `channel-in` is the exception.
+
+### Uplink streams
+
+A plugin that produces data for the host used to have one option: call `rpc` per
+frame — feeding a backend meant `proc/send` once per line, so a 1000-frame burst
+cost 1000 round trips.
+
+`ctx.uplink(ch, { sink })` opens a stream in the other direction:
+
+```js
+const up = await ctx.uplink('feed', { sink: 'proc', params: { key: 'backend' } });
+await up.sendBatch(frames);      // ONE round trip for the whole batch
+await up.close();
+```
+
+The handle has the same shape as every other stream (`send` / `close`), so a
+caller does not learn a second model — `send` is simply a batch of one, and
+`sendBatch` is the point. Frames are validated like any other and handed to a
+**sink**: a host-side consumer looked up by name, advertised in `host/schema`
+(`sinks`). The first sink is `proc`, which writes each frame as one `line-json`
+line to a sidecar's stdin — the case that motivated this.
+
+**Why the carrier is batched `invoke`, not a `Channel`.** Tauri's `Channel` is
+one-directional: the JS side has only a receive callback and no `send` at all, so
+the framework offers no push carrier from plugin to host. Rather than pretend
+otherwise, the uplink is carried by batched invoke and says so. The API shape is
+still a stream; what is missing is a true push carrier, and that is a framework
+constraint rather than a design choice.
+
+A batch is capped at 256 frames, because a batch is a single IPC payload —
+without a cap, batching would just relocate the memory problem.
 
 ### Capability negotiation
 
@@ -157,6 +191,7 @@ ctx.stream(provider, ch, handlers)        // channel-json
 ctx.streamRaw(provider, ch, handlers)     // channel-raw
 ctx.sidecar(ch, { exe, args })            // stdio-line
 ctx.pty(ch, { program, args })            // pty-stream
+ctx.uplink(ch, { sink })                  // channel-in — push frames TO the host
 ctx.sessions()                            // rpc (host) — the unified registry
 ctx.schemes()                             // the scheme table (local, no IPC)
 ctx.schema()                              // what this host supports

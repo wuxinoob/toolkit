@@ -46,8 +46,12 @@ export class MessageHub {
    * Open a push stream over an explicit scheme. Callers normally use the
    * `sidecar()` / `pty()` helpers; this is the escape hatch for experiments.
    */
-  async stream(pluginId, schemeId, { provider, ch, params = null, onFrame, onEnd } = {}) {
-    assertSupports(schemeId, Capability.PUSH);
+  async stream(
+    pluginId,
+    schemeId,
+    { provider, ch, params = null, onFrame, onEnd, requires = Capability.PUSH } = {},
+  ) {
+    assertSupports(schemeId, requires);
     if (!ch) throw ProtocolError.protocol('stream requires a channel id');
 
     const key = `${pluginId}/${ch}`;
@@ -82,6 +86,24 @@ export class MessageHub {
   }
 
   /** Run a command-line subprocess in a pseudo-terminal. */
+  /**
+   * Open an UPLINK stream: the plugin pushes frames to a host-side sink.
+   *
+   * The handle has the same shape as every other stream (`send` / `close`),
+   * plus `sendBatch` — which is the point: the old way to feed a backend was one
+   * `rpc` per frame. See transports/channelIn.js for why the carrier is batched
+   * invoke rather than a Channel.
+   */
+  uplink(pluginId, ch, { sink, params = null, onEnd } = {}) {
+    return this.stream(pluginId, 'channel-in', {
+      provider: 'plugin',
+      ch,
+      params: { sink, params },
+      onEnd,
+      requires: Capability.UPLINK,
+    });
+  }
+
   pty(pluginId, ch, { program, args, cwd, cols, rows, onFrame, onEnd } = {}) {
     return this.stream(pluginId, 'pty-stream', {
       provider: 'pty',

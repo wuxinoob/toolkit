@@ -169,8 +169,8 @@ test('boot: the expected views are registered, one per declared view', async () 
 });
 
 test('boot: the scheme table is published for the diagnostics view', async () => {
+  // derived from the registry, not a literal: adding a scheme must not fail this
   assert.equal(store.schemes.length, descriptors().length);
-  assert.equal(store.schemes.length, 7);
   assert.deepEqual(
     store.schemes.map((s) => s.id),
     hub.transports(),

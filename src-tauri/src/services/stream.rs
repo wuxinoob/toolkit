@@ -303,7 +303,7 @@ impl Service for StreamService {
         "stream"
     }
     fn actions(&self) -> &'static [&'static str] {
-        &["close", "providers", "list", "session_open", "session_close"]
+        &["close", "providers", "list", "session_open", "session_close", "open_in", "write_in", "close_in"]
     }
     fn dispatch(
         &self,
@@ -358,6 +358,39 @@ impl Service for StreamService {
                     .filter(|s| s["kind"] == json!("stream"))
                     .collect(),
             )),
+            // ---- uplink: the plugin pushes frames to a host-side sink ----
+            // Carried by batched invoke because Tauri's Channel is Rust -> JS
+            // only; see services/uplink.rs for why that trade is deliberate.
+            "open_in" => {
+                let ch = params
+                    .get("ch")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ServiceError::bad_params("missing string param `ch`"))?;
+                let sink = params
+                    .get("sink")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ServiceError::bad_params("missing string param `sink`"))?;
+                let inner = params.get("params").cloned().unwrap_or(Value::Null);
+                super::uplink::open(plugin_id, ch, sink, &inner)
+            }
+            "write_in" => {
+                let ch = params
+                    .get("ch")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ServiceError::bad_params("missing string param `ch`"))?;
+                let frames = params
+                    .get("frames")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| ServiceError::bad_params("missing array param `frames`"))?;
+                super::uplink::write(plugin_id, ch, frames)
+            }
+            "close_in" => {
+                let ch = params
+                    .get("ch")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ServiceError::bad_params("missing string param `ch`"))?;
+                super::uplink::close(plugin_id, ch)
+            }
             _ => Err(ServiceError::new(code::UNKNOWN_ACTION, format!("unknown action `stream/{action}`"))),
         }
     }

@@ -240,6 +240,24 @@ export function buildCtx(plugin, disposer) {
       streamVia('channel-raw', [Capability.BINARY], provider, ch, handlers),
 
     /**
+     * Open an UPLINK stream: push frames TO the host, in batches.
+     *
+     * Every other method here receives. This one sends, which is what the
+     * downlink-only data plane was missing: feeding a backend used to cost one
+     * `rpc` per frame, so a 1000-frame burst cost 1000 round trips. `sendBatch`
+     * makes it one per batch, and the host routes the frames to a named sink.
+     *
+     * Gated by `rpc:stream`: it is the same push data plane, just the other way.
+     */
+    uplink: (ch, { sink, params = null } = {}) =>
+      gatedStream(async () => {
+        assertSupports('channel-in', Capability.UPLINK);
+        const h = await hub.uplink(id, ch, { sink, params });
+        disposer.track(() => h.close().catch(() => {}));
+        return trackStream(h);
+      }),
+
+    /**
      * Talk to a helper executable shipped inside this plugin's folder.
      *
      * Gated by `rpc:proc` rather than `rpc:stream`: running a binary that the

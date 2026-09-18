@@ -247,6 +247,11 @@ fn main() {
         "so a caller can branch on any code the host hands out",
     );
     check(
+        "schema-advertises-the-uplink-sinks",
+        sch["sinks"] == json!(["proc"]),
+        "a plugin is told where it may push, instead of guessing",
+    );
+    check(
         "schema-advertises-the-vocabulary",
         sch["codes"] == json!(codes::ALL),
         "a caller is told the codes instead of guessing at strings",

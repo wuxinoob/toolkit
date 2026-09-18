@@ -25,6 +25,12 @@ export const TransportKind = Object.freeze({
   STDIO: 'stdio',
   PTY: 'pty',
   IN_PROCESS: 'in-process',
+  /**
+   * Batched `invoke`. Not a new carrier — it is how the UPLINK stream is moved,
+   * because Tauri's `Channel` is one-directional (JS has no `send`), so the
+   * framework offers no push carrier from plugin to host.
+   */
+  INVOKE_BATCH: 'invoke-batch',
 });
 
 export const Capability = Object.freeze({
@@ -34,6 +40,8 @@ export const Capability = Object.freeze({
   BINARY: 'binary',
   ORDERED: 'ordered',
   CROSS_WINDOW: 'crossWindow',
+  /** The plugin pushes TO the host (every other scheme pushes the other way). */
+  UPLINK: 'uplink',
 });
 
 // NOTE: there is deliberately no `backpressure` capability. The channel codecs
@@ -69,6 +77,15 @@ export const DESCRIPTORS = Object.freeze([
       [Capability.CROSS_WINDOW]: true,
     },
     note: '结构化流：宿主主动推送 data/end/exit',
+  },
+  {
+    id: 'channel-in',
+    label: 'invoke (batched) · json-envelope',
+    transport: TransportKind.INVOKE_BATCH,
+    codec: CodecId.JSON_ENVELOPE,
+    direction: 'up',
+    capabilities: { [Capability.UPLINK]: true, [Capability.ORDERED]: true },
+    note: '上行流：插件按批把帧推给宿主侧 sink；Tauri 的 Channel 单向，故用批量 invoke 承载',
   },
   {
     id: 'channel-raw',

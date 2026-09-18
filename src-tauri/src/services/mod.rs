@@ -22,6 +22,7 @@ pub mod proc;
 pub mod session;
 pub mod storage;
 pub mod stream;
+pub mod uplink;
 
 use serde_json::{json, Value};
 use std::sync::OnceLock;
@@ -153,6 +154,8 @@ pub fn schema() -> Value {
         "protocol": crate::protocol::envelope::PROTOCOL_VERSION,
         "services": services,
         "providers": stream::providers().iter().map(|p| p.name()).collect::<Vec<_>>(),
+        // Uplink consumers, so a plugin knows where it may push to.
+        "sinks": uplink::sink_names(),
         // The error vocabulary, so a caller can branch on codes it has actually
         // been told about rather than guessing at strings.
         "codes": crate::protocol::codes::ALL,

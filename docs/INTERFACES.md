@@ -11,8 +11,8 @@
 |---|---|
 | **1. 协议是否统一了？** | **插件侧完全统一**；宿主侧有 4 个命令在网关之外（插件发现 + 权限上报），属于有理由的例外；窗口控制不在协议内（热键已收敛进 `hotkey` 服务）。 |
 | **2. 新插件能否直接调用已有接口？** | **能，且已验证**。`examples/plugins/probe` 不 import 任何模块、不碰 Tauri API，一次调用覆盖 11 项接口全部通过。 |
-| **3. 接口有哪些？** | 8 个原生命令 · 6 个服务 / 26 个动作 · 7 个方案 · 2 个流提供者。见 §1–§4。 |
-| **4. 有改进空间吗？** | 有。**P1、P2 已全部完成；P0 的错误码闭集也已完成**（见 §8），仅剩「上行没有推送通道」一项。 |
+| **3. 接口有哪些？** | 8 个原生命令 · 6 个服务 / 29 个动作 · 8 个方案 · 2 个流提供者。见 §1–§4。 |
+| **4. 有改进空间吗？** | 有。**P1、P2 与 P0 两项均已完成**（见 §8）。剩余的是结构性例外与后续增强，不再是缺口。 |
 
 ---
 
@@ -33,14 +33,14 @@
 
 > 原先还有第 9 个 `plugin_registry`，核查时发现**没有任何调用方**（Settings 页走网关的 `host/plugins`），已删除，避免留一个无人使用、无人校验的入口。
 
-## 2. 网关背后的服务：6 个服务 / 26 个动作
+## 2. 网关背后的服务：6 个服务 / 29 个动作
 
 | 服务 | 动作 | 说明 |
 |---|---|---|
 | `storage` | `get` `set` `remove` `keys` | 每插件独立的磁盘 JSON KV（`plugin-data/<id>/data.json`） |
 | `host` | `info` `write_debug_log` `sessions` `plugins` `schema` `unregister` | 路径/元数据、调试落盘、**统一会话表**、已授权插件、**能力协商面**、**撤销授权**（仅宿主可调） |
 | `proc` | `spawn` `send` `recv` `kill` `kill_all` `list` | sidecar 行 JSON 管道（`stdio-line` 方案的底层） |
-| `stream` | `close` `providers` `list` `session_open` `session_close` | 推送流生命周期 + 第三方进程的会话登记 |
+| `stream` | `close` `providers` `list` `session_open` `session_close` `open_in` `write_in` `close_in` | 推送流生命周期 + 第三方进程的会话登记 + **上行流**（插件按批把帧推给宿主侧 sink） |
 | `bus` | `publish` | 跨窗口广播（宿主 `app.emit` 扇出到所有窗口） |
 | `hotkey` | `register` `unregister` `unregister_all` `list` | 全局热键，**由宿主代插件注册**（`contributes.hotkeys`） |
 
@@ -50,11 +50,12 @@
 > 动作清单是**权威**的而不是文档：`host/schema` 直接由同一份 `actions()` 生成，所以
 > "告诉插件存在什么"与"网关实际接受什么"不可能漂移。
 
-## 3. 方案表：7 个方案 + 2 个流提供者
+## 3. 方案表：8 个方案 + 2 个流提供者
 
 | 方案 id | 载体 · 编码 | 方向 | 能力 |
 |---|---|---|---|
 | `rpc` | invoke · json-envelope | ↑ | requestResponse, ordered |
+| `channel-in` | **invoke（批量）** · json-envelope | **↑** | **uplink**, ordered |
 | `channel-json` | channel · json-envelope | ↓ | push, ordered, crossWindow |
 | `channel-raw` | channel · raw-binary | ↓ | push, binary, ordered, crossWindow |
 | `event-bus` | event · json-envelope | ↓ | push, crossWindow |
@@ -63,6 +64,7 @@
 | `in-process` | in-process · object | ↓ | push |
 
 流提供者（`stream` 服务的数据源）：`ticker`（支持两种编码）、`blob`（仅 raw，用于演示能力协商）。
+上行 sink（`channel-in` 的宿主侧消费者）：`proc`（每帧写成一行 line-json 送到 sidecar 的 stdin）。
 
 > `channel-json` 原先声明了 `backpressure`，核查发现**没有任何实现或消费方**——一个调用方无法依赖的声明比不声明更糟，已移除，并在 `registry.js` 里写明原因。
 
@@ -167,9 +169,15 @@ event-bus 广播往返 · in-process 同步投递 · 权限闸口拒绝未声明
    服务错误不再报 `{svc}/{act}`，`host/schema` 与 `ctx.protocol.Code` 都公布词表，
    并有跨语言漂移测试保证两份声明一致。详见 `docs/PROTOCOL.md` §6「Error codes」。
 
-**P0 — 待做**
+**P0 — 上行流已完成（附带一个必须说明的框架限制）**
 
-7. **上行没有推送通道。** 下行有 `Channel` 推流，上行只有 req/res——插件想持续向宿主灌数据只能反复调 `rpc`。建议增加上行 `channel-in` 方案，否则"双向通信"在数据面是单向的。
+7. ~~**上行没有推送通道。**~~ → **已完成**：新增 `channel-in` 方案 + `ctx.uplink(ch, {sink})`，
+   提供与其他流同形的句柄（`send` / `close`）外加 `sendBatch` —— 1000 帧由 1000 次往返
+   变成 1 次。帧经校验后交给命名的宿主侧 **sink**（首个是 `proc`：每帧写成一行
+   `line-json` 送到 sidecar 的 stdin），sink 名单由 `host/schema` 公布。
+   **限制**：Tauri 的 `Channel` 是单向的（JS 侧只有接收回调，没有 `send`），框架不提供
+   插件→宿主的推送载体，所以载体是**批量 invoke** 而不是 Channel。API 形状仍是流，
+   缺的是真正的推送载体 —— 这是框架约束，不是设计选择，已在 `docs/PROTOCOL.md` 写明。
 
 **P2（剩余）**
 

@@ -388,16 +388,24 @@ fn action_spawn(root: &Path, plugin_id: &str, params: &Value) -> Result<Value, S
     Ok(json!({ "reused": false, "pid": pid }))
 }
 
-fn action_send(plugin_id: &str, params: &Value) -> Result<Value, ServiceError> {
-    let key = params_str(params, "key")?;
-    let line = params_str(params, "line")?;
+/// Write one line to a sidecar's stdin.
+///
+/// Public because the uplink `proc` sink feeds a sidecar through the same path —
+/// one write implementation, not two.
+pub fn send_line(plugin_id: &str, key: &str, line: &str) -> Result<(), ServiceError> {
     let h = registry()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .get(&ProcKey { plugin: plugin_id.into(), key })
+        .get(&ProcKey { plugin: plugin_id.into(), key: key.to_string() })
         .cloned()
         .ok_or_else(|| ServiceError::not_found("sidecar not running — spawn first"))?;
-    write_line(&h, &line)?;
+    write_line(&h, line)
+}
+
+fn action_send(plugin_id: &str, params: &Value) -> Result<Value, ServiceError> {
+    let key = params_str(params, "key")?;
+    let line = params_str(params, "line")?;
+    send_line(plugin_id, &key, &line)?;
     Ok(Value::Bool(true))
 }
 
