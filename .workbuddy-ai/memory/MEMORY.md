@@ -21,7 +21,7 @@
 
 ## 接口清单（详见 docs/INTERFACES.md）
 - **8 个原生命令**：`plugin_rpc`（网关）· `plugin_stream_open{,_raw}` · `plugin_stream_close` · `plugin_register` · `plugin_scan` · `plugin_read_entry` · `plugin_open_dir`。
-- **6 服务 / 25 动作**：storage(get/set/remove/keys) · host(info/write_debug_log/sessions/plugins/schema) · proc(spawn/send/recv/kill/kill_all/list) · stream(close/providers/list/session_open/session_close) · bus(publish) · hotkey(register/unregister/unregister_all/list)。
+- **6 服务 / 26 动作**：storage(get/set/remove/keys) · host(info/write_debug_log/sessions/plugins/schema/unregister) · proc(spawn/send/recv/kill/kill_all/list) · stream(close/providers/list/session_open/session_close) · bus(publish) · hotkey(register/unregister/unregister_all/list)。
 - **7 方案**：rpc · channel-json · channel-raw · event-bus · stdio-line · pty-stream · in-process。流提供者：ticker / blob。
 - 示例 **`examples/plugins/probe`（Plane Probe）**：一次调用跑完 11 项接口检查，失败即 `activate()` 抛错 → 启动日志显示 error。既是"新插件零改动复用接口"的证据，也是活的集成检查。
 - **能力声明必须为真**：曾声明 `channel-json` 支持 backpressure 但无实现，已移除。不要声明调用方无法依赖的能力。
@@ -41,6 +41,11 @@
 - `window.__toolbox`：store/events/logger/logs/schemes/transports/sessions/openStreams/selftest。
 
 ## 约定与坑
+- **Rescan 是对账，不是发现**：新目录加载、摘要变化则 deactivate→重载→激活、摘要相同
+  完全不动、目录消失则卸载并**撤销原生授权**、失败按内容记忆（同内容不重试，变了才重试）。
+  摘要由原生 `plugin_scan` 返回（FNV-1a 覆盖 plugin.json + 入口），必须**跨进程稳定**
+  → 不能用 `DefaultHasher`。重新加载**不改变**持久化的启用状态。
+- **撤销授权只有宿主能做**：`host/unregister` 校验调用方是 `__host__`，插件不能撤销别人的。
 - **会话的停止必须 `take_stop`，不能 `close` 之后再 `stop_one`**：`close()` 会把 Session
   连同 stop 闭包一起 remove（"只注销不停止"），再 `stop_one` 找不到记录、闭包永不执行。
   `proc/kill_all` 曾因此一个进程都没杀却回报 `{"killed": N}`。
@@ -49,6 +54,8 @@
 - **`Disposer.run()` 会 await 异步清理且幂等**：调用点必须 `await`，否则资源可能在
   拆卸之后才完成登记。
 - 外部插件是 **Blob URL 单文件 ESM**，不能 import 协议模块 → 用 `ctx.protocol` / `bridge.protocol`。
+- 测试外部插件加载时，把 **`URL.createObjectURL` 重定向到 `data:` URL**，Node 就能真正
+  `import()` 插件源码，不必 mock 掉加载路径。
 - `tauri-pty` 包没有 `main`/`exports` 字段，必须写 `tauri-pty/dist/index.es.js` 才能在 bundler 与 `node --test` 下都解析。
 - 涉及全局态的 Rust 测试用 `services::serial()` 串行化；JS 侧跑真实 boot 前必须 `resetHost()`（清 store + deactivate 释放定时器），否则进程不退出、`node --test` 会被 SIGTERM。
 - `npm run test` = `node --test`（不要写 `node --test tests/`，Windows 下会被当模块路径）。
