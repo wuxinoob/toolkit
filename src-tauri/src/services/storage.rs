@@ -117,7 +117,7 @@ impl Service for HostService {
         "host"
     }
     fn actions(&self) -> &'static [&'static str] {
-        &["info", "write_debug_log", "sessions", "plugins", "schema"]
+        &["info", "write_debug_log", "sessions", "plugins", "schema", "unregister"]
     }
     fn dispatch(
         &self,
@@ -142,6 +142,23 @@ impl Service for HostService {
             // stream providers. The negotiation surface — a plugin asks instead
             // of discovering the surface by failing.
             "schema" => Ok(crate::services::schema()),
+            // Revoke a plugin's native grant. Called when a plugin disappears
+            // from disk: without it the permission registry keeps the grant
+            // forever, so a plugin that is uninstalled stays authorised.
+            //
+            // Host-only: a plugin must not be able to drop another plugin's
+            // permissions.
+            "unregister" => {
+                if plugin_id != crate::host::registry::HOST_IDENTITY {
+                    return Err(format!(
+                        "plugin `{plugin_id}` may not revoke a plugin registration"
+                    ));
+                }
+                let target = params_str(&params, "plugin")?;
+                Ok(serde_json::json!({
+                    "unregistered": crate::host::registry::unregister(&target),
+                }))
+            }
             _ => dispatch_at(&data_root(app)?, plugin_id, self.name(), action, params),
         }
     }

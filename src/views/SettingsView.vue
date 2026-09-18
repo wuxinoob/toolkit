@@ -50,8 +50,16 @@ async function togglePlugin(row) {
 async function rescan() {
   scanning.value = true;
   try {
-    const n = (await scanExternalPlugins({ silent: false })).length;
-    toast(`Scan complete: ${n} external plugin(s) found`, 'info');
+    // The summary says what CHANGED, not just how many folders exist — that was
+    // the same number whether the rescan did anything or not.
+    const r = await scanExternalPlugins({ silent: false });
+    const parts = [];
+    if (r.added.length) parts.push(`${r.added.length} added`);
+    if (r.reloaded.length) parts.push(`${r.reloaded.length} reloaded`);
+    if (r.removed.length) parts.push(`${r.removed.length} removed`);
+    if (r.failed.length) parts.push(`${r.failed.length} failed`);
+    const detail = parts.length ? ` — ${parts.join(', ')}` : ' — no changes';
+    toast(`Scan: ${r.found} external plugin(s)${detail}`, r.failed.length ? 'error' : 'info');
   } finally {
     scanning.value = false;
   }

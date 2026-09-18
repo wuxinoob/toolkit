@@ -18,6 +18,29 @@ pub struct ExternalPlugin {
     pub dir: String,
     pub manifest: Value,
     pub entry_file: String,
+    /// Content digest of everything that defines this plugin (manifest + entry).
+    ///
+    /// The frontend compares it across rescans to tell "changed on disk" from
+    /// "unchanged", so a Rescan can reload what moved without disturbing what
+    /// did not. Computed here because this is where the bytes are already read.
+    pub digest: String,
+}
+
+/// Stable content digest: FNV-1a, hand-rolled.
+///
+/// It must be deterministic ACROSS RUNS, which rules out
+/// `std::collections::hash_map::DefaultHasher` (no stability guarantee). This is
+/// a change detector, not a security primitive — collision resistance against
+/// an adversary is not claimed or needed.
+fn digest_of(manifest: &str, entry: &[u8]) -> String {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut h = OFFSET;
+    for b in manifest.as_bytes().iter().chain(entry.iter()) {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(PRIME);
+    }
+    format!("{h:016x}")
 }
 
 pub(crate) fn plugins_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -59,14 +82,16 @@ pub fn scan_at(root: &Path) -> Result<Vec<ExternalPlugin>, String> {
             .and_then(|v| v.as_str())
             .unwrap_or("main.js")
             .to_string();
-        if !dir.join(&entry_file).is_file() {
-            continue;
-        }
+        let Ok(entry) = fs::read(dir.join(&entry_file)) else {
+            continue; // unreadable entry -> not loadable, skip
+        };
+        let digest = digest_of(&text, &entry);
         out.push(ExternalPlugin {
             id,
             dir: dir.to_string_lossy().into_owned(),
             manifest,
             entry_file,
+            digest,
         });
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -127,6 +152,37 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn the_digest_is_stable_and_content_sensitive() {
+        // Stable across calls, so a rescan can tell "unchanged" from "changed".
+        let a = digest_of("{\"id\":\"x\"}", b"console.log(1)");
+        assert_eq!(a, digest_of("{\"id\":\"x\"}", b"console.log(1)"));
+        assert_eq!(a.len(), 16, "fixed-width hex");
+        // Sensitive to both halves of the definition.
+        assert_ne!(a, digest_of("{\"id\":\"x\"}", b"console.log(2)"), "entry change");
+        assert_ne!(a, digest_of("{\"id\":\"y\"}", b"console.log(1)"), "manifest change");
+    }
+
+    #[test]
+    fn scan_reports_a_digest_that_tracks_the_files() {
+        let root = temp_root("digest");
+        let d = root.join("p");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("plugin.json"), r#"{"id":"d.demo","name":"D","entry":"main.js"}"#).unwrap();
+        fs::write(d.join("main.js"), "export const manifest = {id:'d.demo'}").unwrap();
+
+        let first = scan_at(&root).unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].digest.len(), 16);
+
+        // nothing changed -> same digest (this is what makes a no-op rescan cheap)
+        assert_eq!(scan_at(&root).unwrap()[0].digest, first[0].digest);
+
+        // touching the entry changes it (this is what triggers a reload)
+        fs::write(d.join("main.js"), "export const manifest = {id:'d.demo'} // touched").unwrap();
+        assert_ne!(scan_at(&root).unwrap()[0].digest, first[0].digest);
     }
 
     #[test]

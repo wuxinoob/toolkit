@@ -1,7 +1,16 @@
 # Example plugins
 
-Two complete drop-in plugins. Neither requires a single change to the host —
-that is the whole point of the plugin contract.
+Three complete drop-in plugins. None of them requires a single change to the
+host — that is the whole point of the plugin contract.
+
+## `plugins/probe` — the interface prober
+
+Drives every frontend↔backend interface in one pass and reports the result. It
+imports nothing and touches no Tauri API, so a clean run is the proof that a new
+plugin can call the existing interfaces with no host changes. It also doubles as
+a living integration check: every step runs inside `activate()`, so if any
+interface is broken the plugin shows up as `error` in the boot trace instead of
+`active` — no clicking needed.
 
 ## `plugins/hello` — the minimal drop-in
 
@@ -29,6 +38,22 @@ gcc -O2 -o calc.exe calc.c        # calc.exe is committed; rebuild if you edit c
 Install the whole folder as `calc.demo` and rescan. Building `calc.exe` also
 enables the Rust end-to-end test
 `services::proc::tests::real_sidecar_speaks_the_unified_envelope_protocol`.
+
+## Rescanning is a reconciliation, not just a discovery
+
+Iterating on a plugin does not need an app restart:
+
+| on disk | what happens |
+|---|---|
+| new folder | loaded and activated |
+| entry or `plugin.json` changed | the old instance is deactivated, the new one loaded |
+| unchanged | left completely alone — no reload, no re-toast |
+| folder deleted | deactivated, unloaded, and its host grant revoked |
+| fails to load | reported once, retried when the content changes |
+
+Change detection is a content digest computed by the native scanner, so a no-op
+rescan costs one call. A deliberately **disabled** plugin stays disabled across
+a reload — dropping new bytes in does not switch it back on.
 
 ## The single-file ESM constraint
 

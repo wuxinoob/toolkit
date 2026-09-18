@@ -108,6 +108,10 @@ External plugins need no host changes: drop a folder with `plugin.json` + a
 single-file ESM entry into `{appData}/plugins/` and click **Rescan** in Settings.
 See `examples/plugins/hello` and `examples/calc-plugin`.
 
+Rescan **reconciles** rather than only discovering — new folders load, changed
+ones reload in place (no app restart), deleted ones unload and lose their host
+grant, and unchanged ones are left alone. See `examples/README.md`.
+
 ## Trust model
 
 Locally installed plugins are trusted code (the same model as Raycast / Quicker).

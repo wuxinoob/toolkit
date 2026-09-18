@@ -57,7 +57,7 @@ export class Disposer {
   }
 }
 
-function setPluginState(id, status, error = null) {
+export function setPluginState(id, status, error = null) {
   const p = store.plugins.find((x) => x.manifest.id === id);
   if (p) {
     p.status = status;

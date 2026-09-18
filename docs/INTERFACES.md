@@ -11,7 +11,7 @@
 |---|---|
 | **1. 协议是否统一了？** | **插件侧完全统一**；宿主侧有 4 个命令在网关之外（插件发现 + 权限上报），属于有理由的例外；窗口控制不在协议内（热键已收敛进 `hotkey` 服务）。 |
 | **2. 新插件能否直接调用已有接口？** | **能，且已验证**。`examples/plugins/probe` 不 import 任何模块、不碰 Tauri API，一次调用覆盖 11 项接口全部通过。 |
-| **3. 接口有哪些？** | 8 个原生命令 · 6 个服务 / 25 个动作 · 7 个方案 · 2 个流提供者。见 §1–§4。 |
+| **3. 接口有哪些？** | 8 个原生命令 · 6 个服务 / 26 个动作 · 7 个方案 · 2 个流提供者。见 §1–§4。 |
 | **4. 有改进空间吗？** | 有。**P1 与 P2 本轮已全部完成**（见 §8），仅剩两项 P0 待你决定（上行无推送通道、错误码无闭集）。 |
 
 ---
@@ -33,12 +33,12 @@
 
 > 原先还有第 9 个 `plugin_registry`，核查时发现**没有任何调用方**（Settings 页走网关的 `host/plugins`），已删除，避免留一个无人使用、无人校验的入口。
 
-## 2. 网关背后的服务：6 个服务 / 25 个动作
+## 2. 网关背后的服务：6 个服务 / 26 个动作
 
 | 服务 | 动作 | 说明 |
 |---|---|---|
 | `storage` | `get` `set` `remove` `keys` | 每插件独立的磁盘 JSON KV（`plugin-data/<id>/data.json`） |
-| `host` | `info` `write_debug_log` `sessions` `plugins` `schema` | 路径/元数据、调试落盘、**统一会话表**、已授权插件、**能力协商面** |
+| `host` | `info` `write_debug_log` `sessions` `plugins` `schema` `unregister` | 路径/元数据、调试落盘、**统一会话表**、已授权插件、**能力协商面**、**撤销授权**（仅宿主可调） |
 | `proc` | `spawn` `send` `recv` `kill` `kill_all` `list` | sidecar 行 JSON 管道（`stdio-line` 方案的底层） |
 | `stream` | `close` `providers` `list` `session_open` `session_close` | 推送流生命周期 + 第三方进程的会话登记 |
 | `bus` | `publish` | 跨窗口广播（宿主 `app.emit` 扇出到所有窗口） |
