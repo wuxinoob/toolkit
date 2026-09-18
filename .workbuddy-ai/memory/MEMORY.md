@@ -21,8 +21,8 @@
 
 ## 接口清单（详见 docs/INTERFACES.md）
 - **8 个原生命令**：`plugin_rpc`（网关）· `plugin_stream_open{,_raw}` · `plugin_stream_close` · `plugin_register` · `plugin_scan` · `plugin_read_entry` · `plugin_open_dir`。
-- **6 服务 / 26 动作**：storage(get/set/remove/keys) · host(info/write_debug_log/sessions/plugins/schema/unregister) · proc(spawn/send/recv/kill/kill_all/list) · stream(close/providers/list/session_open/session_close) · bus(publish) · hotkey(register/unregister/unregister_all/list)。
-- **7 方案**：rpc · channel-json · channel-raw · event-bus · stdio-line · pty-stream · in-process。流提供者：ticker / blob。
+- **6 服务 / 29 动作**：storage(get/set/remove/keys) · host(info/write_debug_log/sessions/plugins/schema/unregister) · stream(close/providers/list/session_open/session_close/open_in/write_in/close_in) · proc(spawn/send/recv/kill/kill_all/list) · bus(publish) · hotkey(register/unregister/unregister_all/list)。
+- **8 方案**：rpc · channel-in · channel-json · channel-raw · event-bus · stdio-line · pty-stream · in-process。流提供者：ticker / blob。
 - 示例 **`examples/plugins/probe`（Plane Probe）**：一次调用跑完 11 项接口检查，失败即 `activate()` 抛错 → 启动日志显示 error。既是"新插件零改动复用接口"的证据，也是活的集成检查。
 - **能力声明必须为真**：曾声明 `channel-json` 支持 backpressure 但无实现，已移除。不要声明调用方无法依赖的能力。
 - **观察不等于能力**：订阅 / 读自己的热键 / 关闭自己开的流都不需要权限；只有发布广播、运行自带二进制、控制窗口才带权限。
@@ -34,6 +34,18 @@
 - `ctx.protocol` 由 `protocol/contract.js` 单点提供并 freeze，两个窗口面共用。
 - `rpc` 超时在**传输层**强制（默认 45s，0=不限）；**不要在信封加 `deadline`** —— 同步网关无法兑现。
 - 插件的故意负向测试用 `// audit-ignore-next-line` 标记（静态审计会跳过下一行）。
+
+## 错误码与上行流（P0，已完成）
+- **错误码是闭集**：14 个码定义在 `protocol/codes.rs`，`protocol/codes.js` 是镜像，
+  **`tests/codes.test.mjs` 解析两个文件比对**。服务错误用 `ServiceError`（`Result<_, ServiceError>`），
+  不再报 `{svc}/{act}`；`host/schema` 与 `ctx.protocol.Code` 都公布词表。
+  改这类代码时注意：**编译器抓不到**经 `From` 静默变成 `internal` 的点
+  （`?` 作用在 `Result<_, String>`、`Err("...".into())`、`ok_or("...")`），必须手工枚举定性。
+- **上行流 `channel-in`**：`ctx.uplink(ch, {sink})` → 同形句柄 + `sendBatch`；帧交给命名的
+  宿主侧 sink（首个是 `proc`，每帧一行 line-json 进 sidecar stdin），sink 名单在 `host/schema`。
+- **框架事实：Tauri 的 `Channel` 是单向的**（JS 侧只有接收回调，**没有 `send`**），
+  所以没有插件→宿主的推送载体 —— 上行流的载体是**批量 invoke**，这是框架约束而非设计选择。
+  遇到"想从 JS 推给 Rust"的需求，不要再去找 Channel。
 
 ## 调试闭环（关键基建，别删）
 - `boot()` 把启动过程自报到 `{appData}/debug.log`：`--- boot ---` / `message plane:` / `boot ok:` / 每插件状态 / `BOOT FAILED: <stack>`。**排查运行期问题先看这个文件。**
@@ -80,7 +92,7 @@
 - 排查"应用起来了但 JS 不执行"：Rust 侧 `eprintln!` 探针 → `webview.eval()` 写 `document.title` 再 `w.title()` 读回 → `tasklist` 比对 `msedgewebview2` 数量是否随应用启动而增加。
 
 ## 验证命令
-`cargo test`（39，本机不可用见下）· `cargo check --all-targets`（零代码警告）· `node --test`（84）· `npm run build` · `cargo build`
+`cargo test`（39，本机不可用见下）· `cargo check --all-targets`（零代码警告）· `node --test`（92）· `npm run build` · `cargo build`
 `cargo run --example host-checks`（16 项，替代不可用的 cargo test）· `npm run bench`（codec 实验，**刻意不并入 npm test**：时间敏感）
 应用内：`npm run tauri dev` 后看 `%APPDATA%\com.tan18.toolbox\debug.log` 的 15/15。
 
