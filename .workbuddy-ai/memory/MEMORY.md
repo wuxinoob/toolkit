@@ -56,7 +56,15 @@
 - 外部插件是 **Blob URL 单文件 ESM**，不能 import 协议模块 → 用 `ctx.protocol` / `bridge.protocol`。
 - 测试外部插件加载时，把 **`URL.createObjectURL` 重定向到 `data:` URL**，Node 就能真正
   `import()` 插件源码，不必 mock 掉加载路径。
-- `tauri-pty` 包没有 `main`/`exports` 字段，必须写 `tauri-pty/dist/index.es.js` 才能在 bundler 与 `node --test` 下都解析。
+- **pty 直接驱动 `plugin:pty|*` 命令，不用 `tauri-pty` 的 JS wrapper**（该包已从
+  `package.json` 移除）：wrapper 的读循环以 EOF 结束就**静默 return**，调用方看不到
+  "输出结束"，所以原来只能靠 120ms/1.5s 的静默期猜。现在的顺序是确定的：
+  `spawn → session_open → read 到输出结束 → exitstatus → exit 帧`。
+  - "输出结束"有**三种拼法**（同一个事实）：`EOF`（Windows，0 字节）/ EIO
+    （**Unix 把流结束报成错误**）/ `Unavailable pid`（exitstatus 已移除插件会话）。
+  - **`exitstatus` 必须在输出结束之后再问** —— 它会移除插件会话，提前问会让尚未取走
+    缓冲输出的 read 查不到会话，立即退出的短命令输出就丢了。
+  - 登记失败要 **kill 子进程并让 open 失败**，不能 catch 掉（否则成为孤儿）。
 - 涉及全局态的 Rust 测试用 `services::serial()` 串行化；JS 侧跑真实 boot 前必须 `resetHost()`（清 store + deactivate 释放定时器），否则进程不退出、`node --test` 会被 SIGTERM。
 - `npm run test` = `node --test`（不要写 `node --test tests/`，Windows 下会被当模块路径）。
 - 浏览器专用依赖在 Node 下要 stub：`tests/browser-stubs-loader.mjs` + `module.register()`。
@@ -72,7 +80,7 @@
 - 排查"应用起来了但 JS 不执行"：Rust 侧 `eprintln!` 探针 → `webview.eval()` 写 `document.title` 再 `w.title()` 读回 → `tasklist` 比对 `msedgewebview2` 数量是否随应用启动而增加。
 
 ## 验证命令
-`cargo test`（39，本机不可用见下）· `cargo check --all-targets`（零代码警告）· `node --test`（62）· `npm run build` · `cargo build`
+`cargo test`（39，本机不可用见下）· `cargo check --all-targets`（零代码警告）· `node --test`（84）· `npm run build` · `cargo build`
 `cargo run --example host-checks`（16 项，替代不可用的 cargo test）· `npm run bench`（codec 实验，**刻意不并入 npm test**：时间敏感）
 应用内：`npm run tauri dev` 后看 `%APPDATA%\com.tan18.toolbox\debug.log` 的 15/15。
 
