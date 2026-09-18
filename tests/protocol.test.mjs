@@ -89,6 +89,44 @@ function deliverFrame(channel, message, index = 0) {
 
 // ---------------------------------- envelope ----------------------------------
 
+test('endsStream: a reply does not end the stream, a stream failure does', () => {
+  // The rule used to live inside one transport, so "what ends a stream" was a
+  // per-scheme answer. It is now a protocol rule, and this pins it.
+  assert.equal(Envelope.endsStream(Envelope.end('c')), true, 'end is terminal');
+  assert.equal(Envelope.endsStream(Envelope.exit('c', 0)), true, 'exit is terminal');
+  assert.equal(
+    Envelope.endsStream(Envelope.streamErr('c', 'io', 'pipe failed')),
+    true,
+    'an err WITHOUT an id is a stream-level failure',
+  );
+  assert.equal(
+    Envelope.endsStream(Envelope.err(7, 'div_by_zero', 'boom')),
+    false,
+    'an err WITH an id is a reply to a request on the same channel',
+  );
+  assert.equal(Envelope.endsStream(Envelope.res(7, { ok: true })), false, 'a res is a reply');
+  assert.equal(
+    Envelope.endsStream(Envelope.res(0, { ok: true })),
+    false,
+    'id 0 is a valid id, not a missing one',
+  );
+  assert.equal(
+    Envelope.endsStream(Envelope.res(null, { ok: true })),
+    false,
+    'res is never terminal, so a res can never end a stream',
+  );
+  assert.equal(
+    Envelope.isTerminal(Envelope.Kind.RES),
+    false,
+    'the reply rule only bites for err — res is not in TERMINAL',
+  );
+  assert.equal(Envelope.endsStream(Envelope.data('c', 1)), false, 'data continues the stream');
+  assert.equal(Envelope.endsStream(Envelope.req(1, 's', 'a')), false, 'a request is not an end');
+  assert.equal(Envelope.endsStream(null), false, 'tolerates a missing frame');
+  // and the narrower predicate is unchanged, so existing callers keep working
+  assert.equal(Envelope.isTerminal(Envelope.Kind.ERR), true);
+});
+
 test('envelope: constructors emit the documented shape and omit empty fields', () => {
   assert.deepEqual(Envelope.req(7, 'storage', 'get', { key: 'k' }), {
     v: 1,

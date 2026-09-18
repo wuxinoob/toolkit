@@ -38,6 +38,14 @@ use super::Service;
 const MAX_PROCS_PER_PLUGIN: usize = 4;
 /// Defense-in-depth: one stdout line may never exceed 1 MiB.
 const MAX_LINE_BYTES: usize = 1 << 20;
+/// Cap on the bytes held across ALL queued lines.
+///
+/// `MAX_LINE_BYTES` bounds a single line; this bounds the queue. Without it a
+/// backend that produces faster than the plugin consumes grows the queue
+/// without limit — and that memory lives in the host, not in the plugin that
+/// caused it. Kept below `MAX_LINE_BYTES` * 4 so a handful of maximal lines
+/// still fit; the drop-oldest policy below never has to discard the only line.
+const MAX_QUEUED_BYTES: usize = 4 << 20;
 const RECV_TIMEOUT_CAP_MS: u64 = 30_000;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -49,6 +57,10 @@ struct ProcKey {
 #[derive(Default)]
 struct ProcState {
     lines: VecDeque<String>,
+    /// Bytes currently held across `lines`, so the queue can be bounded.
+    queued_bytes: usize,
+    /// Lines discarded to stay under the cap, reported to the consumer.
+    dropped: u64,
     exited: Option<i32>,
 }
 
@@ -109,17 +121,35 @@ fn read_line_bounded(r: &mut impl Read, max: usize) -> std::io::Result<Option<St
     Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
 }
 
+/// Enqueue one stdout line, enforcing the total cap.
+///
+/// Drop-OLDEST, not newest: for a live stream the recent output is the useful
+/// part. Drops are counted so a consumer can tell it missed something rather
+/// than silently receiving a gap.
+fn enqueue_line(shared: &ProcShared, line: String) {
+    let len = line.len();
+    let mut st = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+    st.lines.push_back(line);
+    st.queued_bytes += len;
+    while st.queued_bytes > MAX_QUEUED_BYTES {
+        match st.lines.pop_front() {
+            Some(old) => {
+                st.queued_bytes = st.queued_bytes.saturating_sub(old.len());
+                st.dropped += 1;
+            }
+            None => break,
+        }
+    }
+    shared.cv.notify_all();
+}
+
 /// Per-process reader thread: stdout lines -> shared queue; on EOF, wait() the
 /// child so the exit code is exact, then publish `exited` and wake recv()ers.
 fn reader_thread(stdout: std::process::ChildStdout, child: Arc<Mutex<Child>>, shared: Arc<ProcShared>) {
     let mut r = std::io::BufReader::new(stdout);
     loop {
         match read_line_bounded(&mut r, MAX_LINE_BYTES) {
-            Ok(Some(line)) => {
-                let mut st = shared.state.lock().unwrap_or_else(|e| e.into_inner());
-                st.lines.push_back(line);
-                shared.cv.notify_all();
-            }
+            Ok(Some(line)) => enqueue_line(&shared, line),
             Ok(None) => break, // EOF: stdout closed
             Err(_) => break,   // oversized line or read error: recv reports exit
         }
@@ -221,7 +251,15 @@ fn recv_from(shared: &Arc<ProcShared>, timeout: Duration) -> Value {
     let mut st = shared.state.lock().unwrap_or_else(|e| e.into_inner());
     loop {
         if let Some(line) = st.lines.pop_front() {
-            return json!({ "line": line });
+            st.queued_bytes = st.queued_bytes.saturating_sub(line.len());
+            let dropped = std::mem::take(&mut st.dropped);
+            let mut out = json!({ "line": line });
+            // Only present when it happened, so the shape is unchanged in the
+            // normal case.
+            if dropped > 0 {
+                out["dropped"] = json!(dropped);
+            }
+            return out;
         }
         if let Some(code) = st.exited {
             return json!({ "exited": true, "code": code });
@@ -445,6 +483,48 @@ mod tests {
         let mut r = Cursor::new(big);
         let err = read_line_bounded(&mut r, 8).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InvalidData);
+    }
+
+    // ---- the stdout queue cap ----
+
+    fn shared_state() -> ProcShared {
+        ProcShared { state: Mutex::new(ProcState::default()), cv: Condvar::new() }
+    }
+
+    #[test]
+    fn the_stdout_queue_is_bounded_and_counts_drops() {
+        let shared = shared_state();
+        let line = "x".repeat(MAX_LINE_BYTES);
+        let pushes = (MAX_QUEUED_BYTES / MAX_LINE_BYTES) + 3;
+        for _ in 0..pushes {
+            enqueue_line(&shared, line.clone());
+        }
+        let st = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            st.queued_bytes <= MAX_QUEUED_BYTES,
+            "queue must stay under the cap, held {}",
+            st.queued_bytes
+        );
+        assert!(st.dropped >= 3, "the overflow must be counted, got {}", st.dropped);
+        assert!(!st.lines.is_empty(), "the newest line is kept, not the oldest");
+    }
+
+    #[test]
+    fn recv_reports_dropped_lines_once() {
+        let shared = Arc::new(shared_state());
+        let line = "y".repeat(MAX_LINE_BYTES);
+        for _ in 0..((MAX_QUEUED_BYTES / MAX_LINE_BYTES) + 2) {
+            enqueue_line(&shared, line.clone());
+        }
+        let first = recv_from(&shared, Duration::from_millis(0));
+        assert!(first.get("line").is_some(), "a line still comes back");
+        assert!(
+            first["dropped"].as_u64().unwrap_or(0) > 0,
+            "the loss must be reported, got {first}"
+        );
+        // reported once, not on every subsequent frame
+        let second = recv_from(&shared, Duration::from_millis(0));
+        assert!(second.get("dropped").is_none(), "drops are reported once: {second}");
     }
 
     // ---- kill_all must actually kill ----

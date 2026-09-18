@@ -47,6 +47,7 @@ export const stdioLineTransport = {
 
     const tick = async () => {
       if (stopped) return;
+      let delivered = false;
       try {
         const r = await rpcTransport.request({
           pluginId,
@@ -56,6 +57,14 @@ export const stdioLineTransport = {
         });
         if (stopped) return;
         if (r && typeof r.line === 'string') {
+          delivered = true;
+          if (r.dropped) {
+            // The host dropped old output to stay inside its queue cap. Say so:
+            // a silent gap is worse than a noisy one.
+            console.warn(
+              `[stdio-line:${ch}] host dropped ${r.dropped} line(s) — consumer too slow`,
+            );
+          }
           let env;
           try {
             env = lineJson.decode(r.line);
@@ -63,10 +72,9 @@ export const stdioLineTransport = {
             env = Envelope.data(ch, r.line); // plain-text backend: wrap it
           }
           onFrame?.(env);
-          const isRequestReply =
-            (env.kind === Envelope.Kind.RES || env.kind === Envelope.Kind.ERR) &&
-            env.id !== undefined && env.id !== null;
-          if (!isRequestReply && Envelope.isTerminal(env.kind)) return finish(env);
+          // The "does this end the stream" rule is shared, not local: a reply
+          // (res/err carrying an id) travels the same channel and must not end it.
+          if (Envelope.endsStream(env)) return finish(env);
         } else if (r && r.exited) {
           const env = Envelope.exit(ch, r.code);
           onFrame?.(env);
@@ -79,7 +87,12 @@ export const stdioLineTransport = {
         onFrame?.(env);
         return finish(env);
       }
-      timer = setTimeout(tick, pollMs);
+      // Re-poll IMMEDIATELY when a line arrived. The host's `recv` is condvar
+      // driven and returns as soon as data exists, so delaying here would cap
+      // throughput at 1/pollMs — about 20 lines/s at the 50ms default — however
+      // fast the backend actually produces. The delay exists only for the idle
+      // case, where it keeps us off the IPC bus.
+      timer = setTimeout(tick, delivered ? 0 : pollMs);
     };
     timer = setTimeout(tick, 0);
 

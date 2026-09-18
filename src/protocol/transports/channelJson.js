@@ -38,7 +38,7 @@ export const channelJsonTransport = {
         return;
       }
       onFrame?.(env);
-      if (Envelope.isTerminal(env.kind)) finish(env);
+      if (Envelope.endsStream(env)) finish(env);
     };
 
     await guard(

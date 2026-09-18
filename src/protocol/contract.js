@@ -46,6 +46,7 @@ export function protocolContract() {
     exit: Envelope.exit,
     validate: Envelope.validate,
     isTerminal: Envelope.isTerminal,
+    endsStream: Envelope.endsStream,
     nextId: Envelope.nextId,
   });
 }

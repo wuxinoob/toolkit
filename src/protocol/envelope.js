@@ -30,6 +30,26 @@ const TERMINAL = new Set([Kind.END, Kind.EXIT, Kind.ERR]);
 /** After a terminal frame the stream is deregistered. */
 export const isTerminal = (kind) => TERMINAL.has(kind);
 
+/**
+ * Does this frame END the stream it arrived on?
+ *
+ * Narrower than `isTerminal`, which answers "is this kind final for a single
+ * request/response exchange". On a duplex carrier the same envelope shape means
+ * different things: a `res`/`err` carrying an `id` is a REPLY to a request that
+ * travelled the same channel, and must not end the stream. Only an `err`
+ * WITHOUT an id is a stream-level failure.
+ *
+ * This lives in the protocol, not in a transport, because the answer must not
+ * depend on which scheme carried the frame — otherwise "what ends a stream"
+ * quietly becomes a per-scheme rule, and the next duplex scheme to be added
+ * inherits the wrong one.
+ */
+export const endsStream = (env) => {
+  if (!env || !isTerminal(env.kind)) return false;
+  const isReplyKind = env.kind === Kind.RES || env.kind === Kind.ERR;
+  return !(isReplyKind && env.id !== undefined && env.id !== null);
+};
+
 /** Initiated by the plugin side. */
 export const isUplink = (kind) => kind === Kind.REQ;
 
