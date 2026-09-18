@@ -99,8 +99,49 @@ fn plugin_stream_close(plugin_id: String, ch: String) -> Result<Value, String> {
     Ok(json!({ "stopped": services::session::stop_one(&plugin_id, &ch) }))
 }
 
+/// Console control events, so the exit path is not skipped.
+///
+/// `RunEvent::Exit` only fires on a graceful shutdown (the window closing). A
+/// `Ctrl+C` in the terminal kills the process outright — Tauri installs no
+/// console handler — so the session drain would never run and any live sidecar
+/// or pty would be left behind. In a dev loop that is the *common* way to quit,
+/// so the orphans would accumulate exactly where nobody is watching.
+#[cfg(windows)]
+mod console_exit {
+    use windows_sys::Win32::Foundation::BOOL;
+    use windows_sys::Win32::System::Console::{
+        SetConsoleCtrlHandler, CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT, CTRL_C_EVENT,
+    };
+
+    unsafe extern "system" fn handler(ctrl_type: u32) -> BOOL {
+        if matches!(ctrl_type, CTRL_C_EVENT | CTRL_BREAK_EVENT | CTRL_CLOSE_EVENT) {
+            let n = crate::services::session::kill_all();
+            if n > 0 {
+                eprintln!("[host] stopped {n} live session(s) on console exit");
+            }
+            // Exit ourselves rather than returning FALSE: returning lets the
+            // default handler kill us mid-drain, and the whole point is to
+            // finish the drain first.
+            std::process::exit(130); // 128 + SIGINT
+        }
+        // Anything else (logoff, shutdown) keeps the default behaviour.
+        0
+    }
+
+    pub fn install() {
+        let ok = unsafe { SetConsoleCtrlHandler(Some(handler), 1) };
+        if ok == 0 {
+            eprintln!("[host] could not install the console exit handler");
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Before the window exists: Ctrl+C must drain sessions too.
+    #[cfg(windows)]
+    console_exit::install();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_pty::init())
