@@ -239,10 +239,20 @@ fn recv_from(shared: &Arc<ProcShared>, timeout: Duration) -> Value {
 }
 
 /// Kill + reap one sidecar.
+///
+/// Kills by PID rather than through the `Mutex<Child>`: the reader thread holds
+/// that lock inside a blocking `wait()` once stdout reaches EOF, and every kill
+/// path goes through here — so taking the lock could block forever (a sidecar
+/// that closes stdout but keeps running would hang `kill`, `kill_all`, and the
+/// session drain on app exit). Killing by pid lets the reader's `wait()` return,
+/// and the reader then reaps the child and publishes the exit code.
 fn kill_handle(h: &ProcHandle) {
-    let mut child = h.child.lock().unwrap_or_else(|e| e.into_inner());
-    let _ = child.kill();
-    let _ = child.wait();
+    session::pid_stop(h.pid)();
+    // Best-effort reap; the reader thread normally does this. Never block on the
+    // lock here — that is the deadlock this function exists to avoid.
+    if let Ok(mut child) = h.child.try_lock() {
+        let _ = child.wait();
+    }
 }
 
 /// Stop closure handed to the session registry: kills the process only, so it
@@ -265,22 +275,26 @@ fn kill_one(plugin: &str, key: &str) -> bool {
 }
 
 fn kill_all_for(plugin: &str) -> usize {
-    let keys: Vec<ProcKey> = {
+    let removed: Vec<(ProcKey, ProcHandle)> = {
         let mut map = registry().lock().unwrap_or_else(|e| e.into_inner());
-        let mine: Vec<ProcKey> = map.keys().filter(|k| k.plugin == plugin).cloned().collect();
-        for k in &mine {
-            map.remove(k);
-        }
-        mine
+        let keys: Vec<ProcKey> = map.keys().filter(|k| k.plugin == plugin).cloned().collect();
+        keys.into_iter()
+            .filter_map(|k| map.remove(&k).map(|h| (k, h)))
+            .collect()
     };
-    for k in &keys {
-        session::close(&k.plugin, &k.key);
+    for (k, h) in &removed {
+        // The session registry owns the kill for a sidecar, so TAKE the closure
+        // rather than closing first: `close()` would drop it and the processes
+        // would outlive this call (the old behaviour returned `{"killed": N}`
+        // with N processes still running).
+        match session::take_stop(&k.plugin, &k.key) {
+            Some(stop) => stop(),
+            // No session record (unexpected for a sidecar): kill it here so the
+            // process cannot outlive the call.
+            None => kill_handle(h),
+        }
     }
-    // Stop through the session registry so there is exactly one kill path.
-    for k in &keys {
-        session::stop_one(&k.plugin, &k.key);
-    }
-    keys.len()
+    removed.len()
 }
 
 // ------------------------------- actions --------------------------------------
@@ -431,6 +445,96 @@ mod tests {
         let mut r = Cursor::new(big);
         let err = read_line_bounded(&mut r, 8).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InvalidData);
+    }
+
+    // ---- kill_all must actually kill ----
+
+    /// `kill_all` used to `session::close` before `stop_one`, which dropped the
+    /// stop closure — so it reported `{"killed": N}` while leaving every process
+    /// running. This asserts the process really dies, with a bounded wait so a
+    /// regression fails instead of hanging.
+    #[test]
+    fn kill_all_actually_terminates_the_processes_it_reports() {
+        let _g = crate::services::serial();
+        let root = temp_root("killall");
+
+        #[cfg(windows)]
+        let (exe, args): (&str, Vec<String>) =
+            ("cmd.exe", vec!["/c".into(), "ping -n 30 127.0.0.1 > nul".into()]);
+        #[cfg(unix)]
+        let (exe, args): (&str, Vec<String>) = ("sleep", vec!["30".into()]);
+
+        let h = spawn_handle(Path::new(exe), &args, &root).unwrap();
+        let pid = h.pid;
+        let child = h.child.clone();
+        let key = ProcKey { plugin: "k.plugin".into(), key: "s1".into() };
+        registry()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key, h.clone());
+        session::open(
+            "k.plugin",
+            "s1",
+            crate::services::session::SessionKind::Sidecar,
+            Some(pid),
+            stop_closure(h),
+        )
+        .unwrap();
+
+        let reported = kill_all_for("k.plugin");
+        assert_eq!(reported, 1, "one sidecar was registered");
+        assert!(
+            registry().lock().unwrap_or_else(|e| e.into_inner()).is_empty(),
+            "the proc record must be gone"
+        );
+        assert!(
+            session::list(Some("k.plugin")).is_empty(),
+            "the session record must be consumed by take_stop, not left behind"
+        );
+
+        // The process itself must be gone. Bounded poll: if kill_all did nothing
+        // this fails in 5s rather than blocking on wait() for 30s.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut exited = false;
+        while std::time::Instant::now() < deadline {
+            if child
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .try_wait()
+                .unwrap()
+                .is_some()
+            {
+                exited = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(exited, "kill_all reported success but the process is still running");
+    }
+
+    /// The other half of the trap: closing first loses the closure, which is why
+    /// `kill_all` must take it instead.
+    #[test]
+    fn closing_a_session_drops_its_stop_closure() {
+        let _g = crate::services::serial();
+        session::kill_all();
+        session::open(
+            "t.plugin",
+            "s1",
+            crate::services::session::SessionKind::Sidecar,
+            None,
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        assert!(session::close("t.plugin", "s1"), "close removes the record");
+        assert!(
+            !session::stop_one("t.plugin", "s1"),
+            "stop_one finds nothing after close — the closure is already gone"
+        );
+        assert!(
+            session::take_stop("t.plugin", "s1").is_none(),
+            "and it cannot be taken either"
+        );
     }
 
     // ---- resolve_exe_at ----

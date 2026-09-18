@@ -18,22 +18,42 @@ const HOST_ID = '__host__';
  * deactivate is always a full teardown with no leaks.
  */
 
-class Disposer {
+export class Disposer {
   constructor() {
     this.fns = [];
+    this.running = null;
   }
+
   track(fn) {
     this.fns.push(fn);
   }
+
+  /**
+   * Run every cleanup, newest first, and AWAIT the async ones.
+   *
+   * Awaiting matters: a cleanup that closes a stream or releases a sidecar has
+   * to finish before the caller treats the plugin as gone, otherwise the
+   * resource can still register itself after teardown. Previously the promises
+   * were dropped, so async cleanups became fire-and-forget and their rejections
+   * surfaced as unhandled rejections.
+   *
+   * Idempotent: a second call returns the first call's promise instead of
+   * running everything twice.
+   */
   run() {
-    for (const fn of this.fns.reverse()) {
-      try {
-        fn();
-      } catch (e) {
-        console.error('[lifecycle] dispose error', e);
-      }
-    }
+    if (this.running) return this.running;
+    const fns = this.fns.reverse();
     this.fns = [];
+    this.running = (async () => {
+      for (const fn of fns) {
+        try {
+          await fn();
+        } catch (e) {
+          console.error('[lifecycle] dispose error', e);
+        }
+      }
+    })();
+    return this.running;
   }
 }
 
@@ -112,7 +132,7 @@ export async function activate(plugin, { silent = false } = {}) {
   } catch (e) {
     plugin._ctx = null;
     await releaseHotkeys(plugin);
-    plugin._disposer?.run();
+    await plugin._disposer?.run();
     plugin._disposer = null;
     setPluginState(plugin.manifest.id, 'error', String(e));
     toast(`${plugin.manifest.name} failed to activate: ${e}`, 'error');
@@ -128,7 +148,7 @@ export async function deactivate(plugin, { silent = false } = {}) {
     console.error(`[lifecycle] deactivate error for ${plugin.manifest.id}`, e);
   } finally {
     await releaseHotkeys(plugin);
-    plugin._disposer?.run();
+    await plugin._disposer?.run();
     plugin._disposer = null;
     plugin._ctx = null;
     hub.dropSubscriptions(plugin.manifest.id);

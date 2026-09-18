@@ -122,6 +122,16 @@ pub fn stop_one(plugin: &str, ch: &str) -> bool {
     }
 }
 
+/// Remove one session and hand its stop closure back to the caller.
+///
+/// `close()` deliberately drops the closure (deregister without stopping), so a
+/// caller that means to STOP must use this. Closing first and then calling
+/// `stop_one` loses the closure entirely — which is exactly how `proc/kill_all`
+/// ended up killing nothing while reporting success.
+pub fn take_stop(plugin: &str, ch: &str) -> Option<StopFn> {
+    lock().remove(&id_of(plugin, ch)).map(|s| s.stop)
+}
+
 /// Every live session, optionally scoped to one plugin.
 pub fn list(plugin: Option<&str>) -> Vec<Value> {
     let mut out: Vec<Value> = lock()

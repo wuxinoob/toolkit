@@ -45,6 +45,7 @@ const {
   saveEnabled,
   registerWithHost,
   adoptNewPlugin,
+  Disposer,
 } = await import('../src/host/lifecycle.js');
 const { store } = await import('../src/host/store.js');
 const { hub } = await import('../src/protocol/hub.js');
@@ -208,6 +209,66 @@ test('ctx: the contract is handed over, not imported', () => {
   assert.throws(() => {
     ctx.protocol.version = 99;
   }, TypeError);
+});
+
+test('lifecycle: dispose awaits async cleanups, newest first, exactly once', async () => {
+  // Previously run() called each cleanup synchronously and dropped the promise,
+  // so an async cleanup became fire-and-forget: the resource could still
+  // register itself after teardown, and a rejection became unhandled.
+  const order = [];
+  const d = new Disposer();
+  d.track(() => order.push('first'));
+  d.track(async () => {
+    await new Promise((r) => setTimeout(r, 10));
+    order.push('second');
+  });
+  d.track(() => order.push('third'));
+
+  await d.run();
+  assert.deepEqual(order, ['third', 'second', 'first'], 'reverse order, and the async one completed');
+
+  await d.run(); // idempotent
+  assert.deepEqual(order, ['third', 'second', 'first'], 'a second run must not repeat them');
+});
+
+test('lifecycle: a failing cleanup does not stop the rest', async () => {
+  const seen = [];
+  const d = new Disposer();
+  d.track(() => seen.push('first'));
+  d.track(async () => {
+    throw new Error('boom');
+  });
+  d.track(() => seen.push('third'));
+  await d.run();
+  assert.deepEqual(seen, ['third', 'first'], 'the throw is contained, the rest still run');
+});
+
+test('lifecycle: deactivate does not resolve before an async cleanup finishes', async () => {
+  ls.clear();
+  resetEvents();
+  store.plugins.length = 0;
+  store.views.length = 0;
+  invokeImpl = async () => null;
+
+  let finished = false;
+  const plugin = await loadPlugin({
+    manifest: {
+      id: 'async.cleanup',
+      name: 'AsyncCleanup',
+      permissions: [],
+      contributes: { views: [{ id: 'v', title: 'V' }] },
+    },
+    activate: (ctx) => {
+      ctx.registerView('v', () => {});
+      ctx.cleanup(async () => {
+        await new Promise((r) => setTimeout(r, 10));
+        finished = true;
+      });
+    },
+  });
+  await activate(plugin, { silent: true });
+  await deactivate(plugin, { silent: true });
+  assert.ok(finished, 'deactivate must await the cleanup before it resolves');
 });
 
 // ---------------------------------- lifecycle ----------------------------------

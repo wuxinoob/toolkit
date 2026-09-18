@@ -172,6 +172,53 @@ fn main() {
         "only the host may register on behalf of a plugin",
     );
 
+    // ---- the kill_all ordering trap ----
+    session::kill_all();
+    let fired = Arc::new(AtomicBool::new(false));
+    let f = Arc::clone(&fired);
+    session::open(
+        "kill.plugin",
+        "s1",
+        session::SessionKind::Sidecar,
+        None,
+        Arc::new(move || f.store(true, Ordering::SeqCst)),
+    )
+    .unwrap();
+    let stop = session::take_stop("kill.plugin", "s1");
+    check(
+        "session-take-stop-returns-the-closure",
+        stop.is_some(),
+        "the caller receives the stop closure",
+    );
+    if let Some(stop) = stop {
+        stop();
+    }
+    check(
+        "session-take-stop-runs-the-closure",
+        fired.load(Ordering::SeqCst),
+        "taking then running actually stops it",
+    );
+
+    // The WRONG order, which is what proc/kill_all used to do: close() drops the
+    // closure, so the subsequent stop_one finds nothing and kills nothing while
+    // still reporting success.
+    session::open(
+        "kill.plugin",
+        "s2",
+        session::SessionKind::Sidecar,
+        None,
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    let closed = session::close("kill.plugin", "s2");
+    let stopped_after_close = session::stop_one("kill.plugin", "s2");
+    check(
+        "session-close-then-stop-loses-the-closure",
+        closed && !stopped_after_close,
+        "why callers that mean to STOP must take, not close",
+    );
+    session::kill_all();
+
     let passed = PASSED.load(Ordering::SeqCst);
     if FAILED.load(Ordering::SeqCst) {
         println!("--- FAILED ({passed} passed) ---");
