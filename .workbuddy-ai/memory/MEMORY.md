@@ -53,6 +53,14 @@
 - `window.__toolbox`：store/events/logger/logs/schemes/transports/sessions/openStreams/selftest。
 
 ## 约定与坑
+- **Tauri capability 会静默拒绝 JS 调用**（错在监听器里被吞，界面上只表现为"没反应"）：
+  改 `src/**` 里任何 `getCurrentWindow()` / `WebviewWindow` 调用后，必须同步
+  `src-tauri/capabilities/*.json`。`tests/capabilities.test.mjs` 会核对（从构建生成的
+  `acl-manifests.json` 展开 `core:default` 得到实际授权集）。
+  - **`onCloseRequested` 需要 `allow-destroy`，不是 `allow-close`** —— Tauri 的实现是
+    `handler(); if (!prevented) destroy()`。`core:window:default` 只有 28 项**只读**权限，
+    两个都没有；没有监听器时关闭走原生路径，一旦有监听器就必须自己授权。
+  - `ctx.windows.onCloseRequested` 已包 try/catch：处理函数抛错会让窗口**永久关不掉**。
 - **Rescan 是对账，不是发现**：新目录加载、摘要变化则 deactivate→重载→激活、摘要相同
   完全不动、目录消失则卸载并**撤销原生授权**、失败按内容记忆（同内容不重试，变了才重试）。
   摘要由原生 `plugin_scan` 返回（FNV-1a 覆盖 plugin.json + 入口），必须**跨进程稳定**
@@ -95,7 +103,7 @@
 - 排查"应用起来了但 JS 不执行"：Rust 侧 `eprintln!` 探针 → `webview.eval()` 写 `document.title` 再 `w.title()` 读回 → `tasklist` 比对 `msedgewebview2` 数量是否随应用启动而增加。
 
 ## 验证命令
-`cargo test`（39，本机不可用见下）· `cargo check --all-targets`（零代码警告）· `node --test`（92）· `npm run build` · `cargo build` · `npm run deploy:examples`（把示例部署进应用数据目录）
+`cargo test`（39，本机不可用见下）· `cargo check --all-targets`（零代码警告）· `node --test`（97）· `npm run build` · `cargo build` · `npm run deploy:examples`（把示例部署进应用数据目录）
 `cargo run --example host-checks`（16 项，替代不可用的 cargo test）· `npm run bench`（codec 实验，**刻意不并入 npm test**：时间敏感）
 应用内：`npm run tauri dev` 后看 `%APPDATA%\com.tan18.toolbox\debug.log` 的 15/15。
 
