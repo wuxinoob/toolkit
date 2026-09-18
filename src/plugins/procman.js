@@ -14,9 +14,9 @@
  * - Sessions outlive the view: switching views only tears down DOM. On
  *   re-render, terminals are re-created and the output ring buffer is
  *   replayed, so background processes never lose their stream.
- * - All terminal access goes through ctx.pty — the plugin never touches
- *   tauri-pty, so the transport can be swapped (a self-hosted PTY backend
- *   is a one-file change in the protocol layer, not here).
+ * - All terminal access goes through ctx.pty — the plugin never touches the
+ *   PTY backend, so the transport can be swapped (a self-hosted PTY backend is
+ *   a one-file change in the protocol layer, not here).
  */
 
 import { Terminal } from '@xterm/xterm';

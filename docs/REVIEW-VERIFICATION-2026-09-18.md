@@ -112,3 +112,41 @@ export const endsStream = (env) =>
 | 5 | stdout 队列加累计字节上限；Disposer 支持 async 清理 | 中等 |
 
 第 1、3 项是"改了立刻见效、风险极低"的两处，建议先做。
+
+---
+
+## 6. 复核之后已修掉的（更新于 2026-09-18）
+
+上述 1–5 项**已全部完成**，另加两项复核时发现的问题：
+
+| 事项 | 处理 |
+|---|---|
+| `kill_all_for` 先 close 再 stop，闭包已丢 | 新增 `session::take_stop`（移除并把闭包**交还**调用方），让错误顺序在结构上不可能 |
+| kill 与 reader 抢同一把 `Mutex<Child>` | `kill_handle` 改为**按 pid 杀**（复用 `session::pid_stop`）+ `try_lock` 尽力回收 |
+| stdio 每行等 `pollMs` 的 ~20 行/秒上限 | 改为「拿到数据立即再 poll，只有空转才退避」 |
+| 终止语义按方案而异 | 上提为 `envelope.endsStream`，三个传输统一 |
+| stdout 队列累计无界 | `MAX_QUEUED_BYTES = 4 MiB`，丢最旧 + 计数，`recv` 报 `dropped` |
+| Disposer 不等待异步清理 | `run()` 改为 await + 幂等，调用点 `await` |
+| `registry::unregister` 无人调用 → 卸载过的插件仍被授权 | 新增 `host/unregister`（仅宿主可调），卸载路径调用 |
+| pty 用 120ms/1.5s 静默期猜"输出结束" | **见下** |
+
+### pty 的 drain 启发式已被确定性方案取代
+
+复核时只看到"drain 不能保证尾部输出先于 exit"，于是去看依赖内部，发现**根因是信号被 JS wrapper 吞掉了**：
+`tauri-pty` 的读循环以 `EOF` 错误结束，然后**静默 return**，而退出码在另一个 promise 上 ——
+所以"输出结束"这件事对调用方不可观测，只能靠计时器猜。
+
+改为直接驱动插件自己的命令（`plugin:pty|spawn/read/write/resize/kill/exitstatus`，ACL 的
+`pty:default` 已覆盖）后，顺序变成确定的：
+
+```
+spawn → session_open（失败则杀子进程，不留下无人回收的进程）
+      → read 循环直到输出结束（EOF / EIO / 会话已被移除，三种拼法同一个事实）
+      → exitstatus（必须在输出结束之后再问：它会移除插件的会话，
+        提前问会让尚未取走缓冲输出的 read 查不到会话，短命令的输出就丢了）
+      → 发出 exit 帧
+```
+
+**不再有任何 drain 计时器**（测试直接断言这一点）。`tauri-pty` 这个 JS 包因此不再被引用，
+已从 `package.json` 移除 —— 顺带消掉了"它没有 `main`/`exports` 字段、必须写显式 dist 路径"
+这个长期坑。

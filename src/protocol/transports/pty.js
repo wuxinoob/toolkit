@@ -1,34 +1,43 @@
 /**
  * `pty-stream` transport — command-line subprocesses.
  *
- * Carrier: a pseudo-terminal (tauri-plugin-pty). Codec: raw-binary. This is
- * the transport that wraps a THIRD-PARTY mechanism behind the unified
- * interface: callers get the same `open/send/close` + envelope frames as every
- * other scheme, while the pty specifics (async pid resolution, ConPTY quirks,
- * resize) stay confined to this file.
+ * Carrier: a pseudo-terminal (tauri-plugin-pty). Codec: raw-binary. This is the
+ * transport that wraps a THIRD-PARTY mechanism behind the unified interface:
+ * callers get the same `open/send/close` + envelope frames as every other
+ * scheme, while the pty specifics (ConPTY quirks, resize, pid ownership) stay
+ * confined to this file.
  *
- * Four details worth knowing, all isolated here on purpose:
+ * It drives the plugin's own commands rather than its `tauri-pty` JS wrapper,
+ * because the wrapper hides the one signal this transport needs. Its read loop
+ * ends on an `EOF` error and then simply `return`s — nobody is told — while the
+ * exit status arrives on a separate promise. So "the output is finished" was
+ * unobservable, and the exit frame had to be guessed with a quiet-period timer.
+ * Reading the commands directly makes the end of output a fact:
  *
- *  1. Handlers are registered BEFORE any `await`. The backend starts pushing
- *     as soon as the spawn invoke resolves, so a handler attached after an
- *     awaited step can miss the first chunk — a real data-loss race, not a
- *     theoretical one.
- *  2. `pid` is resolved asynchronously by the backend, so spawn polls briefly
- *     and reports a real failure instead of a session stuck in "starting".
- *  3. ConPTY is opened with INHERIT_CURSOR, so it emits a cursor-position
- *     request (ESC[6n) at startup and blocks the child until answered. xterm.js
- *     answers by itself; a headless consumer never does, which deadlocks
- *     short-lived commands. The watchdog below answers once, but only if the
- *     consumer has not already written (i.e. xterm already replied).
- *  4. The backend reports the exit independently of its read loop, so the exit
- *     can arrive before the last output chunk. The exit frame is therefore
- *     held back until the data stream goes quiet (bounded), so a consumer that
- *     treats `exit` as terminal never loses trailing output.
+ *   spawn      -> pid
+ *   read       -> bytes, or Err("EOF") once the child's output is drained
+ *   exitstatus -> the exit code (and it removes the plugin's session)
  *
- * The spawned pid is registered in the host's unified session registry, so
- * `kill_all()` on app exit reaps pty children too — previously they were
- * orphaned because only sidecars were tracked.
+ * The exit frame is then emitted only when BOTH facts are known — output ended
+ * AND the process is gone — so ordering is exact and no timers are involved.
+ *
+ * Two more details, both isolated here on purpose:
+ *
+ *  1. `exitstatus` removes the plugin's session the moment the child exits, so a
+ *     `read` racing that removal fails with "Unavailable pid" instead of
+ *     returning 0 bytes. Both mean the same thing here and are treated alike.
+ *  2. ConPTY is opened with INHERIT_CURSOR, so it emits a cursor-position request
+ *     (ESC[6n) at startup and blocks the child until answered. xterm.js answers
+ *     by itself; a headless consumer never does, which deadlocks short-lived
+ *     commands. The watchdog below answers once, but only if the consumer has not
+ *     already written (i.e. xterm already replied).
+ *
+ * The pid is registered in the host's unified session registry BEFORE any
+ * reading, so `kill_all()` on app exit reaps pty children too; if registration
+ * fails the child is killed rather than left unowned.
  */
+
+import { invoke } from '@tauri-apps/api/core';
 
 import * as Envelope from '../envelope.js';
 import { descriptor } from '../registry.js';
@@ -37,11 +46,6 @@ import { rpcTransport } from './rpc.js';
 
 const DSR = [0x1b, 0x5b, 0x36, 0x6e]; // ESC [ 6 n
 const CPR = '\x1b[1;1R';
-/** Quiet period after the process exits before the exit frame is emitted. */
-const DRAIN_MS = 120;
-/** Hard cap on that delay, so a still-chatty stream cannot hold the exit back. */
-const DRAIN_MAX_MS = 1500;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function toU8(chunk) {
   if (chunk instanceof Uint8Array) return chunk;
@@ -58,132 +62,186 @@ function hasDsr(u8) {
   return false;
 }
 
+/**
+ * Does this `read` failure mean the output has ended? Three spellings of one
+ * fact, because the underlying read differs by platform and by timing:
+ *
+ *   `EOF`                  the master read returned 0 bytes (Windows ConPTY)
+ *   `Input/output error`   reading a master whose slave has closed (Unix EIO —
+ *                          POSIX reports end-of-stream as an error, not as 0)
+ *   `Unavailable pid`      `exitstatus` already removed the plugin's session, so
+ *                          the lookup failed instead; same moment, other path
+ */
+function isEndOfOutput(message) {
+  return /EOF|Unavailable pid|Input\/output error/i.test(message);
+}
+
 export const ptyStreamTransport = {
   descriptor: descriptor('pty-stream'),
 
   async open({ pluginId, ch, params = {}, onFrame, onEnd }) {
-    // Explicit dist path: `tauri-pty` ships no `main`/`exports` field, so a
-    // bare specifier only resolves inside a bundler. Naming the entry keeps the
-    // transport testable under `node --test` with the same code path.
-    const { spawn } = await import('tauri-pty/dist/index.es.js');
+    if (!params.program) {
+      throw ProtocolError.protocol('pty-stream requires params.program');
+    }
 
-    const pty = spawn(params.program, params.args ?? [], {
-      cwd: params.cwd,
+    const pid = await invoke('plugin:pty|spawn', {
+      file: params.program,
+      args: params.args ?? [],
+      termName: 'Toolbox',
       cols: params.cols ?? 80,
       rows: params.rows ?? 24,
+      cwd: params.cwd ?? null,
+      env: {},
+      encoding: null,
+      handleFlowControl: null,
+      flowControlPause: null,
+      flowControlResume: null,
     });
+    if (pid == null) throw ProtocolError.transport('pty spawn returned no pid');
 
+    // Take ownership BEFORE reading. If the host cannot register the session,
+    // nobody would reap this child on exit — so kill it and fail loudly instead
+    // of leaking a process the app can no longer see.
+    try {
+      await rpcTransport.request({
+        pluginId,
+        svc: 'stream',
+        act: 'session_open',
+        params: { ch, kind: 'pty', pid },
+      });
+    } catch (e) {
+      await invoke('plugin:pty|kill', { pid }).catch(() => {});
+      throw ProtocolError.transport(
+        `pty session registration failed, child killed: ${e?.message ?? e}`,
+      );
+    }
+
+    let stopped = false;
+    let ended = false;
+    let closing = null;
+    let outputEnded = false;
+    let exitCode = null; // null until exitstatus resolves
+    let sessionReleased = false;
+
+    const releaseNativeSession = () => {
+      if (sessionReleased) return;
+      sessionReleased = true;
+      rpcTransport
+        .request({ pluginId, svc: 'stream', act: 'session_close', params: { ch } })
+        .catch(() => {});
+    };
+
+    /** Single terminal point: exactly one terminal frame, then release. */
+    const finish = (env) => {
+      if (ended) return;
+      ended = true;
+      stopped = true;
+      onFrame?.(env);
+      onEnd?.(env);
+      releaseNativeSession();
+    };
+
+    /**
+     * The exit frame needs BOTH facts. `exitstatus` can resolve before the read
+     * loop has drained the buffer, and EOF can arrive before the code is known —
+     * whichever is last decides.
+     */
+    const maybeExit = () => {
+      if (ended || !outputEnded || exitCode === null) return;
+      finish(Envelope.exit(ch, exitCode));
+    };
+
+    // ConPTY DSR watchdog — see note 2 at the top of this file.
     let cprHandled = false;
     let dsrSeen = false;
     let dsrTimer = null;
     const isWindows = /win/i.test(globalThis.navigator?.platform ?? '');
 
-    /** Single emit point: applies the ConPTY watchdog, then forwards. */
-    const emit = (env) => {
-      if (isWindows && !dsrSeen && env.kind === Envelope.Kind.DATA && hasDsr(toU8(env.p))) {
+    const emitData = (u8) => {
+      if (stopped) return;
+      if (isWindows && !dsrSeen && hasDsr(u8)) {
         dsrSeen = true;
         dsrTimer = setTimeout(() => {
-          if (!cprHandled) {
-            try {
-              pty.write(CPR);
-            } catch {
-              /* session already gone */
-            }
-          }
+          if (!cprHandled) invoke('plugin:pty|write', { pid, data: CPR }).catch(() => {});
         }, 250);
       }
-      onFrame?.(env);
+      onFrame?.(Envelope.data(ch, u8));
     };
 
-    // Register FIRST — see note 1 at the top of this file.
-    //
-    // Note 4: the backend reports the exit independently of its read loop, so
-    // the exit can arrive BEFORE the last output chunk. A consumer that treats
-    // `exit` as terminal (which is the contract) would then lose trailing
-    // output — observed in the field as a short command's echo going missing.
-    // So the exit frame is held back until the data stream goes quiet, with a
-    // hard cap so a noisy stream can never delay it indefinitely.
-    let lastDataAt = Date.now();
-    let exitTimer = null;
-
-    const d1 = pty.onData((chunk) => {
-      lastDataAt = Date.now();
-      emit(Envelope.data(ch, toU8(chunk)));
-    });
-
-    const d2 = pty.onExit(({ exitCode }) => {
-      const exitedAt = Date.now();
-      const settle = () => {
-        const waited = Date.now() - exitedAt;
-        const quiet = Date.now() - lastDataAt;
-        if (quiet >= DRAIN_MS || waited >= DRAIN_MAX_MS) {
-          const env = Envelope.exit(ch, exitCode);
-          emit(env);
-          onEnd?.(env);
-          rpcTransport
-            .request({ pluginId, svc: 'stream', act: 'session_close', params: { ch } })
-            .catch(() => {});
+    /**
+     * Drain the output, THEN ask for the exit status — in that order, on
+     * purpose.
+     *
+     * `exitstatus` removes the plugin's session as soon as the child exits, so
+     * asking for it while the buffer is still unread can make the next `read`
+     * fail the lookup and silently drop a short command's output. By the time
+     * the output has ended the child has certainly exited (the end of output
+     * means the child's side closed), so asking afterwards returns promptly.
+     */
+    (async () => {
+      for (;;) {
+        let data;
+        try {
+          data = await invoke('plugin:pty|read', { pid });
+        } catch (e) {
+          if (stopped) return;
+          const s = String(e);
+          if (isEndOfOutput(s)) break;
+          finish(Envelope.streamErr(ch, 'transport', `pty read failed: ${s}`));
           return;
         }
-        exitTimer = setTimeout(settle, Math.min(DRAIN_MS, DRAIN_MAX_MS - waited));
-      };
-      settle();
-    });
+        if (stopped) return;
+        emitData(toU8(data));
+      }
 
-    let initErr = null;
-    pty._init?.catch?.((e) => {
-      initErr = e;
-    });
-    for (let i = 0; i < 100 && pty.pid == null && !initErr; i++) await sleep(20);
-    if (pty.pid == null) {
-      d1?.dispose?.();
-      d2?.dispose?.();
-      throw ProtocolError.transport(
-        `pty spawn failed: ${initErr ? `invoke error: ${initErr}` : 'pid unresolved after 2s'}`,
-      );
-    }
+      outputEnded = true;
+      if (stopped) return;
 
-    // Register with the unified registry so app exit reaps this child.
-    await rpcTransport
-      .request({
-        pluginId,
-        svc: 'stream',
-        act: 'session_open',
-        params: { ch, kind: 'pty', pid: pty.pid },
-      })
-      .catch(() => {
-        /* registry unavailable: the pty still works, just not tracked */
-      });
+      try {
+        const code = await invoke('plugin:pty|exitstatus', { pid });
+        exitCode = typeof code === 'number' ? code : -1;
+      } catch (e) {
+        if (stopped) return;
+        // The output ended, so the frame must be terminal or the consumer waits
+        // forever. Report an unknown code rather than inventing success.
+        console.warn(`[pty-stream:${ch}] exit status unavailable: ${e}`);
+        exitCode = -1;
+      }
+      maybeExit();
+    })();
 
     return {
       ch,
       provider: 'pty',
-      pid: pty.pid,
-      cols: pty.cols,
-      rows: pty.rows,
+      pid,
+      cols: params.cols ?? 80,
+      rows: params.rows ?? 24,
+
       write(data) {
-        cprHandled = true;
-        pty.write(data);
+        cprHandled = true; // the consumer answered the cursor query itself
+        return invoke('plugin:pty|write', { pid, data });
       },
+
       resize(cols, rows) {
-        pty.resize(cols, rows);
+        return invoke('plugin:pty|resize', { pid, cols, rows });
       },
-      clear() {
-        pty.clear();
-      },
-      async close() {
+
+      /**
+       * Close the stream. Emits `end` (like the stdio transport does) rather
+       * than `exit`: the consumer ended it, so there is no exit code to report.
+       * Idempotent — a second call returns the first call's promise.
+       */
+      close() {
+        if (closing) return closing;
+        stopped = true;
         cprHandled = true;
         if (dsrTimer) clearTimeout(dsrTimer);
-        if (exitTimer) clearTimeout(exitTimer);
-        try {
-          pty.kill();
-        } finally {
-          d1?.dispose?.();
-          d2?.dispose?.();
-        }
-        await rpcTransport
-          .request({ pluginId, svc: 'stream', act: 'session_close', params: { ch } })
-          .catch(() => {});
+        closing = invoke('plugin:pty|kill', { pid })
+          .catch(() => {})
+          .then(() => {
+            finish(Envelope.end(ch));
+          });
+        return closing;
       },
     };
   },
