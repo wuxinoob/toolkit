@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# scratch: commit messages and one-off temp files must not be repo-local
+*.tmp
