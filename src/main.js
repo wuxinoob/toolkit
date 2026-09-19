@@ -1,4 +1,8 @@
 import { createApp } from 'vue';
+// One stylesheet for every window: the design tokens and the `.tb-*` primitives
+// are global on purpose — external plugins (Blob-URL ESM) cannot import a
+// component library, but they CAN use these classes.
+import './assets/app.css';
 import App from './App.vue';
 import { boot } from './host/boot.js';
 

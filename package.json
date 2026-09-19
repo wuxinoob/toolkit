@@ -13,18 +13,20 @@
     "deploy:examples": "node scripts/deploy-examples.mjs"
   },
   "dependencies": {
-    "vue": "^3.5.13",
     "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-global-shortcut": "^2",
-    "@xterm/xterm": "^6.0.0",
+    "@tauri-apps/plugin-opener": "^2",
     "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "dompurify": "^3.2.0",
     "marked": "^16.0.0",
-    "dompurify": "^3.2.0"
+    "vue": "^3.5.13"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@tauri-apps/cli": "^2",
     "@vitejs/plugin-vue": "^6.0.7",
-    "vite": "^8.0.16",
-    "@tauri-apps/cli": "^2"
+    "tailwindcss": "^4.3.3",
+    "vite": "^8.0.16"
   }
 }

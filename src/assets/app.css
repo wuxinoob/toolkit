@@ -1,0 +1,452 @@
+@import 'tailwindcss';
+
+/* =============================================================================
+ * Toolbox design system
+ *
+ * Two layers, on purpose:
+ *
+ *   1. TOKENS (`@theme`) — one place that decides what the app looks like.
+ *      A colour, radius or shadow changes here and every surface follows.
+ *
+ *   2. PRIMITIVES (`@layer components`) — `.tb-btn`, `.tb-card`, `.tb-input`, …
+ *      These are plain CSS classes in the global stylesheet, which matters more
+ *      than it sounds: **external plugins are loaded from a Blob URL as a
+ *      single-file ESM and cannot import anything**, so a JS component library
+ *      (shadcn-vue, HeroUI, …) can never reach them. Classes can. A plugin that
+ *      uses `.tb-card` looks native without shipping a stylesheet of its own.
+ *
+ * Utilities (Tailwind) are for the host shell and builtin plugins, which ARE
+ * bundled and can use them freely.
+ *
+ * Dark only, for now: the app has always been dark, and a light theme I cannot
+ * open a window to check would be shipped blind. The token set below is the
+ * whole surface area a light theme would need to override.
+ * ========================================================================== */
+
+@theme {
+  /* surfaces */
+  --color-canvas: #0e1015;
+  --color-surface: #151922;
+  --color-surface-2: #1b202b;
+  --color-line: #262c38;
+  --color-line-strong: #343c4c;
+
+  /* text */
+  --color-ink: #e7eaf0;
+  --color-ink-muted: #a4acbc;
+  --color-ink-subtle: #6d7688;
+
+  /* intent */
+  --color-brand: #6f9cf5;
+  --color-brand-ink: #0b1020;
+  --color-danger: #ff8b9a;
+  --color-success: #86e2a2;
+  --color-warn: #f0c674;
+
+  /* shape */
+  --radius-sm: 6px;
+  --radius-md: 9px;
+  --radius-lg: 13px;
+  --shadow-panel: 0 1px 2px rgb(0 0 0 / 0.35), 0 10px 28px rgb(0 0 0 / 0.22);
+}
+
+@layer base {
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    font: 13px/1.55 system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* A visible focus ring everywhere: this app is keyboard-driven (global
+     hotkeys, terminals), and the default outline disappears against dark
+     surfaces. */
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--color-brand) 40%, transparent);
+  }
+
+  /* Slim scrollbars, so a terminal pane and a plugin view stop looking like
+     they belong to different applications. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line-strong);
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-ink-subtle);
+    background-clip: content-box;
+  }
+}
+
+@layer components {
+  /* ---------------------------------- shell --------------------------------- */
+
+  .tb-shell {
+    display: flex;
+    height: 100%;
+    position: relative;
+  }
+
+  .tb-sidebar {
+    width: 216px;
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    background: var(--color-surface);
+    border-right: 1px solid var(--color-line);
+  }
+
+  .tb-brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 16px 16px 12px;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+    color: var(--color-ink);
+  }
+  .tb-brand::before {
+    content: '';
+    width: 9px;
+    height: 9px;
+    border-radius: 3px;
+    background: var(--color-brand);
+    box-shadow: 0 0 12px color-mix(in srgb, var(--color-brand) 60%, transparent);
+  }
+
+  .tb-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 8px 8px;
+    overflow: auto;
+  }
+
+  .tb-nav-group {
+    padding: 12px 10px 4px;
+    font-size: 10.5px;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    color: var(--color-ink-subtle);
+  }
+
+  .tb-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    padding: 7px 10px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-ink-muted);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+  .tb-nav-item:hover {
+    background: var(--color-surface-2);
+    color: var(--color-ink);
+  }
+  .tb-nav-item[aria-current='true'] {
+    background: color-mix(in srgb, var(--color-brand) 16%, transparent);
+    border-color: color-mix(in srgb, var(--color-brand) 35%, transparent);
+    color: var(--color-ink);
+  }
+  .tb-nav-item .tb-icon {
+    width: 18px;
+    text-align: center;
+    flex: 0 0 auto;
+  }
+
+  .tb-content {
+    flex: 1;
+    min-width: 0;
+    overflow: auto;
+    padding: 14px;
+  }
+
+  /* --------------------------------- surfaces -------------------------------- */
+
+  .tb-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-panel);
+  }
+  .tb-card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--color-line);
+    font-weight: 500;
+  }
+  .tb-card-body {
+    padding: 12px;
+  }
+  .tb-card-foot {
+    padding: 10px 12px;
+    border-top: 1px solid var(--color-line);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .tb-section-title {
+    font-size: 10.5px;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    color: var(--color-ink-subtle);
+    margin-bottom: 6px;
+  }
+
+  .tb-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .tb-divider {
+    height: 1px;
+    background: var(--color-line);
+    margin: 10px 0;
+  }
+
+  /* --------------------------------- controls -------------------------------- */
+
+  .tb-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 6px 11px;
+    border: 1px solid var(--color-line-strong);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-2);
+    color: var(--color-ink);
+    font: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, opacity 0.12s;
+  }
+  .tb-btn:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--color-surface-2) 60%, var(--color-line-strong));
+  }
+  .tb-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .tb-btn-primary {
+    background: var(--color-brand);
+    border-color: var(--color-brand);
+    color: var(--color-brand-ink);
+    font-weight: 500;
+  }
+  .tb-btn-primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--color-brand) 86%, white);
+  }
+
+  .tb-btn-danger {
+    background: color-mix(in srgb, var(--color-danger) 14%, transparent);
+    border-color: color-mix(in srgb, var(--color-danger) 40%, transparent);
+    color: var(--color-danger);
+  }
+  .tb-btn-danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--color-danger) 24%, transparent);
+  }
+
+  .tb-btn-ghost {
+    background: transparent;
+    border-color: transparent;
+    color: var(--color-ink-muted);
+  }
+  .tb-btn-ghost:hover:not(:disabled) {
+    background: var(--color-surface-2);
+    color: var(--color-ink);
+  }
+
+  .tb-btn-sm {
+    padding: 3px 7px;
+    font-size: 11.5px;
+  }
+
+  .tb-input,
+  .tb-select,
+  .tb-textarea {
+    width: 100%;
+    padding: 6px 9px;
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-sm);
+    font: inherit;
+    font-size: 12.5px;
+  }
+  .tb-input::placeholder,
+  .tb-textarea::placeholder {
+    color: var(--color-ink-subtle);
+  }
+  .tb-input:focus,
+  .tb-select:focus,
+  .tb-textarea:focus {
+    border-color: var(--color-brand);
+    outline: none;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-brand) 22%, transparent);
+  }
+
+  .tb-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .tb-label {
+    font-size: 11px;
+    color: var(--color-ink-muted);
+  }
+  .tb-hint {
+    font-size: 11px;
+    color: var(--color-ink-subtle);
+  }
+
+  /* ---------------------------------- data ---------------------------------- */
+
+  .tb-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+  }
+  .tb-table th {
+    text-align: left;
+    font-weight: 500;
+    font-size: 10.5px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--color-ink-subtle);
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--color-line);
+  }
+  .tb-table td {
+    padding: 7px 8px;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-line) 60%, transparent);
+  }
+  .tb-table tr:last-child td {
+    border-bottom: none;
+  }
+
+  .tb-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 7px;
+    border: 1px solid var(--color-line-strong);
+    border-radius: 999px;
+    font-size: 10.5px;
+    color: var(--color-ink-muted);
+    white-space: nowrap;
+  }
+  .tb-badge-ok {
+    border-color: color-mix(in srgb, var(--color-success) 40%, transparent);
+    color: var(--color-success);
+  }
+  .tb-badge-warn {
+    border-color: color-mix(in srgb, var(--color-warn) 40%, transparent);
+    color: var(--color-warn);
+  }
+  .tb-badge-bad {
+    border-color: color-mix(in srgb, var(--color-danger) 40%, transparent);
+    color: var(--color-danger);
+  }
+
+  .tb-mono {
+    font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+    font-size: 12px;
+  }
+
+  .tb-kbd {
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 11px;
+    padding: 1px 6px;
+    border: 1px solid var(--color-line-strong);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    background: var(--color-surface-2);
+    color: var(--color-ink-muted);
+  }
+
+  .tb-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 100%;
+    color: var(--color-ink-subtle);
+    font-size: 13px;
+  }
+
+  /* --------------------------------- feedback -------------------------------- */
+
+  .tb-toasts {
+    position: absolute;
+    right: 14px;
+    bottom: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    z-index: 50;
+  }
+  .tb-toast {
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-line-strong);
+    background: var(--color-surface-2);
+    box-shadow: var(--shadow-panel);
+    font-size: 12.5px;
+    max-width: 360px;
+  }
+  .tb-toast-error {
+    border-color: color-mix(in srgb, var(--color-danger) 45%, transparent);
+    color: var(--color-danger);
+  }
+  .tb-toast-success {
+    border-color: color-mix(in srgb, var(--color-success) 45%, transparent);
+    color: var(--color-success);
+  }
+
+  /* The layer plugins mount overlay content into (eyecare's break screen, …).
+     It is deliberately NOT position:absolute and does NOT set pointer-events:
+     none. A plugin overlay positions itself (usually `position:fixed`), and an
+     absolutely-positioned empty container would swallow every click in the app
+     while a `pointer-events:none` one would stop an overlay button from ever
+     being clickable (children inherit it). Empty in normal flow costs nothing. */
+  .tb-overlay {
+    position: relative;
+    z-index: 9999;
+  }
+}

@@ -85,6 +85,7 @@ docs/
   MESSAGE-FRAMEWORK.md      the analysis + design that led here
   PROTOCOL.md               the protocol reference
   INTERFACES.md             interface inventory + unification audit + roadmap
+  UI.md                     design tokens + the .tb-* primitives plugins can use
 ```
 
 ## Plugins
