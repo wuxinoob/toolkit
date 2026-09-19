@@ -107,144 +107,196 @@ export async function activate(ctx) {
     }
   };
 
-  ctx.registerView('floatwin', (el) => {
-    el.innerHTML = `
-      <div style="display:flex;flex-direction:column;gap:14px;max-width:460px;">
-        <div>
-          <h2 style="margin:0 0 4px;font-size:16px;">悬浮窗</h2>
-          <p class="tb-hint" style="margin:0;">
-            一个独立的透明置顶窗口，尺寸、透明度与鼠标透传都在这里实时控制。
-          </p>
-        </div>
-
-        <div class="tb-card">
-          <div class="tb-card-body" style="display:flex;flex-direction:column;gap:12px;">
-            <div class="tb-toolbar">
-              <span class="fw-status tb-hint">…</span>
-            </div>
-            <div class="tb-toolbar">
-              <button class="fw-create tb-btn tb-btn-primary">创建 / 显示</button>
-              <button class="fw-hide tb-btn">隐藏</button>
-              <button class="fw-destroy tb-btn tb-btn-danger">销毁</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="tb-card">
-          <div class="tb-card-head">外观</div>
-          <div class="tb-card-body" style="display:flex;flex-direction:column;gap:12px;">
-            <label class="tb-field">
-              <span class="tb-label">
-                透明度 <span class="fw-opacity-val tb-t-muted"></span>
-              </span>
-              <input type="range" class="fw-opacity" min="0.2" max="1" step="0.05" />
-            </label>
-            <div class="tb-toolbar">
-              <label class="tb-field" style="flex:0 0 auto;">
-                <span class="tb-label">宽</span>
-                <input type="number" class="fw-width tb-input tb-input-inline" min="${RANGE.width[0]}"
-                       max="${RANGE.width[1]}" step="10" style="width:86px;" />
-              </label>
-              <label class="tb-field" style="flex:0 0 auto;">
-                <span class="tb-label">高</span>
-                <input type="number" class="fw-height tb-input tb-input-inline" min="${RANGE.height[0]}"
-                       max="${RANGE.height[1]}" step="10" style="width:86px;" />
-              </label>
-              <button class="fw-apply-size tb-btn" style="align-self:flex-end;">应用尺寸</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="tb-card">
-          <div class="tb-card-head">行为</div>
-          <div class="tb-card-body" style="display:flex;flex-direction:column;gap:10px;">
-            <label class="tb-label" style="display:flex;gap:10px;align-items:center;">
-              <input type="checkbox" class="fw-clickthrough" /> 鼠标透传
-              <span class="tb-hint">开启后悬浮窗不响应鼠标，只能在本面板关闭</span>
-            </label>
-            <label class="tb-label" style="display:flex;gap:10px;align-items:center;">
-              <input type="checkbox" class="fw-on-top" /> 窗口置顶
-            </label>
-            <label class="tb-label" style="display:flex;gap:10px;align-items:center;">
-              <input type="checkbox" class="fw-autorestore" /> 应用启动时自动恢复
-            </label>
-            <p class="tb-hint" style="margin:0;">
-              在悬浮窗标题栏按住可拖动窗口；关闭面板不会销毁悬浮窗，用「销毁」或悬浮窗 ✕ 关闭。
-              配置变更经 event-bus 广播，悬浮窗即时生效（不再轮询）。
-            </p>
-          </div>
-        </div>
-      </div>`;
-
-    statusEl = el.querySelector('.fw-status');
-    const opacityInput = el.querySelector('.fw-opacity');
-    const opacityVal = el.querySelector('.fw-opacity-val');
-
-    opacityInput.value = cfg.opacity;
-    opacityVal.textContent = Math.round(cfg.opacity * 100) + '%';
-    el.querySelector('.fw-width').value = cfg.width;
-    el.querySelector('.fw-height').value = cfg.height;
-    el.querySelector('.fw-clickthrough').checked = !!cfg.clickThrough;
-    el.querySelector('.fw-on-top').checked = !!cfg.alwaysOnTop;
-    el.querySelector('.fw-autorestore').checked = !!cfg.autoRestore;
+  ctx.registerView('floatwin', (root) => {
+    const { el, render } = ctx.ui;
 
     // Live slider: update the label at once; debounce the write so a drag does
     // not hammer data.json. The broadcast is what the widget reacts to, so the
     // visual feedback is immediate regardless.
     let persistTimer = null;
-    opacityInput.addEventListener('input', (e) => {
-      cfg.opacity = clamp(e.target.value, RANGE.opacity);
-      opacityVal.textContent = Math.round(cfg.opacity * 100) + '%';
-      clearTimeout(persistTimer);
-      persistTimer = setTimeout(persist, 120);
-    });
 
-    el.querySelector('.fw-width').addEventListener('change', (e) => {
-      cfg.width = clamp(e.target.value, RANGE.width);
-      e.target.value = cfg.width;
-      applySize();
-    });
-    el.querySelector('.fw-height').addEventListener('change', (e) => {
-      cfg.height = clamp(e.target.value, RANGE.height);
-      e.target.value = cfg.height;
-      applySize();
-    });
-    el.querySelector('.fw-apply-size').addEventListener('click', applySize);
+    const checkbox = (key, label, hint, onChange) =>
+      el(
+        'div',
+        { style: 'display:flex;gap:10px;align-items:flex-start;' },
+        el('checkbox', {
+          id: `fw-${key}`,
+          defaultValue: !!cfg[key],
+          'onUpdate:modelValue': (v) => {
+            cfg[key] = !!v;
+            onChange?.(!!v);
+          },
+        }),
+        el(
+          'div',
+          { style: 'display:flex;flex-direction:column;gap:2px;' },
+          el('label', { for: `fw-${key}` }, label),
+          hint ? el('span', { class: 'tb-hint' }, hint) : null,
+        ),
+      );
 
-    el.querySelector('.fw-clickthrough').addEventListener('change', (e) => {
-      cfg.clickThrough = e.target.checked;
-      persist();
-      ctx.windows
-        .control(FLOATWIN_LABEL, 'clickThrough', cfg.clickThrough)
-        .catch(() => ctx.ui.notify('悬浮窗未创建，设置将在创建时生效', 'info'));
-    });
-    el.querySelector('.fw-on-top').addEventListener('change', (e) => {
-      cfg.alwaysOnTop = e.target.checked;
-      persist();
-      ctx.windows
-        .control(FLOATWIN_LABEL, 'alwaysOnTop', cfg.alwaysOnTop)
-        .catch(() => ctx.ui.notify('悬浮窗未创建，设置将在创建时生效', 'info'));
-    });
-    el.querySelector('.fw-autorestore').addEventListener('change', () => {
-      cfg.autoRestore = el.querySelector('.fw-autorestore').checked;
-      persist();
-    });
+    render(
+      root,
+      el(
+        'div',
+        { style: 'display:flex;flex-direction:column;gap:14px;max-width:500px;' },
+        el(
+          'div',
+          {},
+          el('h2', { style: 'margin:0 0 4px;font-size:16px;font-weight:500;' }, '悬浮窗'),
+          el(
+            'p',
+            { class: 'tb-hint', style: 'margin:0;' },
+            '一个独立的透明置顶窗口，尺寸、透明度与鼠标透传都在这里实时控制。',
+          ),
+        ),
 
-    el.querySelector('.fw-create').addEventListener('click', async () => {
-      try {
-        await ensureWindow(ctx, cfg);
-        setStatus(true);
-      } catch (e) {
-        ctx.ui.notify(`悬浮窗创建失败: ${e}`, 'error');
-      }
-    });
-    el.querySelector('.fw-hide').addEventListener('click', () => {
-      ctx.windows.control(FLOATWIN_LABEL, 'hide').catch(() => ctx.ui.notify('悬浮窗未创建', 'info'));
-    });
-    el.querySelector('.fw-destroy').addEventListener('click', () => {
-      ctx.windows.control(FLOATWIN_LABEL, 'close').catch(() => ctx.ui.notify('悬浮窗未创建', 'info'));
-    });
+        el(
+          'card',
+          {},
+          el(
+            'card-content',
+            { style: 'display:flex;flex-direction:column;gap:12px;' },
+            el('div', { class: 'tb-toolbar' }, el('span', { class: 'fw-status tb-hint' }, '…')),
+            el(
+              'div',
+              { class: 'tb-toolbar' },
+              el(
+                'button',
+                {
+                  variant: 'default',
+                  onClick: async () => {
+                    try {
+                      await ensureWindow(ctx, cfg);
+                      setStatus(true);
+                    } catch (e) {
+                      ctx.ui.notify(`悬浮窗创建失败: ${e}`, 'error');
+                    }
+                  },
+                },
+                '创建 / 显示',
+              ),
+              el(
+                'button',
+                { variant: 'outline', onClick: () => ctx.windows.control(FLOATWIN_LABEL, 'hide').catch(() => ctx.ui.notify('悬浮窗未创建', 'info')) },
+                '隐藏',
+              ),
+              el(
+                'button',
+                { variant: 'destructive', onClick: () => ctx.windows.control(FLOATWIN_LABEL, 'close').catch(() => ctx.ui.notify('悬浮窗未创建', 'info')) },
+                '销毁',
+              ),
+            ),
+          ),
+        ),
 
+        el(
+          'card',
+          {},
+          el('card-header', {}, el('card-title', {}, '外观')),
+          el(
+            'card-content',
+            { style: 'display:flex;flex-direction:column;gap:14px;' },
+            el(
+              'div',
+              { style: 'display:flex;flex-direction:column;gap:8px;' },
+              el(
+                'span',
+                { class: 'tb-label' },
+                '透明度 ',
+                el('span', { class: 'fw-opacity-val tb-t-muted' }, `${Math.round(cfg.opacity * 100)}%`),
+              ),
+              el('slider', {
+                defaultValue: [cfg.opacity],
+                min: RANGE.opacity[0],
+                max: RANGE.opacity[1],
+                step: 0.05,
+                'onUpdate:modelValue': (v) => {
+                  cfg.opacity = clamp(Array.isArray(v) ? v[0] : v, RANGE.opacity);
+                  const label = root.querySelector('.fw-opacity-val');
+                  if (label) label.textContent = `${Math.round(cfg.opacity * 100)}%`;
+                  clearTimeout(persistTimer);
+                  persistTimer = setTimeout(persist, 120);
+                },
+              }),
+            ),
+            el(
+              'div',
+              { class: 'tb-toolbar' },
+              el(
+                'div',
+                { style: 'display:flex;flex-direction:column;gap:6px;' },
+                el('label', { for: 'fw-width' }, '宽'),
+                el('input', {
+                  id: 'fw-width',
+                  type: 'number',
+                  min: RANGE.width[0],
+                  max: RANGE.width[1],
+                  step: 10,
+                  defaultValue: cfg.width,
+                  style: 'width:96px;',
+                  onChange: (e) => {
+                    cfg.width = clamp(e.target.value, RANGE.width);
+                    e.target.value = cfg.width;
+                    applySize();
+                  },
+                }),
+              ),
+              el(
+                'div',
+                { style: 'display:flex;flex-direction:column;gap:6px;' },
+                el('label', { for: 'fw-height' }, '高'),
+                el('input', {
+                  id: 'fw-height',
+                  type: 'number',
+                  min: RANGE.height[0],
+                  max: RANGE.height[1],
+                  step: 10,
+                  defaultValue: cfg.height,
+                  style: 'width:96px;',
+                  onChange: (e) => {
+                    cfg.height = clamp(e.target.value, RANGE.height);
+                    e.target.value = cfg.height;
+                    applySize();
+                  },
+                }),
+              ),
+              el('button', { variant: 'outline', style: 'align-self:flex-end;', onClick: applySize }, '应用尺寸'),
+            ),
+          ),
+        ),
+
+        el(
+          'card',
+          {},
+          el('card-header', {}, el('card-title', {}, '行为')),
+          el(
+            'card-content',
+            { style: 'display:flex;flex-direction:column;gap:12px;' },
+            checkbox('clickThrough', '鼠标透传', '开启后悬浮窗不响应鼠标，只能在本面板关闭', () => {
+              persist();
+              ctx.windows
+                .control(FLOATWIN_LABEL, 'clickThrough', cfg.clickThrough)
+                .catch(() => ctx.ui.notify('悬浮窗未创建，设置将在创建时生效', 'info'));
+            }),
+            checkbox('alwaysOnTop', '窗口置顶', null, () => {
+              persist();
+              ctx.windows
+                .control(FLOATWIN_LABEL, 'alwaysOnTop', cfg.alwaysOnTop)
+                .catch(() => ctx.ui.notify('悬浮窗未创建，设置将在创建时生效', 'info'));
+            }),
+            checkbox('autoRestore', '应用启动时自动恢复', null, () => persist()),
+            el(
+              'p',
+              { class: 'tb-hint', style: 'margin:0;' },
+              '在悬浮窗标题栏按住可拖动窗口；关闭面板不会销毁悬浮窗，用「销毁」或悬浮窗 ✕ 关闭。配置变更经 event-bus 广播，悬浮窗即时生效（不再轮询）。',
+            ),
+          ),
+        ),
+      ),
+    );
+
+    statusEl = root.querySelector('.fw-status');
     refreshStatus();
   });
 

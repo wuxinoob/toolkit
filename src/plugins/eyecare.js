@@ -68,56 +68,94 @@ function runBreak(ctx, cfg) {
 export async function activate(ctx) {
   const cfg = { ...DEFAULTS, ...((await ctx.storage.get('config')) || {}) };
 
-  ctx.registerView('eyecare', (el) => {
-    el.innerHTML = `
-      <div style="display:flex;flex-direction:column;gap:14px;max-width:420px;">
-        <div>
-          <h2 style="margin:0 0 4px;font-size:16px;">Eyecare Assistant</h2>
-          <p class="tb-hint" style="margin:0;">
-            A full-window reminder at a fixed interval. Timers run while the plugin is enabled.
-          </p>
-        </div>
-        <div class="tb-card">
-          <div class="tb-card-body" style="display:flex;flex-direction:column;gap:12px;">
-            <label style="display:flex;gap:9px;align-items:center;">
-              <input type="checkbox" class="ec-enabled" ${cfg.enabled ? 'checked' : ''} />
-              <span>Enabled</span>
-            </label>
-            <label class="tb-field">
-              <span class="tb-label">Interval (minutes)</span>
-              <input type="number" class="ec-interval tb-input tb-input-inline" min="5" max="180"
-                     value="${cfg.intervalMin}" style="width:110px;" />
-            </label>
-            <label class="tb-field">
-              <span class="tb-label">Break duration (seconds)</span>
-              <input type="number" class="ec-break tb-input tb-input-inline" min="10" max="120"
-                     value="${cfg.breakSec}" style="width:110px;" />
-            </label>
-            <div>
-              <button class="ec-test tb-btn">Preview break overlay</button>
-            </div>
-          </div>
-        </div>
-      </div>`;
+  ctx.registerView('eyecare', (root) => {
+    const { el, render } = ctx.ui;
 
-    const persist = () => ctx.storage.set('config', cfg);
+    const persist = () => ctx.storage.set('config', cfg).catch(() => {});
     const apply = () => {
       startTimer(ctx, cfg);
-      persist().catch(() => {});
+      persist();
     };
-    el.querySelector('.ec-enabled').addEventListener('change', (e) => {
-      cfg.enabled = e.target.checked;
-      apply();
-    });
-    el.querySelector('.ec-interval').addEventListener('change', (e) => {
-      cfg.intervalMin = Math.max(5, Number(e.target.value) || DEFAULTS.intervalMin);
-      apply();
-    });
-    el.querySelector('.ec-break').addEventListener('change', (e) => {
-      cfg.breakSec = Math.min(120, Math.max(10, Number(e.target.value) || DEFAULTS.breakSec));
-      apply();
-    });
-    el.querySelector('.ec-test').addEventListener('click', () => runBreak(ctx, cfg));
+
+    render(
+      root,
+      el(
+        'div',
+        { style: 'display:flex;flex-direction:column;gap:14px;max-width:460px;' },
+        el(
+          'div',
+          {},
+          el('h2', { style: 'margin:0 0 4px;font-size:16px;font-weight:500;' }, 'Eyecare Assistant'),
+          el(
+            'p',
+            { class: 'text-xs text-muted-foreground', style: 'margin:0;' },
+            'A full-window reminder at a fixed interval. Timers run while the plugin is enabled.',
+          ),
+        ),
+        el(
+          'card',
+          {},
+          el(
+            'card-content',
+            { style: 'display:flex;flex-direction:column;gap:14px;' },
+            el(
+              'div',
+              { style: 'display:flex;align-items:center;gap:9px;' },
+              el('checkbox', {
+                id: 'ec-enabled',
+                defaultValue: cfg.enabled,
+                'onUpdate:modelValue': (v) => {
+                  cfg.enabled = !!v;
+                  apply();
+                },
+              }),
+              el('label', { for: 'ec-enabled' }, 'Enabled'),
+            ),
+            el(
+              'div',
+              { style: 'display:flex;flex-direction:column;gap:6px;max-width:170px;' },
+              el('label', { for: 'ec-interval' }, 'Interval (minutes)'),
+              el('input', {
+                id: 'ec-interval',
+                type: 'number',
+                min: 5,
+                max: 180,
+                defaultValue: cfg.intervalMin,
+                onChange: (e) => {
+                  cfg.intervalMin = Math.max(5, Number(e.target.value) || DEFAULTS.intervalMin);
+                  apply();
+                },
+              }),
+            ),
+            el(
+              'div',
+              { style: 'display:flex;flex-direction:column;gap:6px;max-width:170px;' },
+              el('label', { for: 'ec-break' }, 'Break duration (seconds)'),
+              el('input', {
+                id: 'ec-break',
+                type: 'number',
+                min: 10,
+                max: 120,
+                defaultValue: cfg.breakSec,
+                onChange: (e) => {
+                  cfg.breakSec = Math.min(120, Math.max(10, Number(e.target.value) || DEFAULTS.breakSec));
+                  apply();
+                },
+              }),
+            ),
+            el(
+              'div',
+              {},
+              el(
+                'button',
+                { variant: 'outline', onClick: () => runBreak(ctx, cfg) },
+                'Preview break overlay',
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   });
 
   startTimer(ctx, cfg);

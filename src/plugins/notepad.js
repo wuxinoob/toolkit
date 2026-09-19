@@ -43,111 +43,183 @@ function scheduleSave() {
   state.saveTimer = setTimeout(() => persist().catch((e) => state.ctx.log.warn('save failed', e)), 400);
 }
 
-function renderList() {
-  const el = document.querySelector('.np-list');
-  if (!el) return;
-  el.innerHTML = state.notes
-    .map(
-      (n) => `
-    <div class="tb-row" data-id="${n.id}" role="option" aria-selected="${n.id === state.activeId}">
-      <span class="tb-row-label">${esc(n.title || 'Untitled')}</span>
-      <span class="tb-row-actions">
-        <button class="tb-icon-btn tb-icon-btn-danger" data-act="del" title="Delete note" aria-label="Delete note">✕</button>
-      </span>
-    </div>`,
-    )
-    .join('') || `<div class="tb-hint">No notes yet.</div>`;
-}
-
-function renderEditor() {
-  const titleEl = document.querySelector('.np-title');
-  const bodyEl = document.querySelector('.np-body');
-  const previewEl = document.querySelector('.np-preview');
-  if (!titleEl || !bodyEl) return;
-  const note = state.notes.find((n) => n.id === state.activeId);
-  titleEl.value = note?.title ?? '';
-  bodyEl.value = note?.body ?? '';
-  titleEl.disabled = bodyEl.disabled = !note;
-  if (previewEl) {
-    previewEl.style.display = state.preview ? '' : 'none';
-    bodyEl.style.display = state.preview ? 'none' : '';
-    previewEl.innerHTML = note ? DOMPurify.sanitize(marked.parse(note.body || '')) : '';
-  }
-}
-
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
+/**
+ * Redraw the note list.
+ *
+ * `render()` replaces the container's content, so redrawing is just calling it
+ * again — the previous tree's Vue app is unmounted for us. That matters here
+ * because this runs on every keystroke.
+ *
+ * Rows keep the `.tb-*` list classes rather than Tailwind utilities on purpose:
+ * this is a built-in plugin, so utilities WOULD be generated for it, but an
+ * external plugin's source is outside the project and Tailwind never sees it.
+ * A built-in that used them would be a misleading example of what a drop-in
+ * plugin can do.
+ */
+function drawList(root) {
+  const host = root.querySelector('.np-list');
+  if (!host) return;
+  const { el, render } = state.ctx.ui;
+
+  render(
+    host,
+    state.notes.length
+      ? state.notes.map((n) =>
+          el(
+            'div',
+            {
+              class: 'tb-row',
+              'data-id': n.id,
+              role: 'option',
+              'aria-selected': String(n.id === state.activeId),
+              onClick: () => {
+                state.activeId = n.id;
+                drawList(root);
+                drawEditor(root);
+              },
+            },
+            el('span', { class: 'tb-row-label' }, n.title || 'Untitled'),
+            el(
+              'span',
+              { class: 'tb-row-actions' },
+              el(
+                'button',
+                {
+                  variant: 'ghost',
+                  size: 'icon-xs',
+                  title: 'Delete note',
+                  'aria-label': 'Delete note',
+                  onClick: (e) => {
+                    e.stopPropagation();
+                    state.notes = state.notes.filter((x) => x.id !== n.id);
+                    if (state.activeId === n.id) state.activeId = state.notes[0]?.id ?? null;
+                    persist().catch(() => {});
+                    drawList(root);
+                    drawEditor(root);
+                  },
+                },
+                '✕',
+              ),
+            ),
+          ),
+        )
+      : el('div', { class: 'tb-hint' }, 'No notes yet.'),
+  );
+}
+
+/** Repaint the editor pane for the active note (values, disabled state, preview). */
+function drawEditor(root) {
+  const note = state.notes.find((n) => n.id === state.activeId);
+  const title = root.querySelector('.np-title');
+  const body = root.querySelector('.np-body');
+  if (!title || !body) return;
+
+  title.value = note?.title ?? '';
+  body.value = note?.body ?? '';
+  title.disabled = body.disabled = !note;
+
+  const previewHost = root.querySelector('.np-preview');
+  if (previewHost) {
+    previewHost.style.display = state.preview ? '' : 'none';
+    body.style.display = state.preview ? 'none' : '';
+    const { el, render } = state.ctx.ui;
+    render(
+      previewHost,
+      el('div', {
+        class: 'tb-pane tb-pane-pad tb-markdown',
+        style: 'height:100%;',
+        // `innerHTML` as a prop, so the sanitised Markdown goes through Vue
+        // rather than being poked into a Vue-managed node behind its back.
+        innerHTML: note ? DOMPurify.sanitize(marked.parse(note.body || '')) : '',
+      }),
+    );
+  }
+}
+
 function registerRenderHooks(ctx) {
-  ctx.registerView('notepad', (el) => {
-    el.innerHTML = `
-      <div style="display:grid;grid-template-columns:220px 1fr;gap:12px;height:100%;min-height:0;">
-        <div style="display:flex;flex-direction:column;gap:8px;min-height:0;">
-          <div class="tb-toolbar">
-            <span class="tb-section-title" style="margin:0;">Notes</span>
-            <button class="np-new tb-btn tb-btn-sm" style="margin-left:auto;">+ New</button>
-          </div>
-          <div class="np-list tb-list" role="listbox" aria-label="Notes"></div>
-          <div class="tb-hint" style="margin-top:auto;">saved via rpc · broadcast via event-bus</div>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:8px;min-height:0;">
-          <div class="tb-toolbar" style="flex-wrap:nowrap;">
-            <input class="np-title tb-input" placeholder="Title" />
-            <button class="np-preview-toggle tb-btn" aria-pressed="${state.preview}">Preview</button>
-          </div>
-          <textarea class="np-body tb-textarea tb-mono" placeholder="Write Markdown here…"
-                    style="flex:1;min-height:0;resize:none;line-height:1.6;"></textarea>
-          <div class="np-preview tb-pane tb-pane-pad tb-markdown" style="flex:1;display:none;"></div>
-        </div>
-      </div>`;
+  const { el, render } = ctx.ui;
 
-    el.querySelector('.np-new').addEventListener('click', () => {
-      const note = { id: uid(), title: 'Untitled', body: '' };
-      state.notes.unshift(note);
-      state.activeId = note.id;
-      persist().catch(() => {});
-      renderList();
-      renderEditor();
-    });
-
-    el.querySelector('.np-list').addEventListener('click', (ev) => {
-      const row = ev.target.closest('[data-id]');
-      if (!row) return;
-      const id = row.dataset.id;
-      if (ev.target.closest('[data-act="del"]')) {
-        state.notes = state.notes.filter((n) => n.id !== id);
-        if (state.activeId === id) state.activeId = state.notes[0]?.id ?? null;
-        persist().catch(() => {});
-        renderList();
-        renderEditor();
-        return;
-      }
-      state.activeId = id;
-      renderList();
-      renderEditor();
-    });
-
+  ctx.registerView('notepad', (root) => {
     const onChange = () => {
       const note = state.notes.find((n) => n.id === state.activeId);
       if (!note) return;
-      note.title = el.querySelector('.np-title').value;
-      note.body = el.querySelector('.np-body').value;
+      note.title = root.querySelector('.np-title').value;
+      note.body = root.querySelector('.np-body').value;
       scheduleSave();
-      renderList();
-      if (state.preview) renderEditor();
+      drawList(root);
+      if (state.preview) drawEditor(root);
     };
-    el.querySelector('.np-title').addEventListener('input', onChange);
-    el.querySelector('.np-body').addEventListener('input', onChange);
-    el.querySelector('.np-preview-toggle').addEventListener('click', (ev) => {
-      state.preview = !state.preview;
-      // aria-pressed is the state; the class only reflects it.
-      ev.currentTarget.setAttribute('aria-pressed', String(state.preview));
-      renderEditor();
-    });
 
-    renderList();
-    renderEditor();
+    render(
+      root,
+      el(
+        'div',
+        { style: 'display:grid;grid-template-columns:220px 1fr;gap:12px;height:100%;min-height:0;' },
+        el(
+          'div',
+          { style: 'display:flex;flex-direction:column;gap:8px;min-height:0;' },
+          el(
+            'div',
+            { class: 'tb-toolbar' },
+            el('span', { class: 'tb-section-title', style: 'margin:0;' }, 'Notes'),
+            el(
+              'button',
+              {
+                variant: 'outline',
+                size: 'xs',
+                style: 'margin-left:auto;',
+                onClick: () => {
+                  const note = { id: uid(), title: 'Untitled', body: '' };
+                  state.notes.unshift(note);
+                  state.activeId = note.id;
+                  persist().catch(() => {});
+                  drawList(root);
+                  drawEditor(root);
+                },
+              },
+              '+ New',
+            ),
+          ),
+          el('div', { class: 'np-list tb-list', role: 'listbox', 'aria-label': 'Notes' }),
+          el('div', { class: 'tb-hint', style: 'margin-top:auto;' }, 'saved via rpc · broadcast via event-bus'),
+        ),
+        el(
+          'div',
+          { style: 'display:flex;flex-direction:column;gap:8px;min-height:0;' },
+          el(
+            'div',
+            { class: 'tb-toolbar', style: 'flex-wrap:nowrap;' },
+            el('input', { class: 'np-title', placeholder: 'Title', onInput: onChange }),
+            el(
+              'button',
+              {
+                variant: 'outline',
+                'aria-pressed': String(state.preview),
+                onClick: () => {
+                  state.preview = !state.preview;
+                  drawEditor(root);
+                },
+              },
+              'Preview',
+            ),
+          ),
+          el('textarea', {
+            class: 'np-body',
+            placeholder: 'Write Markdown here…',
+            style: 'flex:1;min-height:0;resize:none;',
+            onInput: onChange,
+          }),
+          el('div', { class: 'np-preview', style: 'flex:1;min-height:0;' }),
+        ),
+      ),
+    );
+
+    drawList(root);
+    drawEditor(root);
   });
 }
 

@@ -39,11 +39,7 @@ function log(kind, text) {
 }
 
 function renderLog() {
-  const el = document.querySelector('.sl-log');
-  if (!el) return;
-  el.innerHTML = state.lines
-    .map((l) => `<div class="${LOG_CLASS[l.kind] ?? 'tb-t-dim'}" style="white-space:pre-wrap;word-break:break-all;">${l.t} ${esc(l.text)}</div>`)
-    .join('');
+  state.draw?.log();
 }
 
 function esc(s) {
@@ -129,7 +125,7 @@ async function refreshSessions() {
   const { ctx } = state;
   try {
     state.sessions = await ctx.sessions();
-    renderSessions();
+    state.draw?.sessions();
     log('info', `sessions ← ${state.sessions.length} live endpoint(s)`);
   } catch (e) {
     log('err', `sessions ← ${e.code}: ${e.message}`);
@@ -138,97 +134,130 @@ async function refreshSessions() {
 
 /* ------------------------------------ view ------------------------------------ */
 
-function renderSchemes() {
-  const el = document.querySelector('.sl-schemes');
-  if (!el) return;
-  el.innerHTML = state.ctx
-    .schemes()
-    .map(
-      (s) => `
-    <tr>
-      <td><code class="tb-mono tb-t-brand">${esc(s.id)}</code></td>
-      <td>${esc(s.label)}</td>
-      <td class="tb-hint">${esc(s.direction)}</td>
-      <td class="tb-hint">${esc(s.capabilities)}</td>
-      <td class="tb-hint">${esc(s.note)}</td>
-    </tr>`,
-    )
-    .join('');
+function drawSchemes(root) {
+  const host = root.querySelector('.sl-schemes');
+  if (!host) return;
+  const { el, render } = state.ctx.ui;
+  render(
+    host,
+    el(
+      'table',
+      {},
+      el(
+        'table-header',
+        {},
+        el('table-row', {}, el('table-head', {}, 'id'), el('table-head', {}, '载体 · 编码'), el('table-head', {}, '方向'), el('table-head', {}, '能力'), el('table-head', {}, '说明')),
+      ),
+      el(
+        'table-body',
+        {},
+        state.ctx.schemes().map((s) =>
+          el(
+            'table-row',
+            {},
+            el('table-cell', {}, el('code', { class: 'tb-mono tb-t-brand' }, s.id)),
+            el('table-cell', {}, s.label),
+            el('table-cell', { class: 'tb-hint' }, s.direction),
+            el('table-cell', { class: 'tb-hint' }, s.capabilities),
+            el('table-cell', { class: 'tb-hint' }, s.note),
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
-function renderSessions() {
-  const el = document.querySelector('.sl-sessions');
-  if (!el) return;
-  el.innerHTML = state.sessions.length
-    ? state.sessions
-        .map(
-          (s) => `
-      <div class="tb-row" style="cursor:default;">
-        <code class="tb-mono tb-t-brand">${esc(s.id)}</code>
-        <span class="tb-t-muted">${esc(s.kind)}</span>
-        <span class="tb-hint">pid=${s.pid ?? '—'}</span>
-        <span class="tb-hint" style="margin-left:auto;">${s.bytesOut} B</span>
-      </div>`,
+function drawSessions(root) {
+  const host = root.querySelector('.sl-sessions');
+  if (!host) return;
+  const { el, render } = state.ctx.ui;
+  render(
+    host,
+    state.sessions.length
+      ? state.sessions.map((s) =>
+          el(
+            'div',
+            { class: 'tb-row', style: 'cursor:default;' },
+            el('code', { class: 'tb-mono tb-t-brand' }, s.id),
+            el('span', { class: 'tb-t-muted' }, s.kind),
+            el('span', { class: 'tb-hint' }, `pid=${s.pid ?? '—'}`),
+            el('span', { class: 'tb-hint', style: 'margin-left:auto;' }, `${s.bytesOut} B`),
+          ),
         )
-        .join('')
-    : `<div class="tb-hint">No live endpoints.</div>`;
+      : el('div', { class: 'tb-hint' }, 'No live endpoints.'),
+  );
+}
+
+function drawLog(root) {
+  const host = root.querySelector('.sl-log');
+  if (!host) return;
+  const { el, render } = state.ctx.ui;
+  render(
+    host,
+    state.lines.map((l) =>
+      el('div', { class: LOG_CLASS[l.kind] ?? 'tb-t-dim', style: 'white-space:pre-wrap;word-break:break-all;' }, `${l.t} ${l.text}`),
+    ),
+  );
 }
 
 function registerRenderHooks(ctx) {
-  ctx.registerView('streamlab', (el) => {
-    el.innerHTML = `
-      <div style="display:flex;flex-direction:column;gap:14px;max-width:900px;">
-        <div>
-          <h2 style="margin:0 0 4px;font-size:16px;">StreamLab</h2>
-          <p class="tb-hint" style="margin:0;">
-            同一个信封（envelope）走不同方案。下面每次实验都打印它收到的帧，
-            可以直接对照：载体与编码是两件独立的事。
-          </p>
-        </div>
+  const { el, render } = ctx.ui;
 
-        <div class="tb-toolbar">
-          <button class="sl-rpc tb-btn">rpc · host/info</button>
-          <button class="sl-json tb-btn">channel-json · ticker</button>
-          <button class="sl-raw tb-btn">channel-raw · ticker</button>
-          <button class="sl-bus tb-btn">event-bus · publish</button>
-          <button class="sl-local tb-btn">in-process · emit</button>
-          <button class="sl-sess tb-btn">刷新会话表</button>
-        </div>
+  ctx.registerView('streamlab', (root) => {
+    const btn = (label, fn) => el('button', { variant: 'outline', onClick: fn }, label);
 
-        <div>
-          <div class="tb-section-title">方案表（宿主已注册）</div>
-          <table class="tb-table">
-            <thead>
-              <tr>
-                <th>id</th><th>载体 · 编码</th>
-                <th>方向</th><th>能力</th>
-                <th>说明</th>
-              </tr>
-            </thead>
-            <tbody class="sl-schemes"></tbody>
-          </table>
-        </div>
+    render(
+      root,
+      el(
+        'div',
+        { style: 'display:flex;flex-direction:column;gap:14px;max-width:900px;' },
+        el(
+          'div',
+          {},
+          el('h2', { style: 'margin:0 0 4px;font-size:16px;font-weight:500;' }, 'StreamLab'),
+          el(
+            'p',
+            { class: 'tb-hint', style: 'margin:0;' },
+            '同一个信封（envelope）走不同方案。下面每次实验都打印它收到的帧，可以直接对照：载体与编码是两件独立的事。',
+          ),
+        ),
+        el(
+          'div',
+          { class: 'tb-toolbar' },
+          btn('rpc · host/info', runRpc),
+          btn('channel-json · ticker', runStreamJson),
+          btn('channel-raw · ticker', runStreamRaw),
+          btn('event-bus · publish', runBroadcast),
+          btn('in-process · emit', runLocal),
+          btn('刷新会话表', refreshSessions),
+        ),
+        el(
+          'div',
+          {},
+          el('div', { class: 'tb-section-title' }, '方案表（宿主已注册）'),
+          el('div', { class: 'sl-schemes', style: 'overflow-x:auto;border:1px solid var(--color-line);border-radius:var(--radius-md);' }),
+        ),
+        el(
+          'div',
+          {},
+          el('div', { class: 'tb-section-title' }, '统一会话注册表'),
+          el('div', { class: 'sl-sessions tb-pane tb-pane-pad', style: 'min-height:34px;' }),
+        ),
+        el(
+          'div',
+          {},
+          el('div', { class: 'tb-section-title' }, '帧日志'),
+          el('div', { class: 'sl-log tb-pane tb-mono', style: 'padding:8px;line-height:1.6;max-height:320px;' }),
+        ),
+      ),
+    );
 
-        <div>
-          <div class="tb-section-title">统一会话注册表</div>
-          <div class="sl-sessions tb-pane tb-pane-pad" style="min-height:34px;"></div>
-        </div>
-
-        <div>
-          <div class="tb-section-title">帧日志</div>
-          <pre class="sl-log tb-pane tb-mono" style="margin:0;padding:8px;line-height:1.6;max-height:320px;"></pre>
-        </div>
-      </div>`;
-
-    el.querySelector('.sl-rpc').addEventListener('click', runRpc);
-    el.querySelector('.sl-json').addEventListener('click', runStreamJson);
-    el.querySelector('.sl-raw').addEventListener('click', runStreamRaw);
-    el.querySelector('.sl-bus').addEventListener('click', runBroadcast);
-    el.querySelector('.sl-local').addEventListener('click', runLocal);
-    el.querySelector('.sl-sess').addEventListener('click', refreshSessions);
-
-    renderSchemes();
-    renderLog();
+    // Every draw needs `root` so it can find its own container: several views can
+    // be mounted at once (one per window), so a bare `document.querySelector`
+    // would reach into another instance.
+    state.draw = { schemes: () => drawSchemes(root), sessions: () => drawSessions(root), log: () => drawLog(root) };
+    drawSchemes(root);
+    drawLog(root);
     refreshSessions();
   });
 }

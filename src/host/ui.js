@@ -104,13 +104,24 @@ export function uiKitVocabulary() {
 /**
  * Describe an element. Returns a descriptor — pass it to `render()` or `node()`.
  *
+ * Children may be given as an array, as a single value, or variadically:
+ *
+ *     el('div', {}, [a, b])      // explicit
+ *     el('div', {}, a)           // single child
+ *     el('div', {}, a, b)        // variadic
+ *
+ * The variadic form exists because the singular signature silently DROPPED
+ * everything past the third argument, and that is an easy mistake to make when
+ * the call looks exactly like Vue's `h`. A silently-dropped child renders as a
+ * missing element, which reads as a layout bug rather than a call-site bug.
+ *
  * @param {string} tag   kebab-case component name, e.g. 'card-header'
  * @param {object} [props]
  * @param {any} [children] string | number | descriptor | array of those
  */
-export function el(tag, props = {}, children = undefined) {
+export function el(tag, props = {}, children = undefined, ...rest) {
   if (typeof tag !== 'string' || !tag) throw new Error('el(tag, props, children): tag is required');
-  return { __uiEl: true, tag, props: props ?? {}, children };
+  return { __uiEl: true, tag, props: props ?? {}, children: rest.length ? [children, ...rest] : children };
 }
 
 const isDescriptor = (v) => v !== null && typeof v === 'object' && v.__uiEl === true;
@@ -171,8 +182,16 @@ function toVNode(node) {
  * @param {(fn: Function) => void} [opts.track] register a cleanup with the disposer
  */
 export function createUiKit({ track } = {}) {
-  /** Every mounted Vue app, so deactivate can unmount them all. */
-  const apps = new Set();
+  /**
+   * One app per container, so re-rendering a list does not leak.
+   *
+   * A plugin that redraws a list on every keystroke would otherwise create a
+   * Vue app per keystroke, all of them alive and none of them reachable. Keying
+   * by container means the previous app is unmounted by the next render.
+   */
+  const apps = new Map();
+  /** Detached trees from `node()`; no container to key on. */
+  const detached = new Set();
 
   function build(tree, container) {
     if (!uiKitReady()) {
@@ -182,32 +201,37 @@ export function createUiKit({ track } = {}) {
     const host = document.createElement('div');
     const app = createApp({ render: () => toVNode(scoped) });
     app.mount(host);
-    apps.add(app);
     return { app, host, node: host.firstElementChild };
   }
+
+  const unmount = (app) => {
+    try {
+      app.unmount();
+    } catch {
+      /* already gone */
+    }
+  };
 
   const kit = {
     /** The vocabulary, so a plugin can discover what it may use. */
     components: () => uiKitVocabulary(),
     el,
 
-    /** Mount a descriptor tree into a container (the plugin's view element). */
+    /**
+     * Render a descriptor tree into a container, replacing what was there.
+     *
+     * Replace rather than append: "render X into Y" is what a plugin means when
+     * it redraws, and it keeps one live app per container.
+     */
     render: (container, tree) => {
-      if (!container || typeof container.appendChild !== 'function') {
+      if (!container || typeof container.replaceChildren !== 'function') {
         throw new Error('render(container, tree): container must be a DOM element');
       }
-      const { host, node } = build(tree, container);
-      container.append(...host.childNodes);
-      return node;
-    },
-
-    /** Replace a container's contents with a tree. */
-    replace: (container, tree) => {
-      if (!container || typeof container.replaceChildren !== 'function') {
-        throw new Error('replace(container, tree): container must be a DOM element');
-      }
-      const { host, node } = build(tree, container);
+      const prev = apps.get(container);
+      if (prev) unmount(prev);
+      const { app, host, node } = build(tree, container);
       container.replaceChildren(...host.childNodes);
+      apps.set(container, app);
       return node;
     },
 
@@ -215,20 +239,20 @@ export function createUiKit({ track } = {}) {
      * Build a detached element. No container is known, so a portalled child
      * cannot be theme-scoped — it falls back to `document.body`. Prefer
      * `render()` when the plugin has a view element; use this only for content
-     * that is handed to something else (a toast body, a window payload).
+     * that is handed to something else (an overlay, a window payload).
      */
-    node: (tree) => build(tree, null).node,
+    node: (tree) => {
+      const { app, node } = build(tree, null);
+      detached.add(app);
+      return node;
+    },
 
     /** Unmount everything this plugin built. */
     destroy: () => {
-      for (const app of apps) {
-        try {
-          app.unmount();
-        } catch {
-          /* already gone */
-        }
-      }
+      for (const app of apps.values()) unmount(app);
+      for (const app of detached) unmount(app);
       apps.clear();
+      detached.clear();
     },
   };
 
