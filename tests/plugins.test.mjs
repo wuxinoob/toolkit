@@ -307,6 +307,183 @@ test('example plugins: the window entry exports mountWindow, as the window host 
 
 // ------------------------------- the scheme table ------------------------------
 
+// --------------------------- dangling-reference audit ---------------------------
+
+/**
+ * Strip comments and the *text* of string/template literals, keeping `${}`
+ * interpolations as code.
+ *
+ * Every plugin builds its UI as a big HTML template string. Without this, the
+ * audit would read markup ("Run", "save as profile") as if it were code.
+ */
+function codeOnly(src) {
+  let out = '';
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    const d = src[i + 1];
+    if (c === '/' && d === '/') {
+      while (i < src.length && src[i] !== '\n') i += 1;
+      continue;
+    }
+    if (c === '/' && d === '*') {
+      i += 2;
+      while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i += 1;
+      i += 2;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      i += 1;
+      while (i < src.length && src[i] !== c) {
+        if (src[i] === '\\') i += 1;
+        i += 1;
+      }
+      i += 1;
+      out += ' ';
+      continue;
+    }
+    if (c === '`') {
+      i += 1;
+      while (i < src.length && src[i] !== '`') {
+        if (src[i] === '\\') {
+          i += 2;
+          continue;
+        }
+        if (src[i] === '$' && src[i + 1] === '{') {
+          i += 2;
+          const start = i;
+          let depth = 1;
+          while (i < src.length && depth > 0) {
+            if (src[i] === '{') depth += 1;
+            else if (src[i] === '}') {
+              depth -= 1;
+              if (depth === 0) break;
+            }
+            i += 1;
+          }
+          out += ` ${codeOnly(src.slice(start, i))} `;
+          i += 1;
+          continue;
+        }
+        i += 1;
+      }
+      i += 1;
+      out += ' ';
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
+
+/** Words that may be followed by `(` without being a function call. */
+const KEYWORDS = new Set([
+  'if', 'for', 'while', 'switch', 'catch', 'return', 'typeof', 'await', 'new',
+  'do', 'else', 'in', 'of', 'case', 'delete', 'void', 'yield', 'throw', 'with',
+  'function', 'super', 'this', 'async',
+]);
+
+/**
+ * Every name the file defines: declarations, imports, parameters and object
+ * shorthand methods. Deliberately generous — a false "declared" only makes the
+ * audit weaker, while a false "undeclared" makes it cry wolf.
+ */
+function declaredNames(code) {
+  const names = new Set(KEYWORDS);
+  const add = (re, group = 1) => {
+    for (const m of code.matchAll(re)) {
+      if (m[group]) names.add(m[group]);
+    }
+  };
+  add(/\bfunction\s+([A-Za-z_$][\w$]*)/g);
+  add(/\bclass\s+([A-Za-z_$][\w$]*)/g);
+  add(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g);
+  add(/\bimport\s+([A-Za-z_$][\w$]*)\s*(?:,|from)/g);
+  // `import { a, b as c }` and `{ a, b }` destructuring both end up here
+  for (const m of code.matchAll(/\{([^{}]*)\}\s*(?:from|=[^=])/g)) {
+    for (const part of m[1].split(',')) {
+      const name = part.includes(':') ? part.split(':').pop() : part.split(/\s+as\s+/).pop();
+      const t = (name ?? '').trim();
+      if (/^[A-Za-z_$][\w$]*$/.test(t)) names.add(t);
+    }
+  }
+  // parameters: function headers, arrow parameter lists, catch bindings
+  for (const re of [
+    /\bfunction\s*[\w$]*\s*\(([^()]*)\)/g,
+    /\(\s*([^()]*?)\s*\)\s*=>/g,
+    /\bcatch\s*\(([^()]*)\)/g,
+  ]) {
+    for (const m of code.matchAll(re)) {
+      for (const part of m[1].split(',')) {
+        const t = part.split('=')[0].replace(/[{}[\].]/g, ' ').trim();
+        if (/^[A-Za-z_$][\w$]*$/.test(t)) names.add(t);
+      }
+    }
+  }
+  add(/(?:^|[,(\s])([A-Za-z_$][\w$]*)\s*=>/g); // `x => …`
+  // object shorthand methods: `{ foo() { … } }`
+  add(/(?:^|[{,;])\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*\([^()]*\)\s*\{/g);
+  return names;
+}
+
+/** Bare calls — `foo(…)` but not `x.foo(…)`, which is a property access. */
+function calledNames(code) {
+  const calls = new Set();
+  for (const m of code.matchAll(/(^|[^.\w$])([A-Za-z_$][\w$]*)\s*\(/g)) {
+    if (!KEYWORDS.has(m[2])) calls.add(m[2]);
+  }
+  return calls;
+}
+
+/** Things that are legitimately global in a plugin (webview + Node-ish host). */
+const GLOBALS = new Set([
+  // JS language
+  'Object', 'Array', 'Map', 'Set', 'WeakMap', 'WeakSet', 'Date', 'RegExp',
+  'Error', 'TypeError', 'RangeError', 'SyntaxError', 'Promise', 'JSON', 'Math',
+  'Number', 'String', 'Boolean', 'Symbol', 'BigInt', 'Proxy', 'Reflect',
+  'Function', 'ArrayBuffer', 'Uint8Array', 'Int8Array', 'Uint16Array',
+  'Int16Array', 'Uint32Array', 'Int32Array', 'Float32Array', 'Float64Array',
+  'DataView', 'TextEncoder', 'TextDecoder', 'URL', 'URLSearchParams',
+  'structuredClone', 'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'encodeURIComponent',
+  'decodeURIComponent', 'encodeURI', 'decodeURI', 'queueMicrotask', 'requestAnimationFrame',
+  'cancelAnimationFrame', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval',
+  'fetch', 'atob', 'btoa', 'crypto', 'performance', 'console', 'globalThis',
+  'Blob', 'File', 'FileReader', 'FormData', 'Headers', 'Request', 'Response',
+  'AbortController', 'AbortSignal', 'Event', 'CustomEvent', 'EventTarget',
+  'MutationObserver', 'ResizeObserver', 'IntersectionObserver', 'DOMParser',
+  'HTMLElement', 'Node', 'Element', 'NodeList', 'Image', 'Audio', 'Path2D',
+  'matchMedia', 'getComputedStyle', 'alert', 'confirm', 'prompt', 'postMessage',
+  'WebSocket', 'Worker', 'Notification', 'localStorage', 'sessionStorage',
+  'indexedDB', 'CSS', 'Intl', 'Iterator', 'AsyncIterator', 'FinalizationRegistry',
+  'WeakRef', 'AggregateError', 'SuppressedError', 'eval', 'require', 'process',
+  // library / host surface that is injected, not imported
+  'defineComponent', 'createApp', 'watch', 'ref', 'computed', 'onMounted', 'onUnmounted',
+  'nextTick', 'reactive', 'h', 'toRaw',
+]);
+
+test('plugins: no plugin calls a function it never declares (dead call sites)', () => {
+  // This is the bug class a refactor leaves behind: a helper is deleted, one
+  // call site is missed, and the plugin only throws when that button is
+  // clicked. It is a static property, so it is checked statically.
+  const offenders = [];
+  for (const rel of [
+    ...BUILTIN.map((n) => `src/plugins/${n}.js`),
+    ...EXAMPLES.map((e) => `${e.dir}/main.js`),
+  ]) {
+    const code = codeOnly(read(rel));
+    const declared = declaredNames(code);
+    for (const name of calledNames(code)) {
+      if (!declared.has(name) && !GLOBALS.has(name)) offenders.push(`${rel}: ${name}()`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `calls with no matching declaration (deleted helper? typo?):\n  ${offenders.join('\n  ')}`,
+  );
+});
+
 test('plugins: no plugin hard-codes a transport command instead of a scheme', () => {
   // A plugin reaching for invoke()/a raw Channel would bypass the permission
   // gate and the scheme table — exactly what the unified protocol exists to

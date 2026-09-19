@@ -1,7 +1,8 @@
 /**
  * First-party plugin: Process Manager
  * Three-pane layout:
- *   [left]   templates (persisted) + live session list + spawn form
+ *   [left]   profiles (persisted: auto-start / schedule / restart) + live session
+ *            list + spawn form
  *   [center] terminal tabs, one xterm.js per live session
  *   [right]  selected session details + kill/restart controls
  *
@@ -60,17 +61,24 @@ export const manifest = {
   permissions: ['rpc:storage', 'rpc:stream', 'rpc:host'],
 };
 
-const DEFAULT_TEMPLATES = [
-  { id: 'tpl-pwsh', name: 'PowerShell', program: 'powershell.exe', args: [] },
-  { id: 'tpl-cmd', name: 'cmd', program: 'cmd.exe', args: [] },
-  { id: 'tpl-nodever', name: 'node --version', program: 'node', args: ['--version'] },
+/**
+ * Seeded once, so a fresh install has something to click.
+ *
+ * These are ordinary profiles — edit them, schedule them, delete them. They
+ * replaced a separate "templates" concept, which was the same thing with fewer
+ * fields: a profile with no schedule and no auto-start IS a template, and having
+ * both meant two panels doing one job.
+ */
+const DEFAULT_PROFILES = [
+  { id: 'seed-shell', name: 'Shell', program: 'powershell.exe', args: [] },
+  { id: 'seed-cmd', name: 'Command prompt', program: 'cmd.exe', args: [] },
+  { id: 'seed-node', name: 'Node version', program: 'node', args: ['--version'] },
 ];
 
 const state = {
   ctx: null,
   ui: null,
   log: null,
-  templates: null,
   /** Persisted launch profiles — the things that auto-start and are scheduled. */
   profiles: [],
   /** profileId -> timer, so a schedule can be re-armed without leaking timers. */
@@ -169,6 +177,16 @@ async function spawnFromSpec(spec) {
           if (state.selectedCh === ch) scheduleRenderDetail();
           state.log?.('pty', `exit ch=${ch} code=${frame.p}`);
           maybeRestart(session);
+        } else if (frame.kind === Kind.END) {
+          // The stream was closed by us (Stop). Without this the row keeps
+          // claiming `running` after a stop, which makes the button look broken.
+          if (session.status === 'running' || session.status === 'starting') {
+            session.status = 'stopped';
+            session.exitCode = null;
+          }
+          session.terminal?.write(enc.encode('\r\n\x1b[90m[stopped]\x1b[0m\r\n'));
+          scheduleRefreshRows();
+          if (state.selectedCh === ch) scheduleRenderDetail();
         } else if (frame.kind === Kind.ERR) {
           session.status = 'error';
           session.exitCode = -1;
@@ -489,17 +507,13 @@ function registerRenderHooks(ctx) {
             <span class="pm-count" style="margin-left:auto;font-size:11px;opacity:.6;"></span>
           </div>
           <div class="pm-sessions" style="display:flex;flex-direction:column;gap:4px;overflow:auto;max-height:32%;"></div>
-          <div style="border-top:1px solid #2a2f3a;padding-top:8px;display:flex;flex-direction:column;min-height:0;flex:1;">
-            <div style="display:flex;gap:6px;align-items:center;">
-              <strong style="font-size:12px;opacity:.85;">PROFILES</strong>
-              <button data-act="profile-new" style="margin-left:auto;${btnMiniCss}">+ New</button>
+          <div class="pm-profiles-panel" style="border-top:1px solid #2a2f3a;padding-top:8px;display:flex;flex-direction:column;min-height:0;flex:1;">
+            <div class="tb-toolbar">
+              <span class="tb-section-title" style="margin:0;">Profiles</span>
+              <button data-act="profile-new" class="tb-btn tb-btn-sm" style="margin-left:auto;">+ New</button>
             </div>
             <div class="pm-profiles" style="display:flex;flex-direction:column;gap:4px;margin-top:6px;overflow:auto;min-height:0;"></div>
             <div class="pm-profile-editor"></div>
-          </div>
-          <div style="border-top:1px solid #2a2f3a;padding-top:8px;">
-            <strong style="font-size:12px;opacity:.85;">TEMPLATES</strong>
-            <div class="pm-templates" style="display:flex;flex-direction:column;gap:4px;margin-top:6px;"></div>
           </div>
           <details class="pm-form-wrap" style="margin-top:auto;border:1px solid #2a2f3a;border-radius:6px;padding:8px;">
             <summary style="cursor:pointer;font-size:12px;">New session…</summary>
@@ -509,7 +523,7 @@ function registerRenderHooks(ctx) {
               <input name="args" placeholder="args (space separated)" style="${inputCss}" />
               <input name="cwd" placeholder="cwd (optional)" style="${inputCss}" />
               <label style="display:flex;gap:6px;align-items:center;opacity:.8;">
-                <input type="checkbox" name="saveTpl" /> save as template
+                <input type="checkbox" name="saveProfile" /> save as profile
               </label>
               <button data-act="run" class="pm-run" type="submit" style="${btnCss}">Run</button>
               <div class="pm-form-err" style="color:#ff9aa8;font-size:11px;"></div>
@@ -520,7 +534,7 @@ function registerRenderHooks(ctx) {
           <div class="pm-tabs" style="display:flex;gap:2px;background:#181b22;padding:4px;overflow-x:auto;flex-shrink:0;"></div>
           <div class="pm-term-area" style="flex:1;min-height:0;position:relative;background:#111318;">
             <div class="pm-term-empty" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#5b6272;font-size:13px;">
-              No active session — pick a template on the left.
+              No active session — run something, or hit ▶ on a profile.
             </div>
           </div>
         </div>
@@ -528,19 +542,19 @@ function registerRenderHooks(ctx) {
       </div>`;
 
     el.querySelector('.pm-sessions').addEventListener('click', onSessionClick);
-    el.querySelector('.pm-profiles').addEventListener('click', (ev) => onProfileClick(el, ev));
+    // Bound to the PANEL, not the list: "+ New" lives in the header, and a
+    // listener on the list alone never saw it (the button did nothing).
+    el.querySelector('.pm-profiles-panel').addEventListener('click', (ev) => onProfileClick(el, ev));
     el.querySelector('.pm-profile-editor').addEventListener('change', (ev) => {
       // a toggle fires change, not click
       if (ev.target.closest('[data-act="profile-toggle"]')) onProfileClick(el, ev);
     });
-    el.querySelector('.pm-templates').addEventListener('click', onTemplateClick);
     el.querySelector('.pm-tabs').addEventListener('click', onTabClick);
     el.querySelector('.pm-form').addEventListener('submit', onRunSubmit);
 
     renderSessionList(el);
     renderProfiles(el);
     renderProfileEditor(el);
-    renderTemplates(el);
     renderTabs(el);
     activateSession(state.activeCh);
     renderDetail();
@@ -562,30 +576,13 @@ function onSessionClick(ev) {
   renderDetail();
 }
 
-function onTemplateClick(ev) {
-  const row = ev.target.closest('[data-tpl]');
-  if (!row) return;
-  const tpl = state.templates.find((t) => t.id === row.dataset.tpl);
-  if (!tpl) return;
-  if (ev.target.closest('[data-act="del"]')) {
-    state.templates = state.templates.filter((t) => t.id !== tpl.id);
-    persistTemplates();
-    renderTemplates();
-    return;
-  }
-  spawnFromSpec(tpl).then(() => {
-    renderTabs();
-    renderSessionList();
-    renderDetail();
-  });
-}
 
 function onTabClick(ev) {
   const tab = ev.target.closest('[data-ch]');
   if (!tab) return;
   const ch = tab.dataset.ch;
   if (ev.target.closest('[data-act="close"]')) {
-    closeSessionTab(ch);
+    removeSession(ch);
     return;
   }
   state.activeCh = ch;
@@ -617,10 +614,12 @@ async function onRunSubmit(ev) {
   renderTabs();
   renderSessionList();
   renderDetail();
-  if (fd.get('saveTpl')) {
-    state.templates.push({ id: `tpl-${Date.now().toString(36)}`, ...spec });
-    persistTemplates();
-    renderTemplates();
+  if (fd.get('saveProfile')) {
+    // "Save as profile" is the one-click path from "I just ran this" to "run
+    // this again on a schedule". It writes an ordinary profile — the same
+    // record the editor edits — so the two entry points cannot diverge.
+    upsertProfile({ ...spec, id: newProfileId() });
+    renderProfiles(form.closest('.pm-root') || document);
   }
   form.reset();
 }
@@ -653,28 +652,17 @@ function renderSessionList(root) {
           (s) => `
       <div data-ch="${s.ch}" style="display:flex;align-items:center;gap:6px;padding:4px 8px;border:1px solid ${s.ch === state.activeCh ? '#3b4254' : '#2a2f3a'};border-radius:4px;cursor:pointer;background:${s.ch === state.activeCh ? '#1d2230' : 'transparent'};">
         ${dot(s.status)}<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.name)}</span>
-        ${s.status === 'running' ? `<button data-act="kill" title="kill" style="${btnCssDanger}">✕</button>` : ''}
+        ${
+          s.status === 'running' || s.status === 'starting'
+            ? `<button data-act="kill" title="stop" style="${btnCssDanger}">✕</button>`
+            : ''
+        }
       </div>`,
         )
         .join('')
     : `<div style="opacity:.5;font-size:12px;padding:4px;">no sessions yet</div>`;
 }
 
-function renderTemplates(root) {
-  const host = (root || document).querySelector('.pm-templates');
-  if (!host) return;
-  host.innerHTML = state.templates.length
-    ? state.templates
-        .map(
-          (t) => `
-      <div data-tpl="${t.id}" style="display:flex;align-items:center;gap:6px;padding:4px 8px;border:1px solid #2a2f3a;border-radius:4px;cursor:pointer;">
-        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.name)}</span>
-        <button data-act="del" title="remove template" style="${btnCssDanger}">×</button>
-      </div>`,
-        )
-        .join('')
-    : `<div style="opacity:.5;font-size:12px;">no templates</div>`;
-}
 
 /* ---------------------------------- profiles UI -------------------------------- */
 
@@ -897,10 +885,21 @@ function activateSession(ch) {
   attachTerminal(session, box);
 }
 
-function closeSessionTab(ch) {
+/**
+ * Remove a session from the list.
+ *
+ * Deliberately refuses while it is running. It used to kill the process and drop
+ * the entry in one click, which loses the output you were looking at and stops
+ * something you may not have meant to stop — two very different decisions
+ * behind one button. Stop first (which keeps the entry), then remove it.
+ */
+function removeSession(ch) {
   const s = state.sessions.get(ch);
   if (!s) return;
-  if (s.status === 'running') killSession(ch);
+  if (s.status === 'running' || s.status === 'starting') {
+    state.ui?.notify('Stop the process before removing its tab', 'error');
+    return;
+  }
   detachTerminal(s);
   state.sessions.delete(ch);
   if (state.activeCh === ch) state.activeCh = [...state.sessions.keys()][0] || null;
@@ -944,8 +943,12 @@ function renderDetail() {
       <div>scheme: pty-stream (raw-binary)</div>
     </div>
     <div style="display:flex;gap:6px;margin-top:10px;">
-      ${s.status === 'running' ? `<button data-act="kill-sel" style="${btnCssDanger}">Kill</button>` : ''}
-      <button data-act="close-sel" style="${btnCss}">Close tab</button>
+      ${
+        s.status === 'running' || s.status === 'starting'
+          ? `<button data-act="kill-sel" class="tb-btn tb-btn-danger">Stop</button>`
+          : `<button data-act="kill-sel" class="tb-btn tb-btn-danger" disabled>Stop</button>`
+      }
+      <button data-act="close-sel" class="tb-btn" ${s.status === 'running' || s.status === 'starting' ? 'disabled title="Stop it first"' : ''}>Remove tab</button>
     </div>
     <div style="margin-top:12px;border-top:1px solid #2a2f3a;padding-top:8px;">
       <div style="display:flex;align-items:center;gap:8px;opacity:.6;margin-bottom:4px;">
@@ -957,7 +960,7 @@ function renderDetail() {
       <pre class="pm-ring" style="margin:0;white-space:pre-wrap;word-break:break-all;font-size:11px;color:#8b93a7;max-height:220px;overflow:auto;background:#0d0f13;border:1px solid #2a2f3a;border-radius:4px;padding:6px;">${esc(ringText(s)) || '(empty)'}</pre>
     </div>`;
   host.querySelector('[data-act="kill-sel"]')?.addEventListener('click', () => killSession(s.ch));
-  host.querySelector('[data-act="close-sel"]')?.addEventListener('click', () => closeSessionTab(s.ch));
+  host.querySelector('[data-act="close-sel"]')?.addEventListener('click', () => removeSession(s.ch));
   host.querySelector('[data-act="ring-raw"]')?.addEventListener('change', (ev) => {
     state.ringRaw = ev.target.checked;
     renderDetail();
@@ -982,10 +985,6 @@ function ringText(s) {
   return raw.replace(OSC_RE, '').replace(CSI_RE, '').replace(ESC_RE, '').replace(/\r\n/g, '\n').replace(/\r/g, '');
 }
 
-function persistTemplates() {
-  const { ctx } = state;
-  ctx.storage.set('templates', state.templates).catch((e) => ctx.log.warn('templates persist failed', e));
-}
 
 /* --------------------------------- lifecycle ---------------------------------- */
 
@@ -994,12 +993,10 @@ export async function activate(ctx) {
   state.ui = ctx.ui ?? { notify: console.log };
   state.log = (cat, msg) => ctx.log.info(`[${cat}]`, msg);
 
-  const saved = await ctx.storage.get('templates');
-  state.templates = Array.isArray(saved) && saved.length ? saved : structuredClone(DEFAULT_TEMPLATES);
-  if (!saved) persistTemplates();
-
   const savedProfiles = await ctx.storage.get(PROFILES_KEY);
-  state.profiles = (Array.isArray(savedProfiles) ? savedProfiles : []).map(normalizeProfile);
+  const hasProfiles = Array.isArray(savedProfiles) && savedProfiles.length > 0;
+  state.profiles = (hasProfiles ? savedProfiles : DEFAULT_PROFILES).map(normalizeProfile);
+  if (!hasProfiles) persistProfiles();
   state.log?.('profile', `loaded ${state.profiles.length} profile(s)`);
 
   // Auto-start first, then arm the schedules: a profile that is both auto-start
