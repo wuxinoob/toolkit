@@ -58,10 +58,30 @@
   所以观感靠 **`src/assets/app.css` 里的 `.tb-*` 普通 CSS 类**（`@theme` 令牌 +
   `@layer components`），插件只用类名即可。详见 `docs/UI.md`。
 - **HeroUI 官方只有 React**；shadcn-vue 是成熟 Vue 方案，而 shadcn 的观感来自 token 层。
-- **只做深色**：打不开窗口看效果的浅色主题等于盲发；令牌块就是浅色主题要覆盖的全部面积。
+- **主题是 `<html>` 上的一个属性，不是换样式表**：`@theme` 定义深色，`:root[data-theme='light']`
+  覆盖同一批 token。这是唯一能让 Blob URL 插件被主题化的方式 —— 它们 import 不了东西，
+  但**能继承自定义属性**。`src/host/theme.js`（system/light/dark，跟随
+  prefers-color-scheme，localStorage 持久化，跨窗口用 `storage` 事件**推送**而非轮询）；
+  每个窗口 mount 前各调一次 `initTheme()`。`index.html` 有内联预置脚本 —— 打包后 CSS 是
+  独立 `<link>`，先于模块生效，不预置则浅色用户每次开窗闪一帧深色。
+- **加颜色 token 必须同时改 `@theme` 和浅色块**，否则该颜色在浅色下仍是深色值，静默出错。
+  `tests/plugins.test.mjs` 会失败。浅色 `--color-brand` 用 #2f6bd8（深色的 #6f9cf5 在白底上
+  文字对比度不够）。`accent-color` 让裸 checkbox/radio/range 自动跟随主题。
+- **两个不能继承 token 的特例**：xterm 是 canvas，必须给具体对象（procman 的
+  `readTermTheme()` 从 document 读 token 构造，并订阅主题变化重新着色 —— 唯一一处 token
+  被复制进 JS）；透明窗口（floatwin）需要 alpha，用
+  `color-mix(in srgb, var(--color-surface) 97%, transparent)`，仍然零 JS。
+- **控件样式的三档边界**（详见 `docs/UI.md`）：完全可改（`appearance:none` 自己重画）／
+  只能改色（`accent-color`）／完全够不到（`<select>` 弹层、date 日历、color 取色器、
+  窗口标题栏 —— 唯一杠杆是 `color-scheme`）。规则：**把闭合态做足，弹层交给 color-scheme**。
+- **状态写在 ARIA 里，不另设修饰类**：选中行 `aria-selected`、tab `aria-selected`、
+  开关 `aria-pressed`，样式表挂属性选择器 —— 同一份标记对读屏器和主题都正确，不会漂移。
 - **overlay 容器不用 absolute、不设 pointer-events:none**：前者让空容器吞掉全应用点击，
-  后者被子元素继承会让 overlay 按钮永远点不动。插件自己定位（eyecare 用 fixed）。
+  后者被子元素继承会让 overlay 按钮永远点不动。插件自己定位（eyecare 用 `.tb-screen`）。
 - Tailwind 工具类用于外壳与**内置**插件（它们被打包）；`.tb-*` 用于所有地方。
+- **类名方案的成本是拼错的类名不报错、只是不生效** → 有测试核对插件用到的每个 `.tb-*`
+  都在样式表里有定义。
+
 
 ## 子进程管理：profile（自启 / 定时 / 重启）
 - session = 运行实例；**profile = 持久化描述**（跑什么、怎么跑、**什么时候跑**）。
@@ -114,14 +134,29 @@
   （`git checkout -- .` 可恢复）、`.git` 整个消失过（见 2026-09-15）。写 `.git` 的操作建议放到沙箱外执行。
 - 应用数据目录：`%APPDATA%\com.tan18.toolbox\{debug.log, plugins/, plugin-data/}`；WebView2 配置目录 `%LOCALAPPDATA%\com.tan18.toolbox\EBWebView`。
 - 静态审计支持 `// audit-ignore-next-line` 标记（用于插件里的故意负向测试）。
+- **重构删了函数、漏了一个调用点**这类 bug 有专门的静态审计
+  （`plugins: no plugin calls a function it never declares`）：`codeOnly()` 剥掉注释与
+  字符串/模板字面量的**文本**但保留 `${}` 里的代码（否则大段 HTML 模板会被当代码读），
+  收集声明名（声明/导入/形参/对象方法简写），找出所有裸调用（排除 `x.foo()` 与关键字），
+  差集即违规。**删函数时静态检查不会报错，只有点到那个按钮才炸** —— 已踩过。
 - 本环境限制：`wmic` 被安全策略禁用；PowerShell 工具不返回 stdout → 让它把结果写入文件再读。
+- **headless Edge 可以真正"看到"界面**（本机没有 playwright，也没有其浏览器缓存）：
+  `"/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" --headless=new --disable-gpu
+  --no-sandbox --hide-scrollbars --window-size=W,H --virtual-time-budget=9000
+  --screenshot=out.png file:///…`。`--virtual-time-budget` 是等 iframe 加载的关键，
+  截图能拿到 iframe 内容。**改完主题/样式后用它核对，比开两个窗口来回切快得多。**
+- `docs/theme-preview.html` 由 `npm run preview:theme`（`scripts/build-theme-preview.mjs`）
+  从 **dist 里的构建产物**生成，两套主题并排（两个 iframe，因为选择器是 `:root[data-theme]`）。
+  读构建产物而不是源码，所以顺带能抓到 Tailwind 漏掉的 token；生成前校验关键选择器存在，
+  否则拒绝产出误导性的预览。**需先 `npm run build`。**
 - **本机 `cargo test` 的测试二进制无法加载**（STATUS_ENTRYPOINT_NOT_FOUND）：根因是 tauri-build 的 manifest 只链进 bin 目标（无 manifest → 绑 comctl32 v5，代码导入 v6）。`build.rs` 已把 `resource.lib` 转发给 `-examples` → **用 `cargo run --example host-checks` 做 Rust 侧验证**（16 项）。cargo 没有 `-tests` link-arg，通用 `rustc-link-arg` 会与 bin 冲突（LNK1123）。
 - rustc ICE / `拒绝访问` = 增量缓存被杀软损坏 → `rm -rf target/debug/incremental` + `CARGO_INCREMENTAL=0`。
 - 排查"应用起来了但 JS 不执行"：Rust 侧 `eprintln!` 探针 → `webview.eval()` 写 `document.title` 再 `w.title()` 读回 → `tasklist` 比对 `msedgewebview2` 数量是否随应用启动而增加。
 
 ## 验证命令
-`cargo test`（39，本机不可用见下）· `cargo check --all-targets`（零代码警告）· `node --test`（97）· `npm run build` · `cargo build` · `npm run deploy:examples`（把示例部署进应用数据目录）
+`cargo test`（39，本机不可用见下）· `cargo check --all-targets`（零代码警告，**要在 `src-tauri/` 下跑**，仓库根没有 Cargo.toml）· `node --test`（116）· `npm run build` · `cargo build` · `npm run deploy:examples`（把示例部署进应用数据目录）
 `cargo run --example host-checks`（16 项，替代不可用的 cargo test）· `npm run bench`（codec 实验，**刻意不并入 npm test**：时间敏感）
+`npm run preview:theme`（生成两套主题并排的设计系统预览，需先 build）
 应用内：`npm run tauri dev` 后看 `%APPDATA%\com.tan18.toolbox\debug.log` 的 15/15。
 
 **codec 实测结论**（详见 PROTOCOL.md §2）：字节流必须 raw（4 KiB 块 JSON 慢 126×、大 3.6×）；
