@@ -4,12 +4,35 @@ import { invoke } from '@tauri-apps/api/core';
 
 import { store, saveSettings, toast } from '../host/store.js';
 import { applySummonShortcut } from '../host/boot.js';
-import { activate, deactivate, enabledIds, saveEnabled } from '../host/lifecycle.js';
+import { activate, deactivate, saveEnabled } from '../host/lifecycle.js';
 import { resolveBuiltin } from '../host/registry.js';
 import { scanExternalPlugins, getExternal } from '../host/external.js';
 import { events } from '../host/events.js';
 import { hub } from '../protocol/hub.js';
 import { getResolvedTheme, getThemePref, onThemeChange, setTheme } from '../host/theme.js';
+
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Separator } from '@/components/ui/separator';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 
 const shortcut = ref(store.settings.summonShortcut);
 const saved = ref(false);
@@ -55,13 +78,12 @@ const pluginRows = computed(() =>
   })),
 );
 
-/** Status reads as a badge, so a broken plugin is visible without reading text. */
-const statusClass = (status) =>
-  status === 'active'
-    ? 'tb-badge tb-badge-ok'
-    : status === 'error'
-      ? 'tb-badge tb-badge-bad'
-      : 'tb-badge';
+/**
+ * Status reads as a badge variant, so a broken plugin is visible without
+ * reading text — and the variant is the library's, not a hand-rolled class.
+ */
+const statusVariant = (status) =>
+  status === 'active' ? 'secondary' : status === 'error' ? 'destructive' : 'outline';
 
 async function togglePlugin(row) {
   const mod = resolveBuiltin(row.id) || getExternal(row.id);
@@ -156,209 +178,238 @@ watch(() => store.plugins.length, loadForms);
 <template>
   <div class="mx-auto flex max-w-[900px] flex-col gap-4">
     <header class="flex items-end gap-3">
-      <h1 class="m-0 text-[17px] font-semibold">Settings</h1>
-      <span class="tb-hint pb-[2px]">{{ store.plugins.length }} plugin(s) installed</span>
+      <h1 class="m-0 text-[17px] font-medium">Settings</h1>
+      <span class="pb-[2px] text-xs text-muted-foreground">
+        {{ store.plugins.length }} plugin(s) installed
+      </span>
     </header>
 
-    <section class="tb-card">
-      <div class="tb-card-head">Appearance</div>
-      <div class="tb-card-body flex flex-col gap-3">
-        <p class="tb-hint m-0">
+    <Card>
+      <CardHeader>
+        <CardTitle>Appearance</CardTitle>
+        <CardDescription>
           A theme is one attribute on the root element, so it reaches everything at once — the shell,
           the built-in views, and any external plugin that styles itself with the shared tokens.
           Nothing reloads.
-        </p>
-        <div class="flex flex-wrap items-center gap-2">
-          <button
-            v-for="t in THEMES"
-            :key="t.value"
-            class="tb-btn"
-            :class="themePref === t.value ? 'tb-btn-primary' : ''"
-            :aria-pressed="themePref === t.value"
-            @click="setTheme(t.value)"
-          >
-            <span aria-hidden="true">{{ t.icon }}</span>
-            {{ t.label }}
-          </button>
-          <span class="tb-hint ml-1">
-            showing
-            <strong>{{ resolvedTheme }}</strong>
-          </span>
-        </div>
-      </div>
-    </section>
+        </CardDescription>
+      </CardHeader>
+      <CardContent class="flex flex-wrap items-center gap-2">
+        <Button
+          v-for="t in THEMES"
+          :key="t.value"
+          :variant="themePref === t.value ? 'default' : 'outline'"
+          size="sm"
+          :aria-pressed="themePref === t.value"
+          @click="setTheme(t.value)"
+        >
+          <span aria-hidden="true">{{ t.icon }}</span>
+          {{ t.label }}
+        </Button>
+        <span class="ml-1 text-xs text-muted-foreground">
+          showing <strong class="text-foreground">{{ resolvedTheme }}</strong>
+        </span>
+      </CardContent>
+    </Card>
 
-    <section class="tb-card">
-      <div class="tb-card-head">Global hotkey</div>
-      <div class="tb-card-body flex flex-col gap-3">
-        <p class="tb-hint m-0">
-          Summons the main window from anywhere, e.g. <span class="tb-kbd">Ctrl+Alt+T</span>.
-        </p>
-        <div class="flex flex-wrap items-center gap-2">
-          <input v-model="shortcut" class="tb-input max-w-[220px]" placeholder="Ctrl+Alt+T" spellcheck="false" />
-          <button class="tb-btn tb-btn-primary" @click="saveHotkey">Apply</button>
-          <span v-if="saved" class="text-[12px]" style="color: var(--color-success)">saved</span>
-        </div>
-      </div>
-    </section>
+    <Card>
+      <CardHeader>
+        <CardTitle>Global hotkey</CardTitle>
+        <CardDescription>
+          Summons the main window from anywhere, e.g.
+          <kbd
+            class="rounded border border-b-2 bg-secondary px-1.5 py-px font-mono text-[11px] text-muted-foreground"
+            >Ctrl+Alt+T</kbd
+          >.
+        </CardDescription>
+      </CardHeader>
+      <CardContent class="flex flex-wrap items-center gap-2">
+        <Input v-model="shortcut" class="max-w-[220px]" placeholder="Ctrl+Alt+T" spellcheck="false" />
+        <Button @click="saveHotkey">Apply</Button>
+        <span v-if="saved" class="text-xs text-primary">saved</span>
+      </CardContent>
+    </Card>
 
-    <section class="tb-card">
-      <div class="tb-card-head">
-        Message plane
-        <button class="tb-btn tb-btn-sm ml-auto" @click="refreshSessions">Refresh sessions</button>
-        <span class="tb-badge">{{ liveSessions.length }} live</span>
-      </div>
-      <div class="tb-card-body flex flex-col gap-3">
-        <p class="tb-hint m-0">
+    <Card>
+      <CardHeader>
+        <CardTitle>Message plane</CardTitle>
+        <CardDescription>
           Every scheme the host has registered. A plugin declares <em>what</em> it needs; the hub
           resolves the transport and codec from this table.
-        </p>
-        <div class="overflow-x-auto">
-          <table class="tb-table">
-            <thead>
-              <tr>
-                <th>id</th>
-                <th>transport · codec</th>
-                <th>Direction</th>
-                <th>Capabilities</th>
-                <th>Note</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="s in store.schemes" :key="s.id">
-                <td><code class="tb-mono" style="color: var(--color-brand)">{{ s.id }}</code></td>
-                <td>{{ s.label }}</td>
-                <td class="tb-hint">{{ s.direction }}</td>
-                <td class="tb-hint">{{ s.capabilities }}</td>
-                <td class="tb-hint">{{ s.note }}</td>
-              </tr>
-            </tbody>
-          </table>
+        </CardDescription>
+      </CardHeader>
+      <CardContent class="flex flex-col gap-3">
+        <div class="flex items-center gap-2">
+          <Button variant="outline" size="sm" @click="refreshSessions">Refresh sessions</Button>
+          <Badge variant="outline">{{ liveSessions.length }} live</Badge>
         </div>
-        <div
-          v-if="liveSessions.length"
-          class="flex flex-col gap-1 rounded-md border p-2"
-          style="border-color: var(--color-line)"
-        >
-          <div v-for="s in liveSessions" :key="s.id" class="flex items-center gap-3 text-[12px]">
-            <code class="tb-mono">{{ s.id }}</code>
-            <span class="tb-badge">{{ s.kind }}</span>
-            <span class="tb-hint">pid {{ s.pid ?? '—' }}</span>
-            <span class="tb-hint">{{ s.bytesOut }} B</span>
+
+        <div class="overflow-x-auto rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>id</TableHead>
+                <TableHead>transport · codec</TableHead>
+                <TableHead>Direction</TableHead>
+                <TableHead>Capabilities</TableHead>
+                <TableHead>Note</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <TableRow v-for="s in store.schemes" :key="s.id">
+                <TableCell><code class="font-mono text-xs text-primary">{{ s.id }}</code></TableCell>
+                <TableCell>{{ s.label }}</TableCell>
+                <TableCell class="text-xs text-muted-foreground">{{ s.direction }}</TableCell>
+                <TableCell class="text-xs text-muted-foreground">{{ s.capabilities }}</TableCell>
+                <TableCell class="text-xs text-muted-foreground">{{ s.note }}</TableCell>
+              </TableRow>
+            </TableBody>
+          </Table>
+        </div>
+
+        <div v-if="liveSessions.length" class="flex flex-col rounded-md border p-2">
+          <div v-for="s in liveSessions" :key="s.id" class="flex items-center gap-3 text-xs">
+            <code class="font-mono">{{ s.id }}</code>
+            <Badge variant="outline">{{ s.kind }}</Badge>
+            <span class="text-muted-foreground">pid {{ s.pid ?? '—' }}</span>
+            <span class="text-muted-foreground">{{ s.bytesOut }} B</span>
           </div>
         </div>
-      </div>
-    </section>
+      </CardContent>
+    </Card>
 
-    <section class="tb-card">
-      <div class="tb-card-head">External plugins</div>
-      <div class="tb-card-body flex flex-col gap-3">
-        <p class="tb-hint m-0">
-          Drop a folder with <code class="tb-mono">plugin.json</code> + a single-file ESM entry into
-          the plugins directory, then rescan. A rescan reloads what changed and unloads what was
-          deleted — no restart, no host code changes.
-        </p>
-        <div class="flex flex-wrap gap-2">
-          <button class="tb-btn tb-btn-primary" :disabled="scanning" @click="rescan">
-            {{ scanning ? 'Scanning…' : 'Rescan plugins' }}
-          </button>
-          <button class="tb-btn" @click="openPluginsDir">Open plugins directory</button>
-        </div>
-      </div>
-    </section>
+    <Card>
+      <CardHeader>
+        <CardTitle>External plugins</CardTitle>
+        <CardDescription>
+          Drop a folder with <code class="font-mono text-xs">plugin.json</code> + a single-file ESM
+          entry into the plugins directory, then rescan. A rescan reloads what changed and unloads
+          what was deleted — no restart, no host code changes.
+        </CardDescription>
+      </CardHeader>
+      <CardContent class="flex flex-wrap gap-2">
+        <Button :disabled="scanning" @click="rescan">
+          {{ scanning ? 'Scanning…' : 'Rescan plugins' }}
+        </Button>
+        <Button variant="outline" @click="openPluginsDir">Open plugins directory</Button>
+      </CardContent>
+    </Card>
 
-    <section v-if="pluginsWithForms.length" class="tb-card">
-      <div class="tb-card-head">Plugin settings</div>
-      <div class="tb-card-body flex flex-col gap-4">
-        <div v-for="p in pluginsWithForms" :key="p.manifest.id" class="flex flex-col gap-2">
-          <div class="text-[12.5px] font-medium">{{ p.manifest.name }}</div>
-          <template v-if="p.status === 'active'">
-            <label
-              v-for="f in forms[p.manifest.id]?.schema || []"
-              :key="f.key"
-              class="tb-field max-w-[420px]"
-            >
-              <span class="tb-label">{{ f.label }}</span>
-              <select
-                v-if="f.type === 'select'"
-                class="tb-select"
-                :value="forms[p.manifest.id].values[f.key]"
-                @change="saveField(p.manifest.id, f, $event.target.value)"
+    <Card v-if="pluginsWithForms.length">
+      <CardHeader>
+        <CardTitle>Plugin settings</CardTitle>
+        <CardDescription>
+          Forms declared by plugins via <code class="font-mono text-xs">contributes.settings</code>.
+        </CardDescription>
+      </CardHeader>
+      <CardContent class="flex flex-col gap-4">
+        <template v-for="(p, i) in pluginsWithForms" :key="p.manifest.id">
+          <Separator v-if="i > 0" />
+          <div class="flex flex-col gap-2">
+            <div class="text-[12.5px] font-medium">{{ p.manifest.name }}</div>
+            <template v-if="p.status === 'active'">
+              <div
+                v-for="f in forms[p.manifest.id]?.schema || []"
+                :key="f.key"
+                class="flex max-w-[420px] flex-col gap-1.5"
               >
-                <option v-for="opt in f.options || []" :key="optionValue(opt)" :value="optionValue(opt)">
-                  {{ optionLabel(opt) }}
-                </option>
-              </select>
-              <input
-                v-else-if="f.type === 'boolean'"
-                type="checkbox"
-                :checked="!!forms[p.manifest.id].values[f.key]"
-                @change="saveField(p.manifest.id, f, $event.target.checked)"
-              />
-              <input
-                v-else
-                class="tb-input"
-                :type="f.type === 'number' ? 'number' : 'text'"
-                :value="forms[p.manifest.id].values[f.key]"
-                :min="f.min"
-                :max="f.max"
-                @change="
-                  saveField(
-                    p.manifest.id,
-                    f,
-                    f.type === 'number' ? Number($event.target.value) : $event.target.value,
-                  )
-                "
-              />
-            </label>
-          </template>
-          <p v-else class="tb-hint m-0">Enable this plugin to edit its settings.</p>
-          <div class="tb-divider"></div>
-        </div>
-      </div>
-    </section>
+                <Label :for="`${p.manifest.id}-${f.key}`">{{ f.label }}</Label>
 
-    <section class="tb-card">
-      <div class="tb-card-head">Plugins</div>
-      <div class="tb-card-body flex flex-col gap-3">
-        <p class="tb-hint m-0">
+                <Select
+                  v-if="f.type === 'select'"
+                  :model-value="forms[p.manifest.id].values[f.key]"
+                  @update:model-value="saveField(p.manifest.id, f, $event)"
+                >
+                  <SelectTrigger :id="`${p.manifest.id}-${f.key}`" class="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem
+                      v-for="opt in f.options || []"
+                      :key="optionValue(opt)"
+                      :value="optionValue(opt)"
+                    >
+                      {{ optionLabel(opt) }}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+
+                <div v-else-if="f.type === 'boolean'" class="flex items-center gap-2">
+                  <Checkbox
+                    :id="`${p.manifest.id}-${f.key}`"
+                    :model-value="!!forms[p.manifest.id].values[f.key]"
+                    @update:model-value="saveField(p.manifest.id, f, $event)"
+                  />
+                  <span class="text-xs text-muted-foreground">
+                    {{ forms[p.manifest.id].values[f.key] ? 'on' : 'off' }}
+                  </span>
+                </div>
+
+                <Input
+                  v-else
+                  :id="`${p.manifest.id}-${f.key}`"
+                  :type="f.type === 'number' ? 'number' : 'text'"
+                  :model-value="forms[p.manifest.id].values[f.key]"
+                  :min="f.min"
+                  :max="f.max"
+                  @update:model-value="
+                    saveField(p.manifest.id, f, f.type === 'number' ? Number($event) : $event)
+                  "
+                />
+              </div>
+            </template>
+            <p v-else class="m-0 text-xs text-muted-foreground">
+              Enable this plugin to edit its settings.
+            </p>
+          </div>
+        </template>
+      </CardContent>
+    </Card>
+
+    <Card>
+      <CardHeader>
+        <CardTitle>Plugins</CardTitle>
+        <CardDescription>
           Enable or disable an installed plugin. A disabled plugin releases its listeners, streams
           and DOM.
-        </p>
-        <div class="overflow-x-auto">
-          <table class="tb-table">
-            <thead>
-              <tr>
-                <th>Plugin</th>
-                <th>Version</th>
-                <th>Type</th>
-                <th>Status</th>
-                <th>Permissions</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="row in pluginRows" :key="row.id">
-                <td>
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div class="overflow-x-auto rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Plugin</TableHead>
+                <TableHead>Version</TableHead>
+                <TableHead>Type</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Permissions</TableHead>
+                <TableHead />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <TableRow v-for="row in pluginRows" :key="row.id">
+                <TableCell>
                   {{ row.name }}
-                  <span v-if="row.error" class="text-[11.5px]" style="color: var(--color-danger)">
-                    — {{ row.error }}
-                  </span>
-                </td>
-                <td class="tb-hint">{{ row.version }}</td>
-                <td class="tb-hint">{{ row.builtin ? 'built-in' : 'external' }}</td>
-                <td><span :class="statusClass(row.status)">{{ row.status }}</span></td>
-                <td class="tb-hint">{{ row.permissions }}</td>
-                <td class="text-right">
-                  <button class="tb-btn tb-btn-sm" @click="togglePlugin(row)">
+                  <span v-if="row.error" class="text-xs text-destructive">— {{ row.error }}</span>
+                </TableCell>
+                <TableCell class="text-xs text-muted-foreground">{{ row.version }}</TableCell>
+                <TableCell class="text-xs text-muted-foreground">
+                  {{ row.builtin ? 'built-in' : 'external' }}
+                </TableCell>
+                <TableCell>
+                  <Badge :variant="statusVariant(row.status)">{{ row.status }}</Badge>
+                </TableCell>
+                <TableCell class="text-xs text-muted-foreground">{{ row.permissions }}</TableCell>
+                <TableCell class="text-right">
+                  <Button variant="outline" size="sm" @click="togglePlugin(row)">
                     {{ row.enabled ? 'Disable' : 'Enable' }}
-                  </button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+                  </Button>
+                </TableCell>
+              </TableRow>
+            </TableBody>
+          </Table>
         </div>
-      </div>
-    </section>
+      </CardContent>
+    </Card>
   </div>
 </template>

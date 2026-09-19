@@ -26,3 +26,4 @@ dist-ssr
 # scratch: commit messages and one-off temp files must not be repo-local
 *.tmp
 .scratch/
+.shots/

@@ -550,12 +550,31 @@ function readThemeBlocks() {
   const dark = block(/^:root\s*\{/m);
   const light = block(/^:root\[data-theme='light'\]\s*\{/m);
   const aliases = block(/@theme\s+inline\s*\{/);
+  // The shadcn compat block is the SECOND `:root { … }`. It exists because
+  // components read upstream's names in inline styles (sonner does
+  // `var(--popover)`), so those names have to be real custom properties.
+  const allRoots = [...css.matchAll(/^:root\s*\{/gm)];
+  const compatBody = allRoots[1]
+    ? (() => {
+        const open = css.indexOf('{', allRoots[1].index);
+        let depth = 0;
+        let i = open;
+        for (; i < css.length; i++) {
+          if (css[i] === '{') depth += 1;
+          else if (css[i] === '}') {
+            depth -= 1;
+            if (depth === 0) break;
+          }
+        }
+        return css.slice(open + 1, i);
+      })()
+    : '';
   const decls = (body) => {
     const out = new Map();
     for (const m of body.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/gi)) out.set(m[1], m[2].trim());
     return out;
   };
-  return { dark: decls(dark), light: decls(light), aliases: decls(aliases) };
+  return { dark: decls(dark), light: decls(light), aliases: decls(aliases), compat: decls(compatBody) };
 }
 
 test('theming: every colour alias resolves to a raw variable defined in both themes', () => {
@@ -585,6 +604,39 @@ test('theming: every colour alias resolves to a raw variable defined in both the
     [],
     `colour aliases that do not resolve in both themes:\n  ${problems.join('\n  ')}`,
   );
+});
+
+test('theming: every shadcn compat name resolves to a canonical variable', () => {
+  // The compat block exists because shadcn-vue components read upstream's names
+  // in INLINE STYLES, not just utility classes — sonner does `var(--popover)`,
+  // `var(--border)`, `var(--radius)`. A Tailwind alias alone would not help
+  // there: an unresolved custom property makes the declaration invalid at
+  // computed-value time, so the element silently falls back to whatever it
+  // inherited. That is a very quiet way for a dialog to lose its background.
+  const { dark, light, compat } = readThemeBlocks();
+  assert.ok(compat.size >= 15, 'expected a shadcn compat block in app.css');
+
+  const problems = [];
+  for (const [name, value] of compat) {
+    const target = value.match(/^var\((--[a-z0-9-]+)\)$/i)?.[1];
+    // `--radius` is a plain length with no theme dimension, and is allowed.
+    if (!target) {
+      if (!/^[\d.]+(px|rem|em)$/.test(value)) {
+        problems.push(`${name}: ${value} is neither a var() alias nor a plain length`);
+      }
+      continue;
+    }
+    if (!dark.has(target)) problems.push(`${name} -> ${target}, which :root does not define`);
+    else if (!light.has(target)) problems.push(`${name} -> ${target}, missing from the light theme`);
+  }
+
+  assert.deepEqual(problems, [], `shadcn compat names that do not resolve:\n  ${problems.join('\n  ')}`);
+
+  // And the three names the components actually read in inline styles must be
+  // present by name — this is the specific regression that would break sonner.
+  for (const required of ['--popover', '--popover-foreground', '--border', '--radius']) {
+    assert.ok(compat.has(required), `${required} is read by shadcn components in inline styles`);
+  }
 });
 
 test('theming: the two vocabularies cover the same raw variables', () => {

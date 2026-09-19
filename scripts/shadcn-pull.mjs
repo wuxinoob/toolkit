@@ -85,6 +85,29 @@ const lock = existsSync(LOCK) ? JSON.parse(readFileSync(LOCK, 'utf8')) : { regis
 lock.registry = REGISTRY;
 lock.pulledAt = new Date().toISOString();
 
+/**
+ * Bare imports actually present in the written files.
+ *
+ * The registry's own `dependencies` field is NOT trustworthy: `button` declares
+ * only `reka-ui`, yet its `index.ts` imports `class-variance-authority`. Deriving
+ * the list from the file contents means the report cannot miss one — which
+ * matters because the report is the only warning that a new package is needed.
+ */
+function bareImportsIn(rel, content, acc) {
+  for (const m of content.matchAll(/\bfrom\s+['"]([^'"]+)['"]/g)) {
+    const spec = m[1];
+    if (spec.startsWith('.') || spec.startsWith('/')) continue;
+    if (spec.startsWith('@/')) continue; // the app's own path alias, not a package
+    // `@scope/pkg/sub` -> `@scope/pkg`, `pkg/sub` -> `pkg`
+    const parts = spec.split('/');
+    acc.add(spec.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]);
+  }
+  return acc;
+}
+
+/** Packages that are part of the app or its toolchain, not component deps. */
+const NOT_A_DEP = new Set(['vue']);
+
 const deps = new Set();
 const summary = [];
 
@@ -129,6 +152,7 @@ for (const name of components) {
 
     mkdirSync(path.dirname(dest), { recursive: true });
     writeFileSync(dest, file.content, 'utf8');
+    bareImportsIn(rel, file.content, deps);
     lock.files[rel] = { component: name, sha256: hash };
   }
 
@@ -146,5 +170,5 @@ for (const s of summary) {
   console.log(`${s.name.padEnd(18)} ${w(3, s.added)}  ${w(7, s.changed)}  ${w(9, s.same)}`);
 }
 console.log('');
-console.log(`npm dependencies needed: ${[...deps].sort().join(', ') || '(none)'}`);
+console.log(`npm dependencies needed: ${[...deps].filter((d) => !NOT_A_DEP.has(d)).sort().join(', ')}`);
 console.log(`lockfile written: src/components/ui/.shadcn-lock.json`);

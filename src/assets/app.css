@@ -1,35 +1,49 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
+/* vue-sonner ships its own stylesheet and does NOT import it from the component
+   (shadcn-vue expects the app to). Without it the toaster renders with
+   `position: static` — it still appears, just parked in normal flow wherever the
+   DOM happens to put it, which is a confusing way to fail. Unlayered CSS beats
+   Tailwind's `@layer` rules regardless of order, so this cannot be overridden by
+   preflight. */
+@import 'vue-sonner/style.css';
 
 /* =============================================================================
  * Toolbox design system
  *
- * THREE layers, on purpose:
+ * FOUR layers, each with one job:
  *
- *   1. RAW VALUES (`:root` / `:root[data-theme='light']`) — the actual colours,
- *      written once per theme. This is the only place a theme changes anything.
+ *   1. CANONICAL VALUES (`:root` / `:root[data-theme='light']`)
+ *      The app's own names, written once per theme. This is the only place a
+ *      theme changes anything.
  *
- *   2. ALIASES (`@theme inline`) — Tailwind's view of those values. Two naming
- *      systems live here side by side and both point at the SAME raw variable:
+ *   2. SHADCN COMPAT (`:root`)
+ *      shadcn-vue components read ITS names directly in inline styles — sonner
+ *      does `var(--popover)`, `var(--border)`, `var(--radius)`. Aliasing only
+ *      the Tailwind side would leave those unresolved, so the upstream names
+ *      are defined here as `var()` references to the canonical values. Being
+ *      references, they follow the theme with nothing to keep in sync.
  *
- *        project vocabulary   --color-canvas / --color-brand / --color-ink
- *        shadcn vocabulary    --color-background / --color-primary / --color-foreground
+ *   3. TAILWIND ALIASES (`@theme inline`)
+ *      Both vocabularies, pointing at the SAME canonical variable:
  *
- *      `inline` is what makes this work: the utility inlines the raw variable
- *      (`bg-primary` → `background-color: var(--brand)`) instead of referencing
- *      `--color-primary`, so overriding `--brand` for a theme or for a single
- *      plugin subtree flows through with no duplicated values and no second
- *      place to update. It is also what shadcn-vue itself recommends for v4.
+ *        project   --color-canvas  / --color-brand / --color-ink
+ *        shadcn    --color-background / --color-primary / --color-foreground
+ *
+ *      `inline` is what makes this work: the utility inlines the canonical
+ *      variable (`bg-primary` → `background-color: var(--brand)`) instead of
+ *      referencing `--color-primary`, so a theme override — or a per-plugin
+ *      override of one subtree — flows through with no duplicated values.
+ *      It is also what shadcn-vue itself recommends for v4.
  *
  *      Aliasing rather than duplicating is the point: two names for one value
- *      that are *defined as* the same variable cannot drift. Two names with
+ *      that are DEFINED AS the same variable cannot drift. Two names with
  *      copied hex values will.
  *
- *   3. PRIMITIVES (`@layer components`) — `.tb-btn`, `.tb-card`, …
- *      These read the RAW variables, not the aliases, so the CSS-only
- *      vocabulary and the component vocabulary are provably the same colours.
- *      They matter because a plugin that hand-writes HTML (rather than calling
- *      the component factory) still gets the app's look, and because
+ *   4. PRIMITIVES (`@layer components`) — `.tb-btn`, `.tb-card`, …
+ *      These read the Tailwind aliases, so the CSS-only vocabulary and the
+ *      component vocabulary are provably the same colours. They matter because
+ *      a plugin that hand-writes HTML still gets the app's look, and because
  *      **external plugins are Blob-URL single-file ESM and cannot import
  *      anything** — classes reach them, JS does not.
  *
@@ -44,7 +58,7 @@
    the app, and the light theme would render half of each component dark. */
 @custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
 
-/* ------------------------------- raw values ------------------------------- */
+/* ---------------------------- 1. canonical values -------------------------- */
 
 :root {
   /* surfaces */
@@ -71,11 +85,11 @@
   --shadow-panel: 0 1px 2px rgb(0 0 0 / 0.35), 0 10px 28px rgb(0 0 0 / 0.22);
 }
 
-/* The light theme overrides the SAME raw names and nothing else. `:root[...]`
-   is specificity (0,2,0) against `:root`'s (0,1,0), so this wins regardless of
-   layer order. If a colour is hard-coded anywhere instead of read from a raw
-   variable, it will be wrong in one of the two themes — that is the invariant
-   `tests/plugins.test.mjs` enforces. */
+/* The light theme overrides the SAME canonical names and nothing else.
+   `:root[...]` is specificity (0,2,0) against `:root`'s (0,1,0), so this wins
+   regardless of layer order. If a colour is hard-coded anywhere instead of read
+   from a canonical variable, it will be wrong in one of the two themes — that
+   is the invariant `tests/plugins.test.mjs` enforces. */
 :root[data-theme='light'] {
   --canvas: #f4f6fa;
   --surface: #ffffff;
@@ -100,7 +114,37 @@
   --shadow-panel: 0 1px 2px rgb(16 24 40 / 0.06), 0 10px 28px rgb(16 24 40 / 0.08);
 }
 
-/* -------------------------------- aliases --------------------------------- */
+/* --------------------------- 2. shadcn compat names ------------------------ */
+
+/* Upstream's variable names, as references to the canonical ones. shadcn-vue
+   components use these in inline styles as well as in utility classes, so they
+   have to exist as real custom properties under exactly these names.
+   `--radius` is the one value with no theme dimension. */
+:root {
+  --background: var(--canvas);
+  --foreground: var(--ink);
+  --card: var(--surface);
+  --card-foreground: var(--ink);
+  --popover: var(--surface);
+  --popover-foreground: var(--ink);
+  --primary: var(--brand);
+  --primary-foreground: var(--brand-ink);
+  --secondary: var(--surface-2);
+  --secondary-foreground: var(--ink);
+  --muted: var(--surface-2);
+  --muted-foreground: var(--ink-muted);
+  --accent: var(--surface-2);
+  --accent-foreground: var(--ink);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--danger-ink);
+  --border: var(--line);
+  --input: var(--line);
+  --ring: var(--brand);
+
+  --radius: 9px;
+}
+
+/* ---------------------------- 3. tailwind aliases -------------------------- */
 
 @theme inline {
   /* project vocabulary */
@@ -119,8 +163,9 @@
   --color-success: var(--success);
   --color-warn: var(--warn);
 
-  /* shadcn-vue vocabulary — the same raw variables under upstream's names, so
-     a component dropped in from the registry is themed without being edited. */
+  /* shadcn vocabulary — deliberately pointing at the SAME canonical variable as
+     its project counterpart above, never at the compat name. One target means
+     the two cannot drift; `tests/plugins.test.mjs` pins the pairs. */
   --color-background: var(--canvas);
   --color-foreground: var(--ink);
   --color-card: var(--surface);
@@ -141,9 +186,9 @@
   --color-input: var(--line);
   --color-ring: var(--brand);
 
-  /* shape. Written out rather than derived from a single `--radius` base: the
+  /* shape. Written out rather than derived from `--radius` with calc(): the
      existing scale (6/9/13) is what `.tb-*` and every plugin already render
-     with, and a calc-based scale would silently change all of it. */
+     with, and a derived scale would silently shift all of it. */
   --radius-sm: 6px;
   --radius-md: 9px;
   --radius-lg: 13px;
