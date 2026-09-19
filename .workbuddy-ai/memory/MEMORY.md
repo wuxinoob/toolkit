@@ -159,6 +159,49 @@
 - 外壳只用 Tailwind 工具类 + shadcn 组件，**只剩 `.tb-overlay` 一个 `.tb-*`**
   （插件 overlay 挂载点，本就该宿主提供）。
 
+## ctx.ui 组件工厂（已实现，src/host/ui.js）
+
+插件 import 不了组件库，但宿主可以**把构造函数递给它** —— 和 `ctx.protocol` 完全
+同一个手法。`loadUiKit()` 在 lifecycle 里、任何插件激活前 await 一次，于是
+`el()`/`render()` 保持同步（插件在同步的 render 回调里建 DOM）。
+
+- **`el(tag, props, children)` 返回描述符，不是 DOM 节点**，`render(container, tree)`
+  一次挂载整棵树。理由：**插槽结构的组件（Select/Tabs/Dialog）用"append 子节点"
+  表达不了** —— 会把下拉项塞进触发按钮里。非组件 tag 落到普通 HTML 元素；
+  带连字符的未知名会抛错（必是拼写错误）。
+- **词汇表是派生的，不是手写清单**：`import.meta.glob('../components/ui/*/index.ts')`
+  → kebab-case 出 84 个 tag。所以不可能与 src/components/ui 漂移。
+- **`import.meta.glob` 不能加 `typeof` 守卫**：Vite 会把调用替换成对象字面量，
+  于是 `typeof` 是 `'object'`，三元永远走 `{}` 分支 —— **词汇表静默为空且不报错**。
+  所以 glob 单独放在 `src/host/uiComponents.js`，由 `loadUiKit()` 动态 import
+  （Node 没有这个宏，该模块必须对测试进程不可达）。
+- **portal 目标**：reka-ui 的 portal 默认 teleport 到 `document.body`，那在插件的
+  `[data-plugin]` 子树**之外** → `contributes.theme` 会美化按钮却不美化下拉菜单。
+  上游 wrapper 不转发 portal 目标，已补 `portalTo`（见下）并把它盖到树上每个
+  portal 类描述符上。实测：弹层 `--primary` = 插件的紫、父节点 = 插件容器。
+- **测试桩**：`tests/browser-stubs-loader.mjs` 有两条 load 钩子 —— 把
+  `uiComponents.js` 换成真实目录映射，把每个组件 `index.ts` 换成**导出名真实、
+  实现为空**的桩。于是 boot 测试里 `el('card-header')` 仍能解析、拼错仍抛错。
+  任何 import `lifecycle.js`/`ctx.js` 的测试都必须 `register` 这个 loader。
+- 开发期验证页：`dev/ui-probe.js` + `ui-probe.html`（build 只取 index.html，不进产物）。
+  插件在 Tauri 外无法激活，所以这是唯一能看到 `ctx.ui` 输出的地方。
+
+## token 分层的方向：shadcn 名必须是规范层（踩过）
+
+**utility 解析成 `var(<规范名>)`，所以只有规范名能被覆盖。** 我最初把项目名当规范层、
+shadcn 名当兼容层，于是 `--color-primary: var(--brand)`、`bg-primary` 编译成
+`var(--brand)` —— **插件按 shadcn 文档设 `--primary` 时一个颜色都不会变**。
+类看起来可覆盖，实际不是。靠**看截图**发现（按钮上写着 "Purple" 却是蓝的）。
+
+正确方向：**shadcn 的名字持有值（规范层），项目名是别名**。代价是
+`--card`/`--popover`、`--secondary`/`--muted`/`--accent` 这些"在本应用里是同一角色"
+的令牌成了各自持值的独立变量（值重复）。这是可覆盖性的必要代价，已加测试钉住
+它们在每个主题内保持同色。
+
+守卫：`theming: every variable a utility resolves to holds a value, not another alias`
+—— 直接防上面那个 bug 复发。
+
+
 ## 验证工具：scripts/shot.mjs（重要）
 
 应用主题在首帧就由 `prefers-color-scheme` 决定，一次性的 `--screenshot` 只能拍到
