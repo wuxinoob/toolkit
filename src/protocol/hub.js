@@ -104,11 +104,11 @@ export class MessageHub {
     });
   }
 
-  pty(pluginId, ch, { program, args, cwd, cols, rows, onFrame, onEnd } = {}) {
+  pty(pluginId, ch, { program, args, cwd, env, cols, rows, onFrame, onEnd } = {}) {
     return this.stream(pluginId, 'pty-stream', {
       provider: 'pty',
       ch,
-      params: { program, args, cwd, cols, rows },
+      params: { program, args, cwd, env, cols, rows },
       onFrame,
       onEnd,
     });

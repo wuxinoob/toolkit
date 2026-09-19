@@ -103,7 +103,9 @@ export const ptyStreamTransport = {
       cols: params.cols ?? 80,
       rows: params.rows ?? 24,
       cwd: params.cwd ?? null,
-      env: {},
+      // The Rust side takes a map; an unset env is an empty one, not a cleared
+      // environment — the child inherits when nothing is passed.
+      env: params.env ?? {},
       encoding: null,
       handleFlowControl: null,
       flowControlPause: null,

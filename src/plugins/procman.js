@@ -17,8 +17,32 @@
  * - All terminal access goes through ctx.pty — the plugin never touches the
  *   PTY backend, so the transport can be swapped (a self-hosted PTY backend is
  *   a one-file change in the protocol layer, not here).
+ *
+ * Profiles (persisted, and the reason this plugin supervises anything):
+ *   A *session* is one running process. A *profile* is the persisted
+ *   description of one — what to run, how (args, cwd, env, size), and WHEN:
+ *
+ *     start with app   launch as soon as the plugin activates
+ *     schedule         `daily at HH:MM` or `every N minutes`, counted from the
+ *                      last firing so a slept-through night runs once, not N×
+ *     restart on exit  never / on-failure / always, with a retry budget and a
+ *                      delay; a user-initiated stop is never undone by it
+ *
+ *   The rules live in ./procman-supervisor.js as pure functions (clock math,
+ *   restart policy, env parsing) so they are testable without a clock or a pty;
+ *   this file owns the timers, the persistence and the UI.
  */
 
+import {
+  PROFILES_KEY,
+  normalizeProfile,
+  parseEnv,
+  dueAt,
+  shouldRestart,
+  describeSchedule,
+  describeRestart,
+  DEFAULT_PROFILE,
+} from './procman-supervisor.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -47,6 +71,18 @@ const state = {
   ui: null,
   log: null,
   templates: null,
+  /** Persisted launch profiles — the things that auto-start and are scheduled. */
+  profiles: [],
+  /** profileId -> timer, so a schedule can be re-armed without leaking timers. */
+  schedTimers: new Map(),
+  /** profileId -> when it last fired, so an interval counts from the last run. */
+  lastFired: new Map(),
+  /** profileId being edited in the form, or null when adding. */
+  editingId: null,
+  /** profileId -> whether a restart is already pending (prevents double-arming). */
+  restarting: new Set(),
+  /** Pending restart timers, cleared on deactivate. */
+  restartTimers: new Set(),
   sessions: new Map(), // ch -> session
   activeCh: null,
   selectedCh: null,
@@ -64,7 +100,20 @@ async function spawnFromSpec(spec) {
   const session = {
     ch,
     name: spec.name || spec.program,
-    cfg: { program: spec.program, args: spec.args || [], cwd: spec.cwd || undefined, cols: 80, rows: 24 },
+    cfg: {
+      program: spec.program,
+      args: spec.args || [],
+      cwd: spec.cwd || undefined,
+      env: spec.env || undefined,
+      cols: 80,
+      rows: 24,
+    },
+    /** Set when this session was launched from a profile. */
+    profileId: spec.profileId ?? null,
+    /** How many times this session has already been restarted. */
+    attempts: 0,
+    /** A user-initiated stop must never be undone by the restart policy. */
+    stoppedByUser: false,
     status: 'starting',
     exitCode: null,
     pid: null,
@@ -100,6 +149,7 @@ async function spawnFromSpec(spec) {
       program: session.cfg.program,
       args: session.cfg.args,
       cwd: session.cfg.cwd,
+      env: session.cfg.env,
       cols: session.cfg.cols,
       rows: session.cfg.rows,
       onFrame: (frame) => {
@@ -118,9 +168,11 @@ async function spawnFromSpec(spec) {
           scheduleRefreshRows();
           if (state.selectedCh === ch) scheduleRenderDetail();
           state.log?.('pty', `exit ch=${ch} code=${frame.p}`);
+          maybeRestart(session);
         } else if (frame.kind === Kind.ERR) {
           session.status = 'error';
           session.exitCode = -1;
+          maybeRestart(session);
           session.terminal?.write(enc.encode(`\x1b[90m[stream error: ${frame.code} ${frame.msg}]\x1b[0m\r\n`));
           ui.notify(`stream error: ${frame.msg}`, 'error');
         }
@@ -144,7 +196,144 @@ async function spawnFromSpec(spec) {
 function killSession(ch) {
   const s = state.sessions.get(ch);
   if (!s || s.status !== 'running') return;
+  // A user stopping a process is a decision, not a failure: the restart policy
+  // must not immediately undo it.
+  s.stoppedByUser = true;
   s.handle?.close?.().catch((e) => state.log?.('pty', `close failed ch=${ch}: ${e.message ?? e}`));
+}
+
+/* --------------------------------- profiles ----------------------------------- */
+/**
+ * A profile is the persisted description of a process — what to run, how, and
+ * when. Sessions are instances of it. This section is the supervision around
+ * that: auto-start on activation, scheduled starts, and restart-on-exit.
+ */
+
+function persistProfiles() {
+  const { ctx } = state;
+  ctx.storage.set(PROFILES_KEY, state.profiles).catch((e) => ctx.log.warn('profiles persist failed', e));
+}
+
+/** Live sessions belonging to a profile. */
+function runningFor(profileId) {
+  return [...state.sessions.values()].filter(
+    (s) => s.profileId === profileId && (s.status === 'running' || s.status === 'starting'),
+  );
+}
+
+async function launchProfile(rawProfile, reason = 'manual') {
+  const p = normalizeProfile(rawProfile);
+  if (!p.program) {
+    state.ui?.notify(`profile "${p.name || p.id}" has no program to run`, 'error');
+    return null;
+  }
+  state.lastFired.set(p.id, Date.now());
+  const session = await spawnFromSpec({
+    name: p.name || p.program,
+    program: p.program,
+    args: p.args,
+    cwd: p.cwd,
+    env: parseEnv(p.env),
+    profileId: p.id,
+  });
+  state.log?.('profile', `launch "${p.name}" (${reason}) ch=${session.ch}`);
+  return session;
+}
+
+function clearSchedules() {
+  for (const t of state.schedTimers.values()) clearTimeout(t);
+  state.schedTimers.clear();
+  for (const t of state.restartTimers) clearTimeout(t);
+  state.restartTimers.clear();
+  state.restarting.clear();
+}
+
+/**
+ * Arm one timer per enabled profile that has a schedule.
+ *
+ * Re-armed from scratch whenever the profile list changes, so a stale timer can
+ * never point at a profile that was deleted or disabled. `dueAt` counts from the
+ * LAST FIRING, so a machine that slept through several intervals runs once on
+ * wake rather than firing a burst of catch-up runs.
+ */
+function armSchedules() {
+  clearSchedules();
+  const now = Date.now();
+  for (const p of state.profiles) {
+    if (!p.enabled || p.schedule.kind === 'none') continue;
+    const when = dueAt(p.schedule, now, state.lastFired.get(p.id) ?? null);
+    if (when === null) continue;
+    const delay = Math.max(0, when - now);
+    state.schedTimers.set(
+      p.id,
+      setTimeout(() => {
+        state.schedTimers.delete(p.id);
+        const live = state.profiles.find((x) => x.id === p.id && x.enabled);
+        if (!live) return armSchedules();
+        launchProfile(live, 'schedule').finally(() => armSchedules());
+      }, Math.min(delay, 2 ** 31 - 1)),
+    );
+    state.log?.('profile', `armed "${p.name}" in ${Math.round(delay / 1000)}s`);
+  }
+}
+
+/** Apply the restart policy after a session ended. */
+function maybeRestart(session) {
+  const { profileId } = session;
+  if (!profileId || session.stoppedByUser) return;
+  if (state.restarting.has(profileId)) return; // already armed for this profile
+  const profile = state.profiles.find((p) => p.id === profileId);
+  if (!profile || !profile.enabled) return;
+  if (!shouldRestart(profile.restart, session.exitCode, session.attempts)) {
+    if (profile.restart.policy !== 'never') {
+      state.log?.('profile', `not restarting "${profile.name}" (attempts ${session.attempts}/${profile.restart.maxRetries})`);
+    }
+    return;
+  }
+
+  const attempt = session.attempts + 1;
+  const delay = profile.restart.delayMs;
+  state.restarting.add(profileId);
+  state.log?.('profile', `restart "${profile.name}" in ${delay}ms (attempt ${attempt}/${profile.restart.maxRetries})`);
+  session.terminal?.write(
+    enc.encode(`\x1b[90m[restarting in ${delay}ms — attempt ${attempt}/${profile.restart.maxRetries}]\x1b[0m\r\n`),
+  );
+  const timer = setTimeout(async () => {
+    state.restartTimers.delete(timer);
+    state.restarting.delete(profileId);
+    // The attempts counter carries across restarts, so the cap is a total
+    // budget — otherwise a crash loop with a long delay restarts forever.
+    const next = await launchProfile(profile, 'restart');
+    if (next) next.attempts = attempt;
+    scheduleRefreshRows();
+  }, Math.max(0, delay));
+  state.restartTimers.add(timer);
+}
+
+/** Stop every session of a profile (a user action, so no restart follows). */
+function stopProfile(profileId) {
+  for (const s of runningFor(profileId)) killSession(s.ch);
+}
+
+function upsertProfile(raw) {
+  const p = normalizeProfile(raw);
+  const i = state.profiles.findIndex((x) => x.id === p.id);
+  if (i >= 0) state.profiles[i] = p;
+  else state.profiles.push(p);
+  persistProfiles();
+  armSchedules();
+  return p;
+}
+
+function deleteProfile(profileId) {
+  state.profiles = state.profiles.filter((p) => p.id !== profileId);
+  state.lastFired.delete(profileId);
+  persistProfiles();
+  armSchedules();
+}
+
+function newProfileId() {
+  return `p${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`;
 }
 
 /* ---------------------------------- terminal ---------------------------------- */
@@ -284,6 +473,10 @@ const btnCss =
   'padding:5px 10px;cursor:pointer;background:#1d2230;color:#dfe3ea;border:1px solid #2a2f3a;border-radius:4px;';
 const btnCssDanger =
   'padding:3px 8px;cursor:pointer;background:#2a1518;color:#ff9aa8;border:1px solid #4a2530;border-radius:4px;';
+const btnMiniCss =
+  'padding:2px 6px;cursor:pointer;background:#1d2230;color:#dfe3ea;border:1px solid #2a2f3a;border-radius:4px;font-size:11px;';
+const badgeCss =
+  'padding:0 5px;border-radius:8px;font-size:10px;line-height:15px;border:1px solid #2a2f3a;color:#8ab4ff;';
 
 function registerRenderHooks(ctx) {
   ctx.registerView('procman', (el) => {
@@ -296,6 +489,14 @@ function registerRenderHooks(ctx) {
             <span class="pm-count" style="margin-left:auto;font-size:11px;opacity:.6;"></span>
           </div>
           <div class="pm-sessions" style="display:flex;flex-direction:column;gap:4px;overflow:auto;max-height:32%;"></div>
+          <div style="border-top:1px solid #2a2f3a;padding-top:8px;display:flex;flex-direction:column;min-height:0;flex:1;">
+            <div style="display:flex;gap:6px;align-items:center;">
+              <strong style="font-size:12px;opacity:.85;">PROFILES</strong>
+              <button data-act="profile-new" style="margin-left:auto;${btnMiniCss}">+ New</button>
+            </div>
+            <div class="pm-profiles" style="display:flex;flex-direction:column;gap:4px;margin-top:6px;overflow:auto;min-height:0;"></div>
+            <div class="pm-profile-editor"></div>
+          </div>
           <div style="border-top:1px solid #2a2f3a;padding-top:8px;">
             <strong style="font-size:12px;opacity:.85;">TEMPLATES</strong>
             <div class="pm-templates" style="display:flex;flex-direction:column;gap:4px;margin-top:6px;"></div>
@@ -327,11 +528,18 @@ function registerRenderHooks(ctx) {
       </div>`;
 
     el.querySelector('.pm-sessions').addEventListener('click', onSessionClick);
+    el.querySelector('.pm-profiles').addEventListener('click', (ev) => onProfileClick(el, ev));
+    el.querySelector('.pm-profile-editor').addEventListener('change', (ev) => {
+      // a toggle fires change, not click
+      if (ev.target.closest('[data-act="profile-toggle"]')) onProfileClick(el, ev);
+    });
     el.querySelector('.pm-templates').addEventListener('click', onTemplateClick);
     el.querySelector('.pm-tabs').addEventListener('click', onTabClick);
     el.querySelector('.pm-form').addEventListener('submit', onRunSubmit);
 
     renderSessionList(el);
+    renderProfiles(el);
+    renderProfileEditor(el);
     renderTemplates(el);
     renderTabs(el);
     activateSession(state.activeCh);
@@ -468,6 +676,194 @@ function renderTemplates(root) {
     : `<div style="opacity:.5;font-size:12px;">no templates</div>`;
 }
 
+/* ---------------------------------- profiles UI -------------------------------- */
+
+/** One row per profile: what it runs, when, and the actions available. */
+function renderProfiles(root) {
+  const host = root.querySelector('.pm-profiles');
+  if (!host) return;
+  if (!state.profiles.length) {
+    host.innerHTML = `<div style="opacity:.5;font-size:11px;">No profiles. A profile can auto-start with the app and run on a schedule.</div>`;
+    return;
+  }
+  host.innerHTML = state.profiles
+    .map((p) => {
+      const live = runningFor(p.id).length;
+      const badges = [
+        p.autoStart ? `<span style="${badgeCss}">auto</span>` : '',
+        p.schedule.kind !== 'none' ? `<span style="${badgeCss}">${esc(describeSchedule(p.schedule))}</span>` : '',
+        p.restart.policy !== 'never' ? `<span style="${badgeCss}">↻</span>` : '',
+      ]
+        .filter(Boolean)
+        .join(' ');
+      return `
+      <div class="pm-profile" data-id="${esc(p.id)}" style="border:1px solid #2a2f3a;border-radius:6px;padding:6px;${p.enabled ? '' : 'opacity:.5;'}">
+        <div style="display:flex;align-items:center;gap:4px;">
+          <input type="checkbox" data-act="profile-toggle" ${p.enabled ? 'checked' : ''} title="enabled" />
+          <span style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(p.name || p.program)}</span>
+          <span style="margin-left:auto;font-size:10px;color:${live ? '#9fe8a9' : '#5b6272'};">${live ? `● ${live}` : '○'}</span>
+        </div>
+        <div style="font-size:10.5px;opacity:.6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px;">
+          ${esc([p.program, ...p.args].join(' '))}
+        </div>
+        <div style="display:flex;gap:4px;align-items:center;margin-top:4px;">
+          ${badges}
+          <span style="margin-left:auto;display:flex;gap:3px;">
+            <button data-act="profile-run" title="run now" style="${btnMiniCss}">▶</button>
+            <button data-act="profile-stop" title="stop" ${live ? '' : 'disabled'} style="${btnMiniCss}">■</button>
+            <button data-act="profile-edit" title="edit" style="${btnMiniCss}">✎</button>
+            <button data-act="profile-del" title="delete" style="${btnMiniCss}">✕</button>
+          </span>
+        </div>
+      </div>`;
+    })
+    .join('');
+}
+
+/** The add/edit form. Only one profile is edited at a time. */
+function renderProfileEditor(root) {
+  const host = root.querySelector('.pm-profile-editor');
+  if (!host) return;
+  const editing = state.editingId ? state.profiles.find((p) => p.id === state.editingId) : null;
+  if (!state.editingId) {
+    host.innerHTML = '';
+    return;
+  }
+  const p = editing ?? { ...DEFAULT_PROFILE, id: newProfileId() };
+  const field = (label, input) =>
+    `<label style="display:flex;flex-direction:column;gap:2px;font-size:10.5px;opacity:.75;">${label}${input}</label>`;
+  const num = (name, value, min, max) =>
+    `<input name="${name}" type="number" min="${min}" max="${max}" value="${value}" style="${inputCss}" />`;
+
+  host.innerHTML = `
+    <form class="pm-profile-form" data-id="${esc(p.id)}" style="display:flex;flex-direction:column;gap:5px;margin-top:8px;border:1px solid #2a2f3a;border-radius:6px;padding:8px;">
+      <div style="font-size:11px;opacity:.7;">${editing ? 'Edit profile' : 'New profile'}</div>
+      ${field('name', `<input name="name" value="${esc(p.name)}" placeholder="My backend" style="${inputCss}" />`)}
+      ${field('program', `<input name="program" value="${esc(p.program)}" placeholder="node" style="${inputCss}" />`)}
+      ${field('args (space separated)', `<input name="args" value="${esc(p.args.join(' '))}" style="${inputCss}" />`)}
+      ${field('cwd', `<input name="cwd" value="${esc(p.cwd)}" placeholder="optional" style="${inputCss}" />`)}
+      ${field('env (KEY=VALUE, one per line)', `<textarea name="env" rows="2" style="${inputCss}">${esc(p.env.join('\n'))}</textarea>`)}
+      <div style="display:flex;gap:6px;">
+        ${field('cols', num('cols', p.cols, 20, 500))}
+        ${field('rows', num('rows', p.rows, 5, 200))}
+      </div>
+      <div style="display:flex;gap:10px;font-size:11px;">
+        <label style="display:flex;gap:4px;align-items:center;"><input type="checkbox" name="enabled" ${p.enabled ? 'checked' : ''} /> enabled</label>
+        <label style="display:flex;gap:4px;align-items:center;"><input type="checkbox" name="autoStart" ${p.autoStart ? 'checked' : ''} /> start with app</label>
+      </div>
+      ${field(
+        'schedule',
+        `<select name="schedKind" style="${inputCss}">
+           ${['none', 'daily', 'interval']
+             .map((k) => `<option value="${k}" ${p.schedule.kind === k ? 'selected' : ''}>${k === 'none' ? 'manual only' : k}</option>`)
+             .join('')}
+         </select>`,
+      )}
+      <div style="display:flex;gap:6px;">
+        ${field('at (daily)', `<input name="schedAt" type="time" value="${esc(p.schedule.at)}" style="${inputCss}" />`)}
+        ${field('every (min)', num('schedEvery', p.schedule.everyMinutes, 1, 1440))}
+      </div>
+      ${field(
+        'restart on exit',
+        `<select name="restartPolicy" style="${inputCss}">
+           ${['never', 'on-failure', 'always']
+             .map((k) => `<option value="${k}" ${p.restart.policy === k ? 'selected' : ''}>${k}</option>`)
+             .join('')}
+         </select>`,
+      )}
+      <div style="display:flex;gap:6px;">
+        ${field('max retries', num('maxRetries', p.restart.maxRetries, 0, 100))}
+        ${field('delay (ms)', num('delayMs', p.restart.delayMs, 0, 600000))}
+      </div>
+      <div style="display:flex;gap:6px;">
+        <button type="submit" style="${btnCss}">Save</button>
+        <button type="button" data-act="profile-cancel" style="${btnCss}">Cancel</button>
+      </div>
+      <div class="pm-profile-err" style="color:#ff9aa8;font-size:11px;"></div>
+    </form>`;
+  host.querySelector('.pm-profile-form').addEventListener('submit', onProfileSubmit);
+  host.querySelector('[data-act="profile-cancel"]').addEventListener('click', () => {
+    state.editingId = null;
+    renderProfileEditor(root);
+  });
+}
+
+function onProfileClick(root, ev) {
+  const btn = ev.target.closest('[data-act]');
+  const row = ev.target.closest('.pm-profile');
+  if (btn && btn.dataset.act === 'profile-new') {
+    state.editingId = '';
+    return renderProfileEditor(root);
+  }
+  if (!row) return;
+  const id = row.dataset.id;
+  const profile = state.profiles.find((p) => p.id === id);
+  if (!profile) return;
+
+  if (!btn) return;
+  switch (btn.dataset.act) {
+    case 'profile-toggle':
+      upsertProfile({ ...profile, enabled: btn.checked });
+      renderProfiles(root);
+      renderProfileEditor(root);
+      break;
+    case 'profile-run':
+      launchProfile(profile, 'manual');
+      break;
+    case 'profile-stop':
+      stopProfile(id);
+      break;
+    case 'profile-edit':
+      state.editingId = id;
+      renderProfileEditor(root);
+      break;
+    case 'profile-del':
+      deleteProfile(id);
+      if (state.editingId === id) state.editingId = null;
+      renderProfiles(root);
+      renderProfileEditor(root);
+      break;
+    default:
+      break;
+  }
+}
+
+function onProfileSubmit(ev) {
+  ev.preventDefault();
+  const form = ev.target;
+  const data = new FormData(form);
+  const argsText = String(data.get('args') ?? '').trim();
+  upsertProfile({
+    id: form.dataset.id,
+    name: String(data.get('name') ?? '').trim(),
+    program: String(data.get('program') ?? '').trim(),
+    // Simple whitespace split: quoting is not supported, and pretending
+    // otherwise would silently mangle an argument with a space in it.
+    args: argsText ? argsText.split(/\s+/) : [],
+    cwd: String(data.get('cwd') ?? '').trim(),
+    env: String(data.get('env') ?? '').split('\n'),
+    cols: data.get('cols'),
+    rows: data.get('rows'),
+    enabled: data.get('enabled') === 'on',
+    autoStart: data.get('autoStart') === 'on',
+    schedule: {
+      kind: data.get('schedKind'),
+      at: data.get('schedAt'),
+      everyMinutes: data.get('schedEvery'),
+    },
+    restart: {
+      policy: data.get('restartPolicy'),
+      maxRetries: data.get('maxRetries'),
+      delayMs: data.get('delayMs'),
+    },
+  });
+  state.editingId = null;
+  const root = form.closest('.pm-root');
+  renderProfiles(root);
+  renderProfileEditor(root);
+  renderDetail();
+}
+
 function renderTabs(root) {
   const host = (root || document).querySelector('.pm-tabs');
   if (!host) return;
@@ -530,6 +926,17 @@ function renderDetail() {
       <div>${dot(s.status)} status: ${s.status}${s.status === 'exited' ? ` (code ${s.exitCode})` : ''}</div>
       <div>program: <code style="color:#dfe3ea;">${esc(s.cfg.program)} ${esc((s.cfg.args || []).join(' '))}</code></div>
       ${s.cfg.cwd ? `<div>cwd: ${esc(s.cfg.cwd)}</div>` : ''}
+      ${s.cfg.env && Object.keys(s.cfg.env).length ? `<div>env: <code style="opacity:.8;">${esc(Object.keys(s.cfg.env).join(', '))}</code></div>` : ''}
+      ${(() => {
+        const prof = state.profiles.find((p) => p.id === s.profileId);
+        if (!prof) return '';
+        return `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #2a2f3a;">
+          <div>profile: <code style="color:#8ab4ff;">${esc(prof.name || prof.id)}</code></div>
+          <div>schedule: ${esc(describeSchedule(prof.schedule))}</div>
+          <div>restart: ${esc(describeRestart(prof.restart))}${s.attempts ? ` · restarted ${s.attempts}×` : ''}</div>
+          ${s.stoppedByUser ? '<div style="opacity:.6;">stopped by you — no restart</div>' : ''}
+        </div>`;
+      })()}
       <div>channel: <code style="color:#dfe3ea;">${esc(s.ch)}</code></div>
       <div>pid: ${s.pid ?? '—'}</div>
       <div>uptime: ${uptime}</div>
@@ -591,6 +998,19 @@ export async function activate(ctx) {
   state.templates = Array.isArray(saved) && saved.length ? saved : structuredClone(DEFAULT_TEMPLATES);
   if (!saved) persistTemplates();
 
+  const savedProfiles = await ctx.storage.get(PROFILES_KEY);
+  state.profiles = (Array.isArray(savedProfiles) ? savedProfiles : []).map(normalizeProfile);
+  state.log?.('profile', `loaded ${state.profiles.length} profile(s)`);
+
+  // Auto-start first, then arm the schedules: a profile that is both auto-start
+  // and scheduled should come up now, not wait for its first slot.
+  for (const p of state.profiles) {
+    if (p.enabled && p.autoStart && !runningFor(p.id).length) {
+      await launchProfile(p, 'autostart');
+    }
+  }
+  armSchedules();
+
   registerRenderHooks(ctx);
 
   // Debug handle: window.__toolbox.procman
@@ -619,8 +1039,12 @@ export async function activate(ctx) {
 }
 
 export function deactivate() {
-  // Kill nothing: user sessions survive plugin toggles by design.
-  // The ctx disposer closes this plugin's streams; only detach view DOM here.
+  // Timers are the one thing that must NOT outlive the plugin: a schedule that
+  // kept firing after deactivate would launch processes nobody can see.
+  clearSchedules();
+  // Sessions themselves are not killed here on purpose — but note that the ctx
+  // disposer closes this plugin's streams, which does end them (see README).
+  // Only detach view DOM here.
   for (const s of state.sessions.values()) detachTerminal(s);
 }
 

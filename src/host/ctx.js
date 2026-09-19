@@ -282,9 +282,9 @@ export function buildCtx(plugin, disposer) {
       }, 'rpc:proc'),
 
     /** Run a command-line subprocess in a pseudo-terminal. */
-    pty: (ch, { program, args, cwd, cols, rows, onFrame, onEnd } = {}) =>
+    pty: (ch, { program, args, cwd, env, cols, rows, onFrame, onEnd } = {}) =>
       gatedStream(async () => {
-        const h = await hub.pty(id, ch, { program, args, cwd, cols, rows, onFrame, onEnd });
+        const h = await hub.pty(id, ch, { program, args, cwd, env, cols, rows, onFrame, onEnd });
         disposer.track(() => h.close().catch(() => {}));
         return trackStream(h);
       }),

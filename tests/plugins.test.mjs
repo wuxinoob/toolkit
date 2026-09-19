@@ -92,6 +92,27 @@ function extractManifest(src, label) {
  * `ctx.` (main window) and `bridge.` (plugin window) are both covered — a
  * window-scoped plugin hits the same gateway and the same registry.
  */
+/**
+ * Read a plugin entry AND everything it imports, relative to the repo root.
+ *
+ * The audit used to read one file. A plugin split across modules would then have
+ * its capability usage half-invisible — the check would still pass, just on less
+ * code, which is the worst kind of green. Following the relative imports keeps
+ * the audit as strong as the entry point is.
+ */
+function collectSource(entryRel, seen = new Set()) {
+  if (seen.has(entryRel)) return '';
+  seen.add(entryRel);
+  const source = read(entryRel);
+  const dir = path.posix.dirname(entryRel);
+  let out = source;
+  for (const m of source.matchAll(/from\s+'(\.{1,2}\/[^']+)'/g)) {
+    const next = path.posix.normalize(path.posix.join(dir, m[1]));
+    out += `\n${collectSource(next, seen)}`;
+  }
+  return out;
+}
+
 function requiredPermissions(source) {
   // A plugin may contain a DELIBERATE negative test (calling something it has
   // not declared, to prove the gate rejects it). Put
@@ -150,8 +171,8 @@ function registeredViews(src) {
 test('builtin plugins: manifests parse, ids are unique, views are declared', () => {
   const seen = new Set();
   for (const name of BUILTIN) {
-    const src = read(`src/plugins/${name}.js`);
-    const manifest = extractManifest(src, name);
+    const src = collectSource(`src/plugins/${name}.js`);
+    const manifest = extractManifest(read(`src/plugins/${name}.js`), name);
 
     assert.ok(manifest.id, `${name}: manifest.id missing`);
     assert.ok(!seen.has(manifest.id), `duplicate plugin id: ${manifest.id}`);
@@ -181,8 +202,8 @@ test('builtin plugins: manifests parse, ids are unique, views are declared', () 
 test('builtin plugins: every capability used is declared, and declared permissions are known', () => {
   const problems = [];
   for (const name of BUILTIN) {
-    const src = read(`src/plugins/${name}.js`);
-    const manifest = extractManifest(src, name);
+    const src = collectSource(`src/plugins/${name}.js`);
+    const manifest = extractManifest(read(`src/plugins/${name}.js`), name);
     const declared = new Set(manifest.permissions ?? []);
     const needed = requiredPermissions(src);
 
