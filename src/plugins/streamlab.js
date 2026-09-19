@@ -29,9 +29,8 @@ export const manifest = {
 
 const state = { ctx: null, lines: [], unsub: null, sessions: [] };
 
-const BTN =
-  'padding:5px 12px;cursor:pointer;background:#1d2230;color:#dfe3ea;border:1px solid #2a2f3a;border-radius:6px;font-size:12px;';
-const BTN_ALT = BTN.replace('#1d2230', '#1a2a22');
+/** Log line -> intent class. Colour lives in the stylesheet, not in a hex here. */
+const LOG_CLASS = { err: 'tb-t-bad', rx: 'tb-t-ok', tx: 'tb-t-brand', info: 'tb-t-dim' };
 
 function log(kind, text) {
   state.lines.unshift({ t: new Date().toISOString().slice(11, 23), kind, text });
@@ -43,10 +42,7 @@ function renderLog() {
   const el = document.querySelector('.sl-log');
   if (!el) return;
   el.innerHTML = state.lines
-    .map((l) => {
-      const color = l.kind === 'err' ? '#ff9aa8' : l.kind === 'rx' ? '#9fe8a9' : l.kind === 'tx' ? '#8ab4ff' : '#8b93a7';
-      return `<div style="color:${color};white-space:pre-wrap;word-break:break-all;">${l.t} ${esc(l.text)}</div>`;
-    })
+    .map((l) => `<div class="${LOG_CLASS[l.kind] ?? 'tb-t-dim'}" style="white-space:pre-wrap;word-break:break-all;">${l.t} ${esc(l.text)}</div>`)
     .join('');
 }
 
@@ -149,12 +145,12 @@ function renderSchemes() {
     .schemes()
     .map(
       (s) => `
-    <tr style="border-bottom:1px solid #232838;">
-      <td style="padding:5px 8px;"><code style="color:#8ab4ff;">${esc(s.id)}</code></td>
-      <td style="padding:5px 8px;opacity:.85;">${esc(s.label)}</td>
-      <td style="padding:5px 8px;opacity:.6;font-size:11px;">${esc(s.direction)}</td>
-      <td style="padding:5px 8px;opacity:.6;font-size:11px;">${esc(s.capabilities)}</td>
-      <td style="padding:5px 8px;opacity:.55;font-size:11px;">${esc(s.note)}</td>
+    <tr>
+      <td><code class="tb-mono tb-t-brand">${esc(s.id)}</code></td>
+      <td>${esc(s.label)}</td>
+      <td class="tb-hint">${esc(s.direction)}</td>
+      <td class="tb-hint">${esc(s.capabilities)}</td>
+      <td class="tb-hint">${esc(s.note)}</td>
     </tr>`,
     )
     .join('');
@@ -167,15 +163,15 @@ function renderSessions() {
     ? state.sessions
         .map(
           (s) => `
-      <div style="display:flex;gap:8px;align-items:center;padding:3px 6px;border-bottom:1px solid #1e2330;font-size:11.5px;">
-        <code style="color:#8ab4ff;">${esc(s.id)}</code>
-        <span style="opacity:.7;">${esc(s.kind)}</span>
-        <span style="opacity:.5;">pid=${s.pid ?? '—'}</span>
-        <span style="margin-left:auto;opacity:.5;">${s.bytesOut}B</span>
+      <div class="tb-row" style="cursor:default;">
+        <code class="tb-mono tb-t-brand">${esc(s.id)}</code>
+        <span class="tb-t-muted">${esc(s.kind)}</span>
+        <span class="tb-hint">pid=${s.pid ?? '—'}</span>
+        <span class="tb-hint" style="margin-left:auto;">${s.bytesOut} B</span>
       </div>`,
         )
         .join('')
-    : `<div style="opacity:.5;font-size:12px;">no live endpoints</div>`;
+    : `<div class="tb-hint">No live endpoints.</div>`;
 }
 
 function registerRenderHooks(ctx) {
@@ -183,30 +179,30 @@ function registerRenderHooks(ctx) {
     el.innerHTML = `
       <div style="display:flex;flex-direction:column;gap:14px;max-width:900px;">
         <div>
-          <h2 style="margin:0 0 4px;">StreamLab</h2>
-          <p style="opacity:.6;font-size:12.5px;margin:0;">
+          <h2 style="margin:0 0 4px;font-size:16px;">StreamLab</h2>
+          <p class="tb-hint" style="margin:0;">
             同一个信封（envelope）走不同方案。下面每次实验都打印它收到的帧，
             可以直接对照：载体与编码是两件独立的事。
           </p>
         </div>
 
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="sl-rpc" style="${BTN}">rpc · host/info</button>
-          <button class="sl-json" style="${BTN_ALT}">channel-json · ticker</button>
-          <button class="sl-raw" style="${BTN_ALT}">channel-raw · ticker</button>
-          <button class="sl-bus" style="${BTN}">event-bus · publish</button>
-          <button class="sl-local" style="${BTN}">in-process · emit</button>
-          <button class="sl-sess" style="${BTN}">刷新会话表</button>
+        <div class="tb-toolbar">
+          <button class="sl-rpc tb-btn">rpc · host/info</button>
+          <button class="sl-json tb-btn">channel-json · ticker</button>
+          <button class="sl-raw tb-btn">channel-raw · ticker</button>
+          <button class="sl-bus tb-btn">event-bus · publish</button>
+          <button class="sl-local tb-btn">in-process · emit</button>
+          <button class="sl-sess tb-btn">刷新会话表</button>
         </div>
 
         <div>
-          <strong style="font-size:12px;opacity:.85;">方案表（宿主已注册）</strong>
-          <table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:6px;">
+          <div class="tb-section-title">方案表（宿主已注册）</div>
+          <table class="tb-table">
             <thead>
-              <tr style="opacity:.55;font-size:11px;text-align:left;">
-                <th style="padding:4px 8px;">id</th><th style="padding:4px 8px;">载体 · 编码</th>
-                <th style="padding:4px 8px;">方向</th><th style="padding:4px 8px;">能力</th>
-                <th style="padding:4px 8px;">说明</th>
+              <tr>
+                <th>id</th><th>载体 · 编码</th>
+                <th>方向</th><th>能力</th>
+                <th>说明</th>
               </tr>
             </thead>
             <tbody class="sl-schemes"></tbody>
@@ -214,13 +210,13 @@ function registerRenderHooks(ctx) {
         </div>
 
         <div>
-          <strong style="font-size:12px;opacity:.85;">统一会话注册表</strong>
-          <div class="sl-sessions" style="margin-top:6px;background:#0d0f13;border:1px solid #2a2f3a;border-radius:6px;padding:6px;min-height:34px;"></div>
+          <div class="tb-section-title">统一会话注册表</div>
+          <div class="sl-sessions tb-pane tb-pane-pad" style="min-height:34px;"></div>
         </div>
 
         <div>
-          <strong style="font-size:12px;opacity:.85;">帧日志</strong>
-          <pre class="sl-log" style="margin:6px 0 0;background:#0d0f13;border:1px solid #2a2f3a;border-radius:6px;padding:8px;font-size:11px;line-height:1.6;max-height:320px;overflow:auto;"></pre>
+          <div class="tb-section-title">帧日志</div>
+          <pre class="sl-log tb-pane tb-mono" style="margin:0;padding:8px;line-height:1.6;max-height:320px;"></pre>
         </div>
       </div>`;
 

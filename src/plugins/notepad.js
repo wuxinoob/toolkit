@@ -26,8 +26,6 @@ export const manifest = {
 const state = { ctx: null, notes: [], activeId: null, preview: false, saveTimer: null };
 
 const KEY = 'notes';
-const BTN =
-  'padding:4px 10px;cursor:pointer;background:#1d2230;color:#dfe3ea;border:1px solid #2a2f3a;border-radius:6px;font-size:12px;';
 
 function uid() {
   return `n${Date.now().toString(36)}${Math.floor(Math.random() * 1e3)}`;
@@ -51,14 +49,14 @@ function renderList() {
   el.innerHTML = state.notes
     .map(
       (n) => `
-    <div data-id="${n.id}" style="display:flex;align-items:center;gap:6px;padding:5px 8px;border:1px solid ${
-      n.id === state.activeId ? '#3b4254' : '#2a2f3a'
-    };border-radius:6px;cursor:pointer;background:${n.id === state.activeId ? '#1d2230' : 'transparent'};">
-      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;">${esc(n.title || 'Untitled')}</span>
-      <button data-act="del" style="${BTN}padding:2px 7px;">×</button>
+    <div class="tb-row" data-id="${n.id}" role="option" aria-selected="${n.id === state.activeId}">
+      <span class="tb-row-label">${esc(n.title || 'Untitled')}</span>
+      <span class="tb-row-actions">
+        <button class="tb-icon-btn tb-icon-btn-danger" data-act="del" title="Delete note" aria-label="Delete note">✕</button>
+      </span>
     </div>`,
     )
-    .join('') || `<div style="opacity:.5;font-size:12px;">no notes</div>`;
+    .join('') || `<div class="tb-hint">No notes yet.</div>`;
 }
 
 function renderEditor() {
@@ -86,20 +84,21 @@ function registerRenderHooks(ctx) {
     el.innerHTML = `
       <div style="display:grid;grid-template-columns:220px 1fr;gap:12px;height:100%;min-height:0;">
         <div style="display:flex;flex-direction:column;gap:8px;min-height:0;">
-          <div style="display:flex;gap:6px;align-items:center;">
-            <strong style="font-size:12px;opacity:.85;">NOTES</strong>
-            <button class="np-new" style="${BTN}margin-left:auto;">+ New</button>
+          <div class="tb-toolbar">
+            <span class="tb-section-title" style="margin:0;">Notes</span>
+            <button class="np-new tb-btn tb-btn-sm" style="margin-left:auto;">+ New</button>
           </div>
-          <div class="np-list" style="display:flex;flex-direction:column;gap:4px;overflow:auto;"></div>
-          <div style="margin-top:auto;font-size:11px;opacity:.5;">saved via rpc · broadcast via event-bus</div>
+          <div class="np-list tb-list" role="listbox" aria-label="Notes"></div>
+          <div class="tb-hint" style="margin-top:auto;">saved via rpc · broadcast via event-bus</div>
         </div>
         <div style="display:flex;flex-direction:column;gap:8px;min-height:0;">
-          <div style="display:flex;gap:8px;align-items:center;">
-            <input class="np-title" placeholder="Title" style="flex:1;padding:6px 10px;background:#0d0f13;color:#dfe3ea;border:1px solid #2a2f3a;border-radius:6px;" />
-            <button class="np-preview-toggle" style="${BTN}">Preview</button>
+          <div class="tb-toolbar" style="flex-wrap:nowrap;">
+            <input class="np-title tb-input" placeholder="Title" />
+            <button class="np-preview-toggle tb-btn" aria-pressed="${state.preview}">Preview</button>
           </div>
-          <textarea class="np-body" placeholder="Write Markdown here…" style="flex:1;min-height:0;resize:none;padding:10px;background:#0d0f13;color:#dfe3ea;border:1px solid #2a2f3a;border-radius:6px;font-family:ui-monospace,Consolas,monospace;font-size:13px;line-height:1.6;"></textarea>
-          <div class="np-preview" style="flex:1;min-height:0;overflow:auto;padding:10px;background:#0d0f13;border:1px solid #2a2f3a;border-radius:6px;display:none;font-size:13px;line-height:1.7;"></div>
+          <textarea class="np-body tb-textarea tb-mono" placeholder="Write Markdown here…"
+                    style="flex:1;min-height:0;resize:none;line-height:1.6;"></textarea>
+          <div class="np-preview tb-pane tb-pane-pad tb-markdown" style="flex:1;display:none;"></div>
         </div>
       </div>`;
 
@@ -140,8 +139,10 @@ function registerRenderHooks(ctx) {
     };
     el.querySelector('.np-title').addEventListener('input', onChange);
     el.querySelector('.np-body').addEventListener('input', onChange);
-    el.querySelector('.np-preview-toggle').addEventListener('click', () => {
+    el.querySelector('.np-preview-toggle').addEventListener('click', (ev) => {
       state.preview = !state.preview;
+      // aria-pressed is the state; the class only reflects it.
+      ev.currentTarget.setAttribute('aria-pressed', String(state.preview));
       renderEditor();
     });
 

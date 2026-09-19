@@ -484,6 +484,106 @@ test('plugins: no plugin calls a function it never declares (dead call sites)', 
   );
 });
 
+// ------------------------------ theming invariants ------------------------------
+
+/**
+ * The light theme works by overriding the SAME `--color-*` tokens under
+ * `:root[data-theme='light']`. That makes one failure mode silent and nasty:
+ * add a colour token to `@theme`, forget the light block, and the new token
+ * falls back to its dark value in the light theme — a single wrong-coloured
+ * element, in one theme, with no error anywhere.
+ *
+ * So: every colour token must be defined in both themes. A token that happens
+ * to be identical in both should still be listed, so the light palette is
+ * reviewable in one place.
+ */
+function readThemeBlocks() {
+  const css = read('src/assets/app.css');
+  const block = (startRe) => {
+    const m = css.match(startRe);
+    assert.ok(m, `app.css: block not found (${startRe})`);
+    const open = css.indexOf('{', m.index);
+    let depth = 0;
+    let i = open;
+    for (; i < css.length; i++) {
+      if (css[i] === '{') depth += 1;
+      else if (css[i] === '}') {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+    }
+    return css.slice(open + 1, i);
+  };
+  const names = (body) =>
+    new Set([...body.matchAll(/(--[a-z0-9-]+)\s*:/gi)].map((m) => m[1]));
+  return {
+    dark: names(block(/@theme\s*\{/)),
+    light: names(block(/:root\[data-theme='light'\]\s*\{/)),
+  };
+}
+
+test('theming: every colour token is defined in both themes', () => {
+  const { dark, light } = readThemeBlocks();
+  const colors = [...dark].filter((n) => n.startsWith('--color-'));
+  assert.ok(colors.length >= 10, 'expected a real colour palette in @theme');
+  const missing = colors.filter((n) => !light.has(n));
+  assert.deepEqual(
+    missing,
+    [],
+    `these tokens have no light-theme value, so they stay dark in light mode:\n  ${missing.join('\n  ')}`,
+  );
+  const extra = [...light].filter((n) => n.startsWith('--color-') && !dark.has(n));
+  assert.deepEqual(extra, [], `light theme defines tokens @theme does not:\n  ${extra.join('\n  ')}`);
+});
+
+test('theming: every .tb-* class a plugin uses actually exists in the stylesheet', () => {
+  // The design system is class-based precisely so Blob-URL plugins can use it.
+  // The cost of that choice is that a typo'd class name fails SILENTLY — the
+  // element simply renders unstyled. This is the check that makes the trade
+  // safe.
+  const css = read('src/assets/app.css');
+  const defined = new Set([...css.matchAll(/\.(tb-[a-z0-9-]+)/gi)].map((m) => m[1]));
+
+  const files = [
+    ...BUILTIN.map((n) => `src/plugins/${n}.js`),
+    'src/plugins/floatwin-widget.js',
+    'src/App.vue',
+    'src/views/SettingsView.vue',
+  ];
+  const unknown = new Set();
+  for (const rel of files) {
+    for (const m of read(rel).matchAll(/\btb-[a-z0-9-]+/gi)) {
+      if (!defined.has(m[0])) unknown.add(`${rel}: ${m[0]}`);
+    }
+  }
+  assert.deepEqual([...unknown], [], `classes with no definition in app.css:\n  ${[...unknown].join('\n  ')}`);
+});
+
+test('theming: no plugin hard-codes a colour', () => {
+  // A hex literal in a plugin is a colour that cannot follow the theme. The one
+  // legitimate case is the fallback argument of the token reader, because xterm
+  // is a canvas and needs a concrete value — so that form is stripped first.
+  const offenders = [];
+  for (const rel of [...BUILTIN.map((n) => `src/plugins/${n}.js`), 'src/plugins/floatwin-widget.js']) {
+    const src = read(rel)
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '')
+      // tok('--color-x', '#fallback') is allowed
+      .replace(/\w+\(\s*'--[a-z0-9-]+'\s*,\s*'#[0-9a-f]{3,8}'\s*\)/gi, 'TOKEN()');
+    for (const m of src.matchAll(/#[0-9a-f]{3,8}\b/gi)) {
+      offenders.push(`${rel}: ${m[0]}`);
+    }
+    for (const m of src.matchAll(/\b(?:rgba?|hsla?)\(/g)) {
+      offenders.push(`${rel}: ${m[0]}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `colours that cannot follow the theme (use var(--color-…) or a .tb-* class):\n  ${offenders.join('\n  ')}`,
+  );
+});
+
 test('plugins: no plugin hard-codes a transport command instead of a scheme', () => {
   // A plugin reaching for invoke()/a raw Channel would bypass the permission
   // gate and the scheme table — exactly what the unified protocol exists to

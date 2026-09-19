@@ -44,20 +44,27 @@ export async function mountWidget() {
   document.body.style.cssText = 'margin:0;background:transparent;overflow:hidden;';
 
   const style = document.createElement('style');
+  // Every colour here is a token, so this overlay re-themes itself with the rest
+  // of the app without a line of JS — CSS custom properties cascade into a
+  // dynamically injected <style> just as well as into a bundled stylesheet.
+  // `color-mix(… , transparent)` is what makes the glass work on a transparent
+  // window: it keeps the token's hue and adds the alpha the window needs.
   style.textContent = `
     .fw-root{position:fixed;inset:0;display:flex;flex-direction:column;
-      background:linear-gradient(160deg,rgba(16,22,32,.97),rgba(22,36,30,.93));
-      border:1px solid rgba(120,200,160,.35);border-radius:14px;overflow:hidden;
-      color:#dfeee6;font-family:system-ui,'Microsoft YaHei',sans-serif;
-      user-select:none;box-shadow:0 8px 30px rgba(0,0,0,.35);}
+      background:linear-gradient(160deg,
+        color-mix(in srgb, var(--color-surface) 97%, transparent),
+        color-mix(in srgb, var(--color-surface-2) 93%, transparent));
+      border:1px solid var(--color-line-strong);border-radius:14px;overflow:hidden;
+      color:var(--color-ink);font-family:system-ui,'Microsoft YaHei',sans-serif;
+      user-select:none;box-shadow:var(--shadow-panel);}
     .fw-bar{display:flex;align-items:center;gap:6px;padding:7px 10px;
-      font-size:12px;cursor:move;background:rgba(255,255,255,.06);}
-    .fw-badge{font-size:10px;padding:1px 6px;border-radius:8px;
-      background:rgba(255,180,80,.2);color:#ffcf99;display:none;}
+      font-size:12px;cursor:move;background:color-mix(in srgb, var(--color-ink) 6%, transparent);}
+    .fw-badge{font-size:10px;padding:1px 6px;border-radius:8px;display:none;
+      background:color-mix(in srgb, var(--color-warn) 22%, transparent);color:var(--color-warn);}
     .fw-close{margin-left:auto;width:20px;height:20px;line-height:18px;
-      border:none;border-radius:6px;background:rgba(255,255,255,.1);
-      color:#dfeee6;cursor:pointer;font-size:11px;padding:0;}
-    .fw-close:hover{background:rgba(255,90,90,.5);}
+      border:none;border-radius:6px;cursor:pointer;font-size:11px;padding:0;
+      background:color-mix(in srgb, var(--color-ink) 10%, transparent);color:var(--color-ink);}
+    .fw-close:hover{background:color-mix(in srgb, var(--color-danger) 55%, transparent);}
     .fw-clock{font-size:38px;font-weight:500;text-align:center;margin-top:auto;
       font-variant-numeric:tabular-nums;}
     .fw-session{text-align:center;font-size:11px;opacity:.65;margin-top:2px;}

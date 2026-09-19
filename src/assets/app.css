@@ -18,9 +18,10 @@
  * Utilities (Tailwind) are for the host shell and builtin plugins, which ARE
  * bundled and can use them freely.
  *
- * Dark only, for now: the app has always been dark, and a light theme I cannot
- * open a window to check would be shipped blind. The token set below is the
- * whole surface area a light theme would need to override.
+ * Two themes, one token set. A theme is `data-theme` on <html> — see
+ * `src/host/theme.js`. Nothing swaps stylesheets, which is the only way a
+ * Blob-URL plugin (which cannot import anything) can be themed at all: it
+ * inherits the custom properties for free.
  * ========================================================================== */
 
 @theme {
@@ -39,6 +40,7 @@
   /* intent */
   --color-brand: #6f9cf5;
   --color-brand-ink: #0b1020;
+  --color-brand-hover: #8bb0f8;
   --color-danger: #ff8b9a;
   --color-success: #86e2a2;
   --color-warn: #f0c674;
@@ -48,6 +50,34 @@
   --radius-md: 9px;
   --radius-lg: 13px;
   --shadow-panel: 0 1px 2px rgb(0 0 0 / 0.35), 0 10px 28px rgb(0 0 0 / 0.22);
+}
+
+/* The light theme overrides the SAME tokens and nothing else. `:root[...]` is
+   specificity (0,2,0) against `:root`'s (0,1,0), so this wins regardless of
+   layer order. If a colour is hard-coded anywhere below this block instead of
+   read from a token, it will be wrong in one of the two themes — that is the
+   invariant to keep. */
+:root[data-theme='light'] {
+  --color-canvas: #f4f6fa;
+  --color-surface: #ffffff;
+  --color-surface-2: #eef1f7;
+  --color-line: #dfe4ee;
+  --color-line-strong: #c3cbdb;
+
+  --color-ink: #171a21;
+  --color-ink-muted: #565f72;
+  --color-ink-subtle: #838b9c;
+
+  /* The brand has to be darker to hold contrast on white; the dark theme's
+     #6f9cf5 is a highlight colour and fails as text on a light surface. */
+  --color-brand: #2f6bd8;
+  --color-brand-ink: #ffffff;
+  --color-brand-hover: #245bc0;
+  --color-danger: #c93a52;
+  --color-success: #1c8a4b;
+  --color-warn: #8f6400;
+
+  --shadow-panel: 0 1px 2px rgb(16 24 40 / 0.06), 0 10px 28px rgb(16 24 40 / 0.08);
 }
 
 @layer base {
@@ -76,6 +106,22 @@
 
   ::selection {
     background: color-mix(in srgb, var(--color-brand) 40%, transparent);
+  }
+
+  /* Native form controls, and the honest limit of styling them.
+     `accent-color` re-tints the parts the browser draws for us: checkbox ticks,
+     radio dots, range thumbs and progress bars. It is the only hook that works
+     in every engine without replacing the control.
+     `color-scheme` (set from theme.js) covers the rest: scrollbars, spinners,
+     and — the one that matters most — the <select> dropdown popup, which is
+     drawn by the OS/WebView and cannot be styled by any CSS at all. That is
+     exactly why the design system ships `.tb-select` for the closed state and
+     accepts the popup as-is; see docs/UI.md. */
+  input[type='checkbox'],
+  input[type='radio'],
+  input[type='range'],
+  progress {
+    accent-color: var(--color-brand);
   }
 
   /* Slim scrollbars, so a terminal pane and a plugin view stop looking like
@@ -269,7 +315,8 @@
     font-weight: 500;
   }
   .tb-btn-primary:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--color-brand) 86%, white);
+    background: var(--color-brand-hover);
+    border-color: var(--color-brand-hover);
   }
 
   .tb-btn-danger {
@@ -296,6 +343,37 @@
     font-size: 11.5px;
   }
 
+  /* A square button that holds one glyph — list-row actions, tab close. */
+  .tb-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    flex: 0 0 auto;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-ink-muted);
+    font: inherit;
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .tb-icon-btn:hover:not(:disabled) {
+    background: var(--color-surface-2);
+    color: var(--color-ink);
+  }
+  .tb-icon-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+  .tb-icon-btn-danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--color-danger) 18%, transparent);
+    color: var(--color-danger);
+  }
+
   .tb-input,
   .tb-select,
   .tb-textarea {
@@ -319,6 +397,11 @@
     outline: none;
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-brand) 22%, transparent);
   }
+  /* `.tb-input` is `width:100%` for form columns; a search box inside a toolbar
+     usually wants to size itself instead. */
+  .tb-input-inline {
+    width: auto;
+  }
 
   .tb-field {
     display: flex;
@@ -332,6 +415,120 @@
   .tb-hint {
     font-size: 11px;
     color: var(--color-ink-subtle);
+  }
+
+  /* ---------------------------------- lists --------------------------------- */
+
+  /* A vertical list of selectable rows. Selection is `aria-selected`, so the
+     same markup is correct for a screen reader and for the stylesheet. */
+  .tb-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    overflow: auto;
+    min-height: 0;
+  }
+  .tb-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 0.1s, border-color 0.1s;
+  }
+  .tb-row:hover {
+    background: var(--color-surface-2);
+  }
+  .tb-row[aria-selected='true'] {
+    background: color-mix(in srgb, var(--color-brand) 14%, transparent);
+    border-color: color-mix(in srgb, var(--color-brand) 38%, transparent);
+  }
+  .tb-row-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tb-row-actions {
+    display: flex;
+    gap: 2px;
+    margin-left: auto;
+    flex: 0 0 auto;
+  }
+
+  /* --------------------------------- panes ---------------------------------- */
+
+  /* An inset surface: a terminal, a log, a rendered document. Uses the canvas
+     colour so it reads as "recessed" against a card in both themes. */
+  .tb-pane {
+    background: var(--color-canvas);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-sm);
+    overflow: auto;
+    min-height: 0;
+  }
+  .tb-pane-pad {
+    padding: 9px;
+  }
+
+  /* ---------------------------------- tabs ---------------------------------- */
+
+  .tb-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 4px;
+    background: var(--color-surface-2);
+    border-bottom: 1px solid var(--color-line);
+    overflow-x: auto;
+    flex: 0 0 auto;
+  }
+  .tb-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 9px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-ink-muted);
+    font: inherit;
+    font-size: 12px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .tb-tab:hover {
+    background: var(--color-surface);
+    color: var(--color-ink);
+  }
+  .tb-tab[aria-selected='true'] {
+    background: var(--color-surface);
+    border-color: var(--color-line-strong);
+    color: var(--color-ink);
+  }
+
+  /* ------------------------------- intent text ------------------------------ */
+
+  /* Log lines and status readouts need colour without a pill around them. */
+  .tb-t-brand {
+    color: var(--color-brand);
+  }
+  .tb-t-ok {
+    color: var(--color-success);
+  }
+  .tb-t-warn {
+    color: var(--color-warn);
+  }
+  .tb-t-bad {
+    color: var(--color-danger);
+  }
+  .tb-t-dim {
+    color: var(--color-ink-subtle);
+  }
+  .tb-t-muted {
+    color: var(--color-ink-muted);
   }
 
   /* ---------------------------------- data ---------------------------------- */
@@ -448,5 +645,141 @@
   .tb-overlay {
     position: relative;
     z-index: 9999;
+  }
+
+  /* A full-window takeover: a break reminder, a blocking prompt. Tokenised, so
+     it is a light screen in the light theme rather than a black one. */
+  .tb-screen {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    background: color-mix(in srgb, var(--color-canvas) 94%, transparent);
+    color: var(--color-ink);
+    backdrop-filter: blur(2px);
+  }
+  .tb-screen-title {
+    font-size: 30px;
+    font-weight: 500;
+    text-align: center;
+    max-width: 22ch;
+  }
+  .tb-screen-count {
+    font-size: 84px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-success);
+  }
+
+  /* --------------------------------- status --------------------------------- */
+
+  .tb-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--color-ink-subtle);
+  }
+  .tb-dot-ok {
+    background: var(--color-success);
+  }
+  .tb-dot-bad {
+    background: var(--color-danger);
+  }
+  .tb-dot-warn {
+    background: var(--color-warn);
+  }
+
+  /* -------------------------------- markdown -------------------------------- */
+
+  /* Rendered Markdown has no classes to hang styles on, so this is a scoped
+     element selector list. Without it a preview is unstyled browser HTML, which
+     in a dark theme means black-on-black links and default-blue headings. */
+  .tb-markdown {
+    font-size: 13px;
+    line-height: 1.7;
+    overflow-wrap: anywhere;
+  }
+  .tb-markdown > :first-child {
+    margin-top: 0;
+  }
+  .tb-markdown h1,
+  .tb-markdown h2,
+  .tb-markdown h3 {
+    margin: 18px 0 8px;
+    line-height: 1.3;
+    font-weight: 600;
+  }
+  .tb-markdown h1 {
+    font-size: 20px;
+    border-bottom: 1px solid var(--color-line);
+    padding-bottom: 6px;
+  }
+  .tb-markdown h2 {
+    font-size: 17px;
+  }
+  .tb-markdown h3 {
+    font-size: 14.5px;
+  }
+  .tb-markdown p,
+  .tb-markdown ul,
+  .tb-markdown ol,
+  .tb-markdown blockquote,
+  .tb-markdown table {
+    margin: 8px 0;
+  }
+  .tb-markdown ul,
+  .tb-markdown ol {
+    padding-left: 22px;
+  }
+  .tb-markdown a {
+    color: var(--color-brand);
+  }
+  .tb-markdown code {
+    font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+    font-size: 12px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-line);
+  }
+  .tb-markdown pre {
+    margin: 10px 0;
+    padding: 10px;
+    overflow: auto;
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-line);
+  }
+  .tb-markdown pre code {
+    padding: 0;
+    border: none;
+    background: none;
+  }
+  .tb-markdown blockquote {
+    padding-left: 12px;
+    border-left: 3px solid var(--color-line-strong);
+    color: var(--color-ink-muted);
+  }
+  .tb-markdown hr {
+    border: none;
+    border-top: 1px solid var(--color-line);
+    margin: 16px 0;
+  }
+  .tb-markdown table {
+    border-collapse: collapse;
+  }
+  .tb-markdown th,
+  .tb-markdown td {
+    padding: 5px 9px;
+    border: 1px solid var(--color-line);
+  }
+  .tb-markdown img {
+    max-width: 100%;
   }
 }

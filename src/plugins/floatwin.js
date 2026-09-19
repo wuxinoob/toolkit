@@ -36,13 +36,6 @@ export const manifest = {
 const RANGE = { width: [120, 800], height: [80, 600], opacity: [0.2, 1] };
 const clamp = (v, [lo, hi]) => Math.min(hi, Math.max(lo, Number(v) || lo));
 
-const BTN =
-  'padding:6px 14px;cursor:pointer;background:#2a2f3a;color:#dfe3ea;' +
-  'border:none;border-radius:8px;font-size:13px;';
-const INPUT =
-  'margin-left:8px;background:#111318;color:#dfe3ea;border:1px solid #2a2f3a;' +
-  'border-radius:6px;padding:4px 8px;';
-
 /** Create the floating window (or show+focus it if it already exists). */
 async function ensureWindow(ctx, cfg) {
   const how = await ctx.windows.create(FLOATWIN_LABEL, {
@@ -81,7 +74,8 @@ export async function activate(ctx) {
   const setStatus = (exists) => {
     if (!statusEl) return;
     statusEl.textContent = exists ? '● 已创建（运行中）' : '○ 未创建';
-    statusEl.style.color = exists ? '#9fe8a9' : '#8a9099';
+    statusEl.classList.toggle('tb-t-ok', exists);
+    statusEl.classList.toggle('tb-hint', !exists);
   };
   const refreshStatus = async () => {
     try {
@@ -115,37 +109,71 @@ export async function activate(ctx) {
 
   ctx.registerView('floatwin', (el) => {
     el.innerHTML = `
-      <div style="display:flex;flex-direction:column;gap:14px;max-width:440px;">
-        <h2 style="margin:0;">悬浮窗</h2>
-        <span class="fw-status" style="font-size:13px;">…</span>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="fw-create" style="${BTN}">创建 / 显示</button>
-          <button class="fw-hide" style="${BTN}">隐藏</button>
-          <button class="fw-destroy" style="${BTN}">销毁</button>
+      <div style="display:flex;flex-direction:column;gap:14px;max-width:460px;">
+        <div>
+          <h2 style="margin:0 0 4px;font-size:16px;">悬浮窗</h2>
+          <p class="tb-hint" style="margin:0;">
+            一个独立的透明置顶窗口，尺寸、透明度与鼠标透传都在这里实时控制。
+          </p>
         </div>
-        <label>透明度 <span class="fw-opacity-val" style="font-size:12px;opacity:.7;"></span>
-          <input type="range" class="fw-opacity" min="0.2" max="1" step="0.05"
-                 style="vertical-align:middle;width:220px;"/>
-        </label>
-        <div style="display:flex;gap:10px;align-items:center;">
-          宽 <input type="number" class="fw-width" min="${RANGE.width[0]}" max="${RANGE.width[1]}" step="10" style="${INPUT} width:80px;"/>
-          高 <input type="number" class="fw-height" min="${RANGE.height[0]}" max="${RANGE.height[1]}" step="10" style="${INPUT} width:80px;"/>
-          <button class="fw-apply-size" style="${BTN}">应用尺寸</button>
+
+        <div class="tb-card">
+          <div class="tb-card-body" style="display:flex;flex-direction:column;gap:12px;">
+            <div class="tb-toolbar">
+              <span class="fw-status tb-hint">…</span>
+            </div>
+            <div class="tb-toolbar">
+              <button class="fw-create tb-btn tb-btn-primary">创建 / 显示</button>
+              <button class="fw-hide tb-btn">隐藏</button>
+              <button class="fw-destroy tb-btn tb-btn-danger">销毁</button>
+            </div>
+          </div>
         </div>
-        <label style="display:flex;gap:10px;align-items:center;">
-          <input type="checkbox" class="fw-clickthrough"/> 鼠标透传
-          <span style="opacity:.6;font-size:12px;">开启后悬浮窗不响应鼠标，只能在本面板关闭</span>
-        </label>
-        <label style="display:flex;gap:10px;align-items:center;">
-          <input type="checkbox" class="fw-on-top"/> 窗口置顶
-        </label>
-        <label style="display:flex;gap:10px;align-items:center;">
-          <input type="checkbox" class="fw-autorestore"/> 应用启动时自动恢复
-        </label>
-        <p style="opacity:.6;font-size:12px;margin:0;">
-          在悬浮窗标题栏按住可拖动窗口；关闭面板不会销毁悬浮窗，用「销毁」或悬浮窗 ✕ 关闭。
-          配置变更经 event-bus 广播，悬浮窗即时生效（不再轮询）。
-        </p>
+
+        <div class="tb-card">
+          <div class="tb-card-head">外观</div>
+          <div class="tb-card-body" style="display:flex;flex-direction:column;gap:12px;">
+            <label class="tb-field">
+              <span class="tb-label">
+                透明度 <span class="fw-opacity-val tb-t-muted"></span>
+              </span>
+              <input type="range" class="fw-opacity" min="0.2" max="1" step="0.05" />
+            </label>
+            <div class="tb-toolbar">
+              <label class="tb-field" style="flex:0 0 auto;">
+                <span class="tb-label">宽</span>
+                <input type="number" class="fw-width tb-input tb-input-inline" min="${RANGE.width[0]}"
+                       max="${RANGE.width[1]}" step="10" style="width:86px;" />
+              </label>
+              <label class="tb-field" style="flex:0 0 auto;">
+                <span class="tb-label">高</span>
+                <input type="number" class="fw-height tb-input tb-input-inline" min="${RANGE.height[0]}"
+                       max="${RANGE.height[1]}" step="10" style="width:86px;" />
+              </label>
+              <button class="fw-apply-size tb-btn" style="align-self:flex-end;">应用尺寸</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="tb-card">
+          <div class="tb-card-head">行为</div>
+          <div class="tb-card-body" style="display:flex;flex-direction:column;gap:10px;">
+            <label class="tb-label" style="display:flex;gap:10px;align-items:center;">
+              <input type="checkbox" class="fw-clickthrough" /> 鼠标透传
+              <span class="tb-hint">开启后悬浮窗不响应鼠标，只能在本面板关闭</span>
+            </label>
+            <label class="tb-label" style="display:flex;gap:10px;align-items:center;">
+              <input type="checkbox" class="fw-on-top" /> 窗口置顶
+            </label>
+            <label class="tb-label" style="display:flex;gap:10px;align-items:center;">
+              <input type="checkbox" class="fw-autorestore" /> 应用启动时自动恢复
+            </label>
+            <p class="tb-hint" style="margin:0;">
+              在悬浮窗标题栏按住可拖动窗口；关闭面板不会销毁悬浮窗，用「销毁」或悬浮窗 ✕ 关闭。
+              配置变更经 event-bus 广播，悬浮窗即时生效（不再轮询）。
+            </p>
+          </div>
+        </div>
       </div>`;
 
     statusEl = el.querySelector('.fw-status');

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 
 import { store, saveSettings, toast } from '../host/store.js';
@@ -9,11 +9,30 @@ import { resolveBuiltin } from '../host/registry.js';
 import { scanExternalPlugins, getExternal } from '../host/external.js';
 import { events } from '../host/events.js';
 import { hub } from '../protocol/hub.js';
+import { getResolvedTheme, getThemePref, onThemeChange, setTheme } from '../host/theme.js';
 
 const shortcut = ref(store.settings.summonShortcut);
 const saved = ref(false);
 const scanning = ref(false);
 const liveSessions = ref([]);
+
+/* --------------------------------- appearance -------------------------------- */
+
+const THEMES = [
+  { value: 'system', label: 'System', icon: '🖥' },
+  { value: 'light', label: 'Light', icon: '☀' },
+  { value: 'dark', label: 'Dark', icon: '🌙' },
+];
+
+const themePref = ref(getThemePref());
+const resolvedTheme = ref(getResolvedTheme());
+// Keeps the control honest when the OS flips while on "System", or when another
+// window changes the preference.
+const offTheme = onThemeChange((pref, resolved) => {
+  themePref.value = pref;
+  resolvedTheme.value = resolved;
+});
+onUnmounted(offTheme);
 
 async function saveHotkey() {
   store.settings.summonShortcut = shortcut.value.trim();
@@ -140,6 +159,34 @@ watch(() => store.plugins.length, loadForms);
       <h1 class="m-0 text-[17px] font-semibold">Settings</h1>
       <span class="tb-hint pb-[2px]">{{ store.plugins.length }} plugin(s) installed</span>
     </header>
+
+    <section class="tb-card">
+      <div class="tb-card-head">Appearance</div>
+      <div class="tb-card-body flex flex-col gap-3">
+        <p class="tb-hint m-0">
+          A theme is one attribute on the root element, so it reaches everything at once — the shell,
+          the built-in views, and any external plugin that styles itself with the shared tokens.
+          Nothing reloads.
+        </p>
+        <div class="flex flex-wrap items-center gap-2">
+          <button
+            v-for="t in THEMES"
+            :key="t.value"
+            class="tb-btn"
+            :class="themePref === t.value ? 'tb-btn-primary' : ''"
+            :aria-pressed="themePref === t.value"
+            @click="setTheme(t.value)"
+          >
+            <span aria-hidden="true">{{ t.icon }}</span>
+            {{ t.label }}
+          </button>
+          <span class="tb-hint ml-1">
+            showing
+            <strong>{{ resolvedTheme }}</strong>
+          </span>
+        </div>
+      </div>
+    </section>
 
     <section class="tb-card">
       <div class="tb-card-head">Global hotkey</div>

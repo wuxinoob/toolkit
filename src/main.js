@@ -5,6 +5,13 @@ import { createApp } from 'vue';
 import './assets/app.css';
 import App from './App.vue';
 import { boot } from './host/boot.js';
+import { initTheme } from './host/theme.js';
+
+// Before anything renders, in EVERY window: the theme is one attribute on <html>
+// and a plugin window is as entitled to it as the main one. index.html sets it
+// even earlier (inline, pre-paint) to avoid a flash; this is the authoritative
+// read, and it also wires the OS listener and the cross-window one.
+initTheme();
 
 // Secondary windows reuse this entry with a ?mode= query: they must render
 // their own page only and skip the whole plugin host — a second host would

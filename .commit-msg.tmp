@@ -1,0 +1,45 @@
+深色/浅色主题切换 + 所有插件迁移到 .tb-* 设计系统
+
+一、主题切换
+主题不是换样式表，而是 <html> 上的一个属性：
+    :root[data-theme='light'] { --color-canvas: …; }
+之所以这样做，是因为外部插件是 Blob URL 单文件 ESM，无法 import 任何东西，
+也就无法在运行时被换一份样式表；但它们能继承 CSS 自定义属性。于是「用 token
+写插件」= 自动获得主题，插件零代码、零重载、无需选择加入。
+
+- src/host/theme.js（新）：system/light/dark 三态，system 跟随
+  prefers-color-scheme 实时变化；localStorage 持久化（与 store.settings 一致），
+  跨窗口靠 storage 事件推送，不轮询；每个窗口在 mount 前各调一次 initTheme()。
+- index.html：内联预置脚本，在首帧前设好属性 —— 打包后 CSS 是独立 <link>，
+  会先于模块生效，否则浅色用户每次开窗都会闪一帧深色。
+- app.css：新增浅色 token 覆盖块 + --color-brand-hover。深色的 #6f9cf5 在白底
+  上做文字对比度不够，浅色主题用更深的 #2f6bd8。
+- SettingsView：Appearance 卡片，三选一，并显示当前实际生效的 theme。
+
+二、插件迁移（notepad / eyecare / streamlab / procman / floatwin + 悬浮窗）
+全部去掉硬编码颜色，改用 token 与 .tb-* 类。为此补齐了设计系统：
+.tb-list/.tb-row（选中用 aria-selected）、.tb-pane、.tb-tabs/.tb-tab、
+.tb-icon-btn、.tb-dot、.tb-t-*（意图文字色）、.tb-screen（全屏接管）、
+.tb-markdown（渲染后的 Markdown 没有任何类可挂，只能作用域元素选择器）、
+.tb-input-inline。
+
+两处需要单独说明：
+- eyecare 的休息遮罩原来是写死的深色，浅色主题下会是一块黑板；改用 .tb-screen。
+- procman 的 xterm 是 canvas，无法继承自定义属性，必须给它一个具体对象。
+  readTermTheme() 从 document 上读 token 构造（不再硬编码），并订阅主题变化
+  重新着色 —— 这是唯一一处 token 必须复制进 JS 的地方，复制品会被刷新而非冻结。
+- floatwin 悬浮窗是透明窗口，用 color-mix(token, transparent) 保留色相并加 alpha，
+  于是它自己就跟着主题变了，不需要一行 JS。
+
+三、把不变式变成测试（3 条，均已验证会变红）
+- theming: every colour token is defined in both themes
+  只往 @theme 加颜色、忘了浅色块 → 该颜色在浅色主题下仍是深色值，静默出错。
+- theming: every .tb-* class a plugin uses actually exists in the stylesheet
+  设计系统是类名的，代价是拼错的类名不会报错、只是不生效。这条把代价关掉。
+- theming: no plugin hard-codes a colour
+  插件里的 hex 就是无法跟随主题的颜色；唯一例外是 xterm 的 token 回退值，
+  该形式在校验前被剥离。
+
+另：上一轮那 4 个 procman 缺陷的修复已单独提交（737d5b5）。
+
+验证：tests 116/116 · cargo check --all-targets 零警告 · npm run build 通过。
