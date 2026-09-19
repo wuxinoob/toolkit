@@ -11,36 +11,35 @@
 /* =============================================================================
  * Toolbox design system
  *
- * FOUR layers, each with one job:
+ * THREE layers, each with one job:
  *
  *   1. CANONICAL VALUES (`:root` / `:root[data-theme='light']`)
- *      The app's own names, written once per theme. This is the only place a
- *      theme changes anything.
+ *      The actual colours, written once per theme, under **shadcn-vue's names**.
  *
- *   2. SHADCN COMPAT (`:root`)
- *      shadcn-vue components read ITS names directly in inline styles — sonner
- *      does `var(--popover)`, `var(--border)`, `var(--radius)`. Aliasing only
- *      the Tailwind side would leave those unresolved, so the upstream names
- *      are defined here as `var()` references to the canonical values. Being
- *      references, they follow the theme with nothing to keep in sync.
+ *      Whose names are canonical matters, and it is not a style preference:
+ *      a utility resolves to `var(--<canonical name>)`, so only a canonical name
+ *      can be overridden. shadcn components ALSO read these names directly in
+ *      inline styles (sonner does `var(--popover)`, `var(--radius)`), so they
+ *      have to exist as real custom properties regardless.
  *
- *   3. TAILWIND ALIASES (`@theme inline`)
+ *      The trap this avoids: making the project's names canonical and shadcn's
+ *      an alias. Then `--color-primary: var(--brand)`, so `bg-primary` compiles
+ *      to `var(--brand)` — and a plugin overriding `--primary` changes nothing.
+ *      The class looks override-able and silently is not.
+ *
+ *   2. TAILWIND ALIASES (`@theme inline`)
  *      Both vocabularies, pointing at the SAME canonical variable:
  *
- *        project   --color-canvas  / --color-brand / --color-ink
- *        shadcn    --color-background / --color-primary / --color-foreground
+ *        shadcn    --color-primary / --color-background / --color-foreground
+ *        project   --color-brand   / --color-canvas     / --color-ink
  *
- *      `inline` is what makes this work: the utility inlines the canonical
- *      variable (`bg-primary` → `background-color: var(--brand)`) instead of
+ *      `inline` is what makes it work: the utility inlines the canonical
+ *      variable (`bg-primary` → `background-color: var(--primary)`) instead of
  *      referencing `--color-primary`, so a theme override — or a per-plugin
  *      override of one subtree — flows through with no duplicated values.
  *      It is also what shadcn-vue itself recommends for v4.
  *
- *      Aliasing rather than duplicating is the point: two names for one value
- *      that are DEFINED AS the same variable cannot drift. Two names with
- *      copied hex values will.
- *
- *   4. PRIMITIVES (`@layer components`) — `.tb-btn`, `.tb-card`, …
+ *   3. PRIMITIVES (`@layer components`) — `.tb-btn`, `.tb-card`, …
  *      These read the Tailwind aliases, so the CSS-only vocabulary and the
  *      component vocabulary are provably the same colours. They matter because
  *      a plugin that hand-writes HTML still gets the app's look, and because
@@ -61,27 +60,35 @@
 /* ---------------------------- 1. canonical values -------------------------- */
 
 :root {
-  /* surfaces */
-  --canvas: #0e1015;
-  --surface: #151922;
-  --surface-2: #1b202b;
-  --line: #262c38;
+  /* shadcn-vue's vocabulary. Canonical on purpose — see the header. */
+  --background: #0e1015;
+  --foreground: #e7eaf0;
+  --card: #151922;
+  --card-foreground: #e7eaf0;
+  --popover: #151922;
+  --popover-foreground: #e7eaf0;
+  --primary: #6f9cf5;
+  --primary-foreground: #0b1020;
+  --secondary: #1b202b;
+  --secondary-foreground: #e7eaf0;
+  --muted: #1b202b;
+  --muted-foreground: #a4acbc;
+  --accent: #1b202b;
+  --accent-foreground: #e7eaf0;
+  --destructive: #ff8b9a;
+  --destructive-foreground: #2a0a10;
+  --border: #262c38;
+  --input: #262c38;
+  --ring: #6f9cf5;
+
+  /* The app's own extras — levels and intents shadcn has no name for. */
   --line-strong: #343c4c;
-
-  /* text */
-  --ink: #e7eaf0;
-  --ink-muted: #a4acbc;
   --ink-subtle: #6d7688;
-
-  /* intent */
-  --brand: #6f9cf5;
-  --brand-ink: #0b1020;
   --brand-hover: #8bb0f8;
-  --danger: #ff8b9a;
-  --danger-ink: #2a0a10;
   --success: #86e2a2;
-  --warn: #f0c674;
+  --warning: #f0c674;
 
+  --radius: 9px;
   --shadow-panel: 0 1px 2px rgb(0 0 0 / 0.35), 0 10px 28px rgb(0 0 0 / 0.22);
 }
 
@@ -91,100 +98,78 @@
    from a canonical variable, it will be wrong in one of the two themes — that
    is the invariant `tests/plugins.test.mjs` enforces. */
 :root[data-theme='light'] {
-  --canvas: #f4f6fa;
-  --surface: #ffffff;
-  --surface-2: #eef1f7;
-  --line: #dfe4ee;
-  --line-strong: #c3cbdb;
-
-  --ink: #171a21;
-  --ink-muted: #565f72;
-  --ink-subtle: #838b9c;
-
+  --background: #f4f6fa;
+  --foreground: #171a21;
+  --card: #ffffff;
+  --card-foreground: #171a21;
+  --popover: #ffffff;
+  --popover-foreground: #171a21;
   /* The brand has to be darker to hold contrast on white; the dark theme's
      #6f9cf5 is a highlight colour and fails as text on a light surface. */
-  --brand: #2f6bd8;
-  --brand-ink: #ffffff;
+  --primary: #2f6bd8;
+  --primary-foreground: #ffffff;
+  --secondary: #eef1f7;
+  --secondary-foreground: #171a21;
+  --muted: #eef1f7;
+  --muted-foreground: #565f72;
+  --accent: #eef1f7;
+  --accent-foreground: #171a21;
+  --destructive: #c93a52;
+  --destructive-foreground: #ffffff;
+  --border: #dfe4ee;
+  --input: #dfe4ee;
+  --ring: #2f6bd8;
+
+  --line-strong: #c3cbdb;
+  --ink-subtle: #838b9c;
   --brand-hover: #245bc0;
-  --danger: #c93a52;
-  --danger-ink: #ffffff;
   --success: #1c8a4b;
-  --warn: #8f6400;
+  --warning: #8f6400;
 
   --shadow-panel: 0 1px 2px rgb(16 24 40 / 0.06), 0 10px 28px rgb(16 24 40 / 0.08);
 }
 
-/* --------------------------- 2. shadcn compat names ------------------------ */
-
-/* Upstream's variable names, as references to the canonical ones. shadcn-vue
-   components use these in inline styles as well as in utility classes, so they
-   have to exist as real custom properties under exactly these names.
-   `--radius` is the one value with no theme dimension. */
-:root {
-  --background: var(--canvas);
-  --foreground: var(--ink);
-  --card: var(--surface);
-  --card-foreground: var(--ink);
-  --popover: var(--surface);
-  --popover-foreground: var(--ink);
-  --primary: var(--brand);
-  --primary-foreground: var(--brand-ink);
-  --secondary: var(--surface-2);
-  --secondary-foreground: var(--ink);
-  --muted: var(--surface-2);
-  --muted-foreground: var(--ink-muted);
-  --accent: var(--surface-2);
-  --accent-foreground: var(--ink);
-  --destructive: var(--danger);
-  --destructive-foreground: var(--danger-ink);
-  --border: var(--line);
-  --input: var(--line);
-  --ring: var(--brand);
-
-  --radius: 9px;
-}
-
-/* ---------------------------- 3. tailwind aliases -------------------------- */
+/* ---------------------------- 2. tailwind aliases -------------------------- */
 
 @theme inline {
-  /* project vocabulary */
-  --color-canvas: var(--canvas);
-  --color-surface: var(--surface);
-  --color-surface-2: var(--surface-2);
-  --color-line: var(--line);
-  --color-line-strong: var(--line-strong);
-  --color-ink: var(--ink);
-  --color-ink-muted: var(--ink-muted);
-  --color-ink-subtle: var(--ink-subtle);
-  --color-brand: var(--brand);
-  --color-brand-ink: var(--brand-ink);
-  --color-brand-hover: var(--brand-hover);
-  --color-danger: var(--danger);
-  --color-success: var(--success);
-  --color-warn: var(--warn);
+  /* shadcn vocabulary — every one of these is a name a plugin may override. */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
 
-  /* shadcn vocabulary — deliberately pointing at the SAME canonical variable as
-     its project counterpart above, never at the compat name. One target means
+  /* project vocabulary — deliberately pointing at the SAME canonical variable
+     as its shadcn counterpart above, never at a second copy. One target means
      the two cannot drift; `tests/plugins.test.mjs` pins the pairs. */
-  --color-background: var(--canvas);
-  --color-foreground: var(--ink);
-  --color-card: var(--surface);
-  --color-card-foreground: var(--ink);
-  --color-popover: var(--surface);
-  --color-popover-foreground: var(--ink);
-  --color-primary: var(--brand);
-  --color-primary-foreground: var(--brand-ink);
-  --color-secondary: var(--surface-2);
-  --color-secondary-foreground: var(--ink);
-  --color-muted: var(--surface-2);
-  --color-muted-foreground: var(--ink-muted);
-  --color-accent: var(--surface-2);
-  --color-accent-foreground: var(--ink);
-  --color-destructive: var(--danger);
-  --color-destructive-foreground: var(--danger-ink);
-  --color-border: var(--line);
-  --color-input: var(--line);
-  --color-ring: var(--brand);
+  --color-canvas: var(--background);
+  --color-surface: var(--card);
+  --color-surface-2: var(--secondary);
+  --color-line: var(--border);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--foreground);
+  --color-ink-muted: var(--muted-foreground);
+  --color-ink-subtle: var(--ink-subtle);
+  --color-brand: var(--primary);
+  --color-brand-ink: var(--primary-foreground);
+  --color-brand-hover: var(--brand-hover);
+  --color-danger: var(--destructive);
+  --color-success: var(--success);
+  --color-warn: var(--warning);
 
   /* shape. Written out rather than derived from `--radius` with calc(): the
      existing scale (6/9/13) is what `.tb-*` and every plugin already render

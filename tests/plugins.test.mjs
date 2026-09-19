@@ -546,35 +546,17 @@ function readThemeBlocks() {
     }
     return css.slice(open + 1, i);
   };
-  // `:root { … }` — anchored so it does not also match `:root[data-theme=…]`
-  const dark = block(/^:root\s*\{/m);
-  const light = block(/^:root\[data-theme='light'\]\s*\{/m);
-  const aliases = block(/@theme\s+inline\s*\{/);
-  // The shadcn compat block is the SECOND `:root { … }`. It exists because
-  // components read upstream's names in inline styles (sonner does
-  // `var(--popover)`), so those names have to be real custom properties.
-  const allRoots = [...css.matchAll(/^:root\s*\{/gm)];
-  const compatBody = allRoots[1]
-    ? (() => {
-        const open = css.indexOf('{', allRoots[1].index);
-        let depth = 0;
-        let i = open;
-        for (; i < css.length; i++) {
-          if (css[i] === '{') depth += 1;
-          else if (css[i] === '}') {
-            depth -= 1;
-            if (depth === 0) break;
-          }
-        }
-        return css.slice(open + 1, i);
-      })()
-    : '';
   const decls = (body) => {
     const out = new Map();
     for (const m of body.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/gi)) out.set(m[1], m[2].trim());
     return out;
   };
-  return { dark: decls(dark), light: decls(light), aliases: decls(aliases), compat: decls(compatBody) };
+  return {
+    // `:root { … }` — anchored so it does not also match `:root[data-theme=…]`
+    dark: decls(block(/^:root\s*\{/m)),
+    light: decls(block(/^:root\[data-theme='light'\]\s*\{/m)),
+    aliases: decls(block(/@theme\s+inline\s*\{/)),
+  };
 }
 
 test('theming: every colour alias resolves to a raw variable defined in both themes', () => {
@@ -606,61 +588,58 @@ test('theming: every colour alias resolves to a raw variable defined in both the
   );
 });
 
-test('theming: every shadcn compat name resolves to a canonical variable', () => {
-  // The compat block exists because shadcn-vue components read upstream's names
-  // in INLINE STYLES, not just utility classes — sonner does `var(--popover)`,
-  // `var(--border)`, `var(--radius)`. A Tailwind alias alone would not help
-  // there: an unresolved custom property makes the declaration invalid at
-  // computed-value time, so the element silently falls back to whatever it
-  // inherited. That is a very quiet way for a dialog to lose its background.
-  const { dark, light, compat } = readThemeBlocks();
-  assert.ok(compat.size >= 15, 'expected a shadcn compat block in app.css');
-
+test('theming: every variable a utility resolves to holds a value, not another alias', () => {
+  // This is the invariant that makes overrides WORK, and it is easy to get
+  // backwards. A utility compiles to `var(<canonical name>)`. So if the
+  // canonical name is itself `var(--something-else)`, overriding it does
+  // nothing: the class looks override-able and silently is not.
+  //
+  // That was a real bug here. With the project's names canonical,
+  // `--color-primary` resolved to `var(--brand)`, so `bg-primary` became
+  // `var(--brand)` — and a plugin setting `--primary` (as every shadcn doc
+  // says to) changed no colour at all. The fix is that shadcn's names hold the
+  // values and the project's names are the aliases; this test keeps it that way.
+  const { dark, aliases } = readThemeBlocks();
   const problems = [];
-  for (const [name, value] of compat) {
-    const target = value.match(/^var\((--[a-z0-9-]+)\)$/i)?.[1];
-    // `--radius` is a plain length with no theme dimension, and is allowed.
-    if (!target) {
-      if (!/^[\d.]+(px|rem|em)$/.test(value)) {
-        problems.push(`${name}: ${value} is neither a var() alias nor a plain length`);
-      }
+  const targets = new Set();
+  for (const value of aliases.values()) {
+    const t = value.match(/^var\((--[a-z0-9-]+)\)$/i)?.[1];
+    if (t) targets.add(t);
+  }
+  assert.ok(targets.size >= 20, 'expected the aliases to resolve to a real token set');
+
+  for (const name of targets) {
+    const value = dark.get(name);
+    if (value === undefined) {
+      problems.push(`${name} is referenced by @theme but not defined in :root`);
       continue;
     }
-    if (!dark.has(target)) problems.push(`${name} -> ${target}, which :root does not define`);
-    else if (!light.has(target)) problems.push(`${name} -> ${target}, missing from the light theme`);
+    if (/^var\(/i.test(value)) {
+      problems.push(`${name} is itself an alias (${value}) — overriding it would change nothing`);
+    }
   }
-
-  assert.deepEqual(problems, [], `shadcn compat names that do not resolve:\n  ${problems.join('\n  ')}`);
-
-  // And the three names the components actually read in inline styles must be
-  // present by name — this is the specific regression that would break sonner.
-  for (const required of ['--popover', '--popover-foreground', '--border', '--radius']) {
-    assert.ok(compat.has(required), `${required} is read by shadcn components in inline styles`);
-  }
+  assert.deepEqual(
+    problems,
+    [],
+    `tokens that a utility cannot actually be overridden through://n  ${problems.join('\n  ')}`,
+  );
 });
 
 test('theming: the two vocabularies cover the same raw variables', () => {
   // The project vocabulary (`--color-brand`) and the shadcn vocabulary
-  // (`--color-primary`) must be aliases of the SAME raw variable, not copies.
-  // If someone "fixes" a colour by editing one of them to a literal, the two
-  // drift and the app ends up with two blues. This pins the pairs that matter.
+  // (`--color-primary`) must resolve to the SAME canonical variable, not to two
+  // copies. If someone "fixes" a colour by editing one side to a literal, the
+  // two drift and the app ends up with two blues.
   const { aliases } = readThemeBlocks();
   const pairs = [
     ['--color-brand', '--color-primary'],
     ['--color-brand-ink', '--color-primary-foreground'],
     ['--color-canvas', '--color-background'],
     ['--color-surface', '--color-card'],
-    ['--color-surface', '--color-popover'],
     ['--color-surface-2', '--color-secondary'],
-    ['--color-surface-2', '--color-muted'],
-    ['--color-surface-2', '--color-accent'],
     ['--color-ink', '--color-foreground'],
-    ['--color-ink', '--color-card-foreground'],
-    ['--color-ink', '--color-secondary-foreground'],
     ['--color-ink-muted', '--color-muted-foreground'],
     ['--color-line', '--color-border'],
-    ['--color-line', '--color-input'],
-    ['--color-brand', '--color-ring'],
     ['--color-danger', '--color-destructive'],
   ];
   const drift = [];
@@ -671,7 +650,44 @@ test('theming: the two vocabularies cover the same raw variables', () => {
       drift.push(`${a} = ${aliases.get(a)}  but  ${b} = ${aliases.get(b)}`);
     }
   }
-  assert.deepEqual(drift, [], `the two vocabularies have drifted apart:\n  ${drift.join('\n  ')}`);
+  assert.deepEqual(drift, [], `the two vocabularies have drifted apart://n  ${drift.join('\n  ')}`);
+});
+
+test('theming: tokens that share a role stay in sync within a theme', () => {
+  // Several shadcn tokens describe the SAME visual role in this app: it has one
+  // raised surface, not three, so `--card`, `--popover`, `--secondary`,
+  // `--muted` and `--accent` are all the same colour.
+  //
+  // They are deliberately SEPARATE variables rather than aliases, because a
+  // token a utility resolves to must hold its own value or overriding it does
+  // nothing (see the test above). The cost of that choice is duplicated values,
+  // and the risk is drift: edit `--card` and the app quietly grows a second
+  // surface colour. This pins the intent. A plugin may still override any ONE
+  // of them — that is the point of them being separate.
+  const { dark, light } = readThemeBlocks();
+  const groups = [
+    ['--card', '--popover'],
+    ['--foreground', '--card-foreground', '--secondary-foreground', '--accent-foreground'],
+    ['--secondary', '--muted', '--accent'],
+    ['--border', '--input'],
+    ['--primary', '--ring'],
+  ];
+  const drift = [];
+  for (const [themeName, block] of [['dark', dark], ['light', light]]) {
+    for (const group of groups) {
+      const values = group.map((n) => [n, block.get(n)]);
+      const missing = values.filter(([, v]) => v === undefined).map(([n]) => n);
+      if (missing.length) {
+        drift.push(`${themeName}: ${missing.join(', ')} not defined`);
+        continue;
+      }
+      const first = values[0][1];
+      for (const [n, v] of values) {
+        if (v !== first) drift.push(`${themeName}: ${n} = ${v} but ${group[0]} = ${first}`);
+      }
+    }
+  }
+  assert.deepEqual(drift, [], `roles that should be one colour have drifted://n  ${drift.join('\n  ')}`);
 });
 
 test('theming: the dark: variant is redirected to data-theme, not the OS', () => {

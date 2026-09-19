@@ -17,7 +17,15 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { register } from 'node:module';
 import { readFileSync } from 'node:fs';
+
+// `lifecycle.js` now pulls in the component factory (host/ui.js -> Vue SFCs +
+// `import.meta.glob`), none of which Node can resolve. The stub loader fakes the
+// rendering but keeps every tag name real, so the kernel tests still exercise
+// the actual activation path.
+register('./browser-stubs-loader.mjs', import.meta.url);
+
 
 const MANIFEST = JSON.parse(
   readFileSync(new URL('../src-tauri/gen/schemas/acl-manifests.json', import.meta.url), 'utf8'),

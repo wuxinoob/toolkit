@@ -86,6 +86,75 @@ lock.registry = REGISTRY;
 lock.pulledAt = new Date().toISOString();
 
 /**
+ * Rewrite the registry's internal import paths to the project's aliases.
+ *
+ * The registry ships components that import each other by their REGISTRY path,
+ * e.g. `dialog/DialogFooter.vue` does
+ * `import { Button } from "@/registry/new-york-v4/ui/button"` — which does not
+ * exist in a real project. The official CLI rewrites these while writing; we
+ * materialise files ourselves, so we have to do the same. Without it the build
+ * fails with a confusing "could not load src/registry/…".
+ */
+function rewriteRegistryPaths(content) {
+  return content.replace(/@\/registry\/[^/]+\/ui\//g, '@/components/ui/');
+}
+
+/**
+ * Local patches, applied to the pulled content on EVERY run.
+ *
+ * A warning is not enough: a re-pull overwrites the working file, so a patch
+ * that is merely *tracked* gets silently reverted the next time someone runs
+ * this script. (That happened while writing this — hence the design.) Making the
+ * patch a transformation means a pull is idempotent and the patch cannot be
+ * lost, and because it re-runs on fresh upstream content it also cannot rot.
+ *
+ * `forwardPortalTo` exists because reka-ui's portals teleport to `document.body`
+ * by default, which puts plugin popups OUTSIDE the plugin's `[data-plugin]`
+ * scope — so `contributes.theme` would style a plugin's button but not its own
+ * dropdown ("purple button, blue menu"). The upstream wrappers don't forward the
+ * portal target, so we add it.
+ */
+function forwardPortalTo(content, { portalTag, propsType }) {
+  // Regex, not an exact string: upstream's props blocks differ per component
+  // (DialogContent already carries `showCloseButton`), and an exact match that
+  // silently misses leaves a template referencing an undeclared prop — which
+  // looks like it works, and quietly portals to <body>.
+  const propsRe = new RegExp(`defineProps<\\s*${propsType}\\s*&\\s*\\{([^}]*)\\}\\s*>`);
+  let out = content.replace(propsRe, (_m, inner) => {
+    const cleaned = inner.trim().replace(/[;,]\s*$/, '');
+    return `defineProps<${propsType} & { ${cleaned}; portalTo?: string }>`;
+  });
+  // It belongs on the Portal, not on the content element — keep it out of the
+  // props that get forwarded there, or it lands as an invalid DOM attribute.
+  out = out.replace('reactiveOmit(props, "class")', 'reactiveOmit(props, "class", "portalTo")');
+  out = out.replace(`<${portalTag}>`, `<${portalTag} :to="props.portalTo">`);
+
+  // All three edits must land. Checking only for the string "portalTo" would
+  // pass on a partial patch — which is exactly the bug this replaces.
+  const missing = [];
+  if (!out.includes('portalTo?: string')) missing.push('props declaration');
+  if (!out.includes('"portalTo")')) missing.push('reactiveOmit');
+  if (!out.includes(`:to="props.portalTo"`)) missing.push(`${portalTag} target`);
+  if (missing.length) {
+    throw new Error(
+      `forwardPortalTo(${propsType}): could not patch ${missing.join(', ')} — upstream shape changed`,
+    );
+  }
+  return out;
+}
+
+const LOCAL_PATCHES = {
+  'select/SelectContent.vue': {
+    why: 'forwards portalTo to SelectPortal so a plugin dropdown stays theme-scoped',
+    apply: (src) => forwardPortalTo(src, { portalTag: 'SelectPortal', propsType: 'SelectContentProps' }),
+  },
+  'dialog/DialogContent.vue': {
+    why: 'forwards portalTo to DialogPortal so a plugin dialog stays theme-scoped',
+    apply: (src) => forwardPortalTo(src, { portalTag: 'DialogPortal', propsType: 'DialogContentProps' }),
+  },
+};
+
+/**
  * Bare imports actually present in the written files.
  *
  * The registry's own `dependencies` field is NOT trustworthy: `button` declares
@@ -110,6 +179,7 @@ const NOT_A_DEP = new Set(['vue']);
 
 const deps = new Set();
 const summary = [];
+const warnings = [];
 
 for (const name of components) {
   let entry;
@@ -144,15 +214,30 @@ for (const name of components) {
       continue;
     }
 
+    let content = rewriteRegistryPaths(file.content);
+    if (LOCAL_PATCHES[rel]) content = LOCAL_PATCHES[rel].apply(content);
     const hash = createHash('sha256').update(file.content).digest('hex').slice(0, 12);
     const before = existsSync(dest) ? readFileSync(dest, 'utf8') : null;
+    // What upstream looked like at the LAST pull. Comparing against this (rather
+    // than against the working file) is what lets a patched file differ from
+    // upstream without crying wolf every run: a local patch is expected, an
+    // upstream move is the thing that needs a human.
+    const upstreamBefore = lock.files[rel]?.sha256 ?? null;
     if (before === null) added += 1;
-    else if (before !== file.content) changed += 1;
+    else if (before !== content) changed += 1;
     else same += 1;
 
+    if (LOCAL_PATCHES[rel] && upstreamBefore && upstreamBefore !== hash) {
+      // The patch re-applied cleanly (it throws otherwise), but a human should
+      // still confirm it still means what it meant.
+      warnings.push(
+        `${rel}: upstream moved ${upstreamBefore} -> ${hash}; the local patch re-applied (${LOCAL_PATCHES[rel].why}) — please review`,
+      );
+    }
+
     mkdirSync(path.dirname(dest), { recursive: true });
-    writeFileSync(dest, file.content, 'utf8');
-    bareImportsIn(rel, file.content, deps);
+    writeFileSync(dest, content, 'utf8');
+    bareImportsIn(rel, content, deps);
     lock.files[rel] = { component: name, sha256: hash };
   }
 
@@ -172,3 +257,8 @@ for (const s of summary) {
 console.log('');
 console.log(`npm dependencies needed: ${[...deps].filter((d) => !NOT_A_DEP.has(d)).sort().join(', ')}`);
 console.log(`lockfile written: src/components/ui/.shadcn-lock.json`);
+if (warnings.length) {
+  console.log('');
+  console.log('!! locally patched files that upstream also changed:');
+  for (const w of warnings) console.log(`   ${w}`);
+}

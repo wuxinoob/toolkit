@@ -6,6 +6,7 @@ import { events } from './events.js';
 import { hub } from '../protocol/hub.js';
 import { HOST_API } from '../protocol/contract.js';
 import { applyPluginTheme, clearPluginTheme } from './pluginTheme.js';
+import { loadUiKit } from './ui.js';
 
 /** Host identity: used for calls the host makes on a plugin's behalf. */
 const HOST_ID = '__host__';
@@ -142,6 +143,10 @@ function applyThemeContribution(plugin, ctx) {
 export async function activate(plugin, { silent = false } = {}) {
   if (plugin._ctx) return; // already active
   try {
+    // The component factory is loaded ONCE, before any plugin activates, so a
+    // plugin's `ctx.ui.el(...)` can stay synchronous — a plugin builds its DOM
+    // inside a synchronous render callback.
+    await loadUiKit();
     const disposer = new Disposer();
     const ctx = buildCtx(plugin, disposer);
     plugin._disposer = disposer;

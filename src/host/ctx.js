@@ -7,6 +7,7 @@ import { Capability, assertSupports } from '../protocol/registry.js';
 import { protocolContract } from '../protocol/contract.js';
 import { store, toast } from './store.js';
 import { PLUGIN_ATTR } from './pluginTheme.js';
+import { createUiKit } from './ui.js';
 
 /**
  * Build the Host SDK object ("ctx") handed to each plugin on activate.
@@ -180,6 +181,10 @@ export function buildCtx(plugin, disposer) {
         store.overlayEl.appendChild(el);
       },
       unmountOverlay: (el) => el?.remove(),
+
+      // The component factory (see host/ui.js). Spread last so a future kit
+      // method cannot be shadowed by the three above by accident.
+      ...createUiKit({ track: (fn) => disposer.track(fn) }),
     },
 
     /** Multi-window control (second layer of enforcement: the Tauri ACL). */
