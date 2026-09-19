@@ -1,0 +1,262 @@
+{
+  "registry": "https://shadcn-vue.com/r/styles/new-york-v4",
+  "files": {
+    "button/Button.vue": {
+      "component": "button",
+      "sha256": "7e4d659bcbdf"
+    },
+    "button/index.ts": {
+      "component": "button",
+      "sha256": "1710820182b3"
+    },
+    "card/Card.vue": {
+      "component": "card",
+      "sha256": "f792a0180d90"
+    },
+    "card/CardAction.vue": {
+      "component": "card",
+      "sha256": "96b31cf6e550"
+    },
+    "card/CardContent.vue": {
+      "component": "card",
+      "sha256": "c0dc7b82968f"
+    },
+    "card/CardDescription.vue": {
+      "component": "card",
+      "sha256": "b83461e0570a"
+    },
+    "card/CardFooter.vue": {
+      "component": "card",
+      "sha256": "8ca42fe06a37"
+    },
+    "card/CardHeader.vue": {
+      "component": "card",
+      "sha256": "eb9540756f3f"
+    },
+    "card/CardTitle.vue": {
+      "component": "card",
+      "sha256": "be1c63549fbb"
+    },
+    "card/index.ts": {
+      "component": "card",
+      "sha256": "4b49e6713f4c"
+    },
+    "input/Input.vue": {
+      "component": "input",
+      "sha256": "795ead249ae5"
+    },
+    "input/index.ts": {
+      "component": "input",
+      "sha256": "ba728db29f97"
+    },
+    "label/Label.vue": {
+      "component": "label",
+      "sha256": "6bb2e95050b0"
+    },
+    "label/index.ts": {
+      "component": "label",
+      "sha256": "66c26173360b"
+    },
+    "badge/Badge.vue": {
+      "component": "badge",
+      "sha256": "248ec80e93ea"
+    },
+    "badge/index.ts": {
+      "component": "badge",
+      "sha256": "40059c209ec5"
+    },
+    "table/Table.vue": {
+      "component": "table",
+      "sha256": "6f2598364646"
+    },
+    "table/TableBody.vue": {
+      "component": "table",
+      "sha256": "5dded3bc5292"
+    },
+    "table/TableCaption.vue": {
+      "component": "table",
+      "sha256": "a41eb7261757"
+    },
+    "table/TableCell.vue": {
+      "component": "table",
+      "sha256": "cd3798e65d53"
+    },
+    "table/TableEmpty.vue": {
+      "component": "table",
+      "sha256": "cacf4996d740"
+    },
+    "table/TableFooter.vue": {
+      "component": "table",
+      "sha256": "84aafcde0a7f"
+    },
+    "table/TableHead.vue": {
+      "component": "table",
+      "sha256": "fc9398ef6d3b"
+    },
+    "table/TableHeader.vue": {
+      "component": "table",
+      "sha256": "d94790397845"
+    },
+    "table/TableRow.vue": {
+      "component": "table",
+      "sha256": "63664eb8a631"
+    },
+    "table/index.ts": {
+      "component": "table",
+      "sha256": "3913c7028c3e"
+    },
+    "separator/Separator.vue": {
+      "component": "separator",
+      "sha256": "8a90c981f04c"
+    },
+    "separator/index.ts": {
+      "component": "separator",
+      "sha256": "fcd7839dc204"
+    },
+    "textarea/Textarea.vue": {
+      "component": "textarea",
+      "sha256": "7dca60ac7225"
+    },
+    "textarea/index.ts": {
+      "component": "textarea",
+      "sha256": "921258798897"
+    },
+    "skeleton/Skeleton.vue": {
+      "component": "skeleton",
+      "sha256": "c48185bdb2db"
+    },
+    "skeleton/index.ts": {
+      "component": "skeleton",
+      "sha256": "76c65d13242f"
+    },
+    "spinner/Spinner.vue": {
+      "component": "spinner",
+      "sha256": "075e54257c5f"
+    },
+    "spinner/index.ts": {
+      "component": "spinner",
+      "sha256": "cc089f08a8d3"
+    },
+    "select/Select.vue": {
+      "component": "select",
+      "sha256": "0a100251a7ad"
+    },
+    "select/SelectContent.vue": {
+      "component": "select",
+      "sha256": "1958bd988275"
+    },
+    "select/SelectGroup.vue": {
+      "component": "select",
+      "sha256": "d75787597511"
+    },
+    "select/SelectItem.vue": {
+      "component": "select",
+      "sha256": "ce56735858e2"
+    },
+    "select/SelectItemText.vue": {
+      "component": "select",
+      "sha256": "76ad26caa4ad"
+    },
+    "select/SelectLabel.vue": {
+      "component": "select",
+      "sha256": "84b0cac44a84"
+    },
+    "select/SelectScrollDownButton.vue": {
+      "component": "select",
+      "sha256": "f2482084f7a3"
+    },
+    "select/SelectScrollUpButton.vue": {
+      "component": "select",
+      "sha256": "e5d43cce73a0"
+    },
+    "select/SelectSeparator.vue": {
+      "component": "select",
+      "sha256": "f887abb6d269"
+    },
+    "select/SelectTrigger.vue": {
+      "component": "select",
+      "sha256": "ffc3152eaa1b"
+    },
+    "select/SelectValue.vue": {
+      "component": "select",
+      "sha256": "ab6a9b14358e"
+    },
+    "select/index.ts": {
+      "component": "select",
+      "sha256": "700c60f2ee03"
+    },
+    "checkbox/Checkbox.vue": {
+      "component": "checkbox",
+      "sha256": "051c9532dc7f"
+    },
+    "checkbox/index.ts": {
+      "component": "checkbox",
+      "sha256": "5348cc51dbc0"
+    },
+    "switch/Switch.vue": {
+      "component": "switch",
+      "sha256": "fa34a3e41056"
+    },
+    "switch/index.ts": {
+      "component": "switch",
+      "sha256": "77041a4a0e96"
+    },
+    "slider/Slider.vue": {
+      "component": "slider",
+      "sha256": "9dc065c331ac"
+    },
+    "slider/index.ts": {
+      "component": "slider",
+      "sha256": "d0c564c01d7b"
+    },
+    "tabs/Tabs.vue": {
+      "component": "tabs",
+      "sha256": "238d07f2c876"
+    },
+    "tabs/TabsContent.vue": {
+      "component": "tabs",
+      "sha256": "7507c728a492"
+    },
+    "tabs/TabsList.vue": {
+      "component": "tabs",
+      "sha256": "0ef4e8ccf104"
+    },
+    "tabs/TabsTrigger.vue": {
+      "component": "tabs",
+      "sha256": "e7f5f6bfcce4"
+    },
+    "tabs/index.ts": {
+      "component": "tabs",
+      "sha256": "5e98735f9058"
+    },
+    "scroll-area/ScrollArea.vue": {
+      "component": "scroll-area",
+      "sha256": "63467286c4d5"
+    },
+    "scroll-area/ScrollBar.vue": {
+      "component": "scroll-area",
+      "sha256": "e9b8f7782229"
+    },
+    "scroll-area/index.ts": {
+      "component": "scroll-area",
+      "sha256": "e158441de429"
+    },
+    "collapsible/Collapsible.vue": {
+      "component": "collapsible",
+      "sha256": "406994e9c3a4"
+    },
+    "collapsible/CollapsibleContent.vue": {
+      "component": "collapsible",
+      "sha256": "2181117891ba"
+    },
+    "collapsible/CollapsibleTrigger.vue": {
+      "component": "collapsible",
+      "sha256": "4f8db2f40161"
+    },
+    "collapsible/index.ts": {
+      "component": "collapsible",
+      "sha256": "a34935867d65"
+    }
+  },
+  "pulledAt": "2026-09-19T10:09:53.594Z"
+}

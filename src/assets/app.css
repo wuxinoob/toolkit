@@ -1,83 +1,153 @@
 @import 'tailwindcss';
+@import 'tw-animate-css';
 
 /* =============================================================================
  * Toolbox design system
  *
- * Two layers, on purpose:
+ * THREE layers, on purpose:
  *
- *   1. TOKENS (`@theme`) — one place that decides what the app looks like.
- *      A colour, radius or shadow changes here and every surface follows.
+ *   1. RAW VALUES (`:root` / `:root[data-theme='light']`) — the actual colours,
+ *      written once per theme. This is the only place a theme changes anything.
  *
- *   2. PRIMITIVES (`@layer components`) — `.tb-btn`, `.tb-card`, `.tb-input`, …
- *      These are plain CSS classes in the global stylesheet, which matters more
- *      than it sounds: **external plugins are loaded from a Blob URL as a
- *      single-file ESM and cannot import anything**, so a JS component library
- *      (shadcn-vue, HeroUI, …) can never reach them. Classes can. A plugin that
- *      uses `.tb-card` looks native without shipping a stylesheet of its own.
+ *   2. ALIASES (`@theme inline`) — Tailwind's view of those values. Two naming
+ *      systems live here side by side and both point at the SAME raw variable:
  *
- * Utilities (Tailwind) are for the host shell and builtin plugins, which ARE
- * bundled and can use them freely.
+ *        project vocabulary   --color-canvas / --color-brand / --color-ink
+ *        shadcn vocabulary    --color-background / --color-primary / --color-foreground
+ *
+ *      `inline` is what makes this work: the utility inlines the raw variable
+ *      (`bg-primary` → `background-color: var(--brand)`) instead of referencing
+ *      `--color-primary`, so overriding `--brand` for a theme or for a single
+ *      plugin subtree flows through with no duplicated values and no second
+ *      place to update. It is also what shadcn-vue itself recommends for v4.
+ *
+ *      Aliasing rather than duplicating is the point: two names for one value
+ *      that are *defined as* the same variable cannot drift. Two names with
+ *      copied hex values will.
+ *
+ *   3. PRIMITIVES (`@layer components`) — `.tb-btn`, `.tb-card`, …
+ *      These read the RAW variables, not the aliases, so the CSS-only
+ *      vocabulary and the component vocabulary are provably the same colours.
+ *      They matter because a plugin that hand-writes HTML (rather than calling
+ *      the component factory) still gets the app's look, and because
+ *      **external plugins are Blob-URL single-file ESM and cannot import
+ *      anything** — classes reach them, JS does not.
  *
  * Two themes, one token set. A theme is `data-theme` on <html> — see
  * `src/host/theme.js`. Nothing swaps stylesheets, which is the only way a
- * Blob-URL plugin (which cannot import anything) can be themed at all: it
- * inherits the custom properties for free.
+ * Blob-URL plugin can be themed at all: it inherits the custom properties.
  * ========================================================================== */
 
-@theme {
+/* Tailwind's `dark:` variant keys off `prefers-color-scheme` by default, but
+   this app's theme is the `data-theme` attribute. Without this redirect every
+   `dark:` class inside a shadcn-vue component would follow the OS instead of
+   the app, and the light theme would render half of each component dark. */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/* ------------------------------- raw values ------------------------------- */
+
+:root {
   /* surfaces */
-  --color-canvas: #0e1015;
-  --color-surface: #151922;
-  --color-surface-2: #1b202b;
-  --color-line: #262c38;
-  --color-line-strong: #343c4c;
+  --canvas: #0e1015;
+  --surface: #151922;
+  --surface-2: #1b202b;
+  --line: #262c38;
+  --line-strong: #343c4c;
 
   /* text */
-  --color-ink: #e7eaf0;
-  --color-ink-muted: #a4acbc;
-  --color-ink-subtle: #6d7688;
+  --ink: #e7eaf0;
+  --ink-muted: #a4acbc;
+  --ink-subtle: #6d7688;
 
   /* intent */
-  --color-brand: #6f9cf5;
-  --color-brand-ink: #0b1020;
-  --color-brand-hover: #8bb0f8;
-  --color-danger: #ff8b9a;
-  --color-success: #86e2a2;
-  --color-warn: #f0c674;
+  --brand: #6f9cf5;
+  --brand-ink: #0b1020;
+  --brand-hover: #8bb0f8;
+  --danger: #ff8b9a;
+  --danger-ink: #2a0a10;
+  --success: #86e2a2;
+  --warn: #f0c674;
 
-  /* shape */
-  --radius-sm: 6px;
-  --radius-md: 9px;
-  --radius-lg: 13px;
   --shadow-panel: 0 1px 2px rgb(0 0 0 / 0.35), 0 10px 28px rgb(0 0 0 / 0.22);
 }
 
-/* The light theme overrides the SAME tokens and nothing else. `:root[...]` is
-   specificity (0,2,0) against `:root`'s (0,1,0), so this wins regardless of
-   layer order. If a colour is hard-coded anywhere below this block instead of
-   read from a token, it will be wrong in one of the two themes — that is the
-   invariant to keep. */
+/* The light theme overrides the SAME raw names and nothing else. `:root[...]`
+   is specificity (0,2,0) against `:root`'s (0,1,0), so this wins regardless of
+   layer order. If a colour is hard-coded anywhere instead of read from a raw
+   variable, it will be wrong in one of the two themes — that is the invariant
+   `tests/plugins.test.mjs` enforces. */
 :root[data-theme='light'] {
-  --color-canvas: #f4f6fa;
-  --color-surface: #ffffff;
-  --color-surface-2: #eef1f7;
-  --color-line: #dfe4ee;
-  --color-line-strong: #c3cbdb;
+  --canvas: #f4f6fa;
+  --surface: #ffffff;
+  --surface-2: #eef1f7;
+  --line: #dfe4ee;
+  --line-strong: #c3cbdb;
 
-  --color-ink: #171a21;
-  --color-ink-muted: #565f72;
-  --color-ink-subtle: #838b9c;
+  --ink: #171a21;
+  --ink-muted: #565f72;
+  --ink-subtle: #838b9c;
 
   /* The brand has to be darker to hold contrast on white; the dark theme's
      #6f9cf5 is a highlight colour and fails as text on a light surface. */
-  --color-brand: #2f6bd8;
-  --color-brand-ink: #ffffff;
-  --color-brand-hover: #245bc0;
-  --color-danger: #c93a52;
-  --color-success: #1c8a4b;
-  --color-warn: #8f6400;
+  --brand: #2f6bd8;
+  --brand-ink: #ffffff;
+  --brand-hover: #245bc0;
+  --danger: #c93a52;
+  --danger-ink: #ffffff;
+  --success: #1c8a4b;
+  --warn: #8f6400;
 
   --shadow-panel: 0 1px 2px rgb(16 24 40 / 0.06), 0 10px 28px rgb(16 24 40 / 0.08);
+}
+
+/* -------------------------------- aliases --------------------------------- */
+
+@theme inline {
+  /* project vocabulary */
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-subtle: var(--ink-subtle);
+  --color-brand: var(--brand);
+  --color-brand-ink: var(--brand-ink);
+  --color-brand-hover: var(--brand-hover);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --color-warn: var(--warn);
+
+  /* shadcn-vue vocabulary — the same raw variables under upstream's names, so
+     a component dropped in from the registry is themed without being edited. */
+  --color-background: var(--canvas);
+  --color-foreground: var(--ink);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--ink);
+  --color-popover: var(--surface);
+  --color-popover-foreground: var(--ink);
+  --color-primary: var(--brand);
+  --color-primary-foreground: var(--brand-ink);
+  --color-secondary: var(--surface-2);
+  --color-secondary-foreground: var(--ink);
+  --color-muted: var(--surface-2);
+  --color-muted-foreground: var(--ink-muted);
+  --color-accent: var(--surface-2);
+  --color-accent-foreground: var(--ink);
+  --color-destructive: var(--danger);
+  --color-destructive-foreground: var(--danger-ink);
+  --color-border: var(--line);
+  --color-input: var(--line);
+  --color-ring: var(--brand);
+
+  /* shape. Written out rather than derived from a single `--radius` base: the
+     existing scale (6/9/13) is what `.tb-*` and every plugin already render
+     with, and a calc-based scale would silently change all of it. */
+  --radius-sm: 6px;
+  --radius-md: 9px;
+  --radius-lg: 13px;
+  --radius-xl: 16px;
 }
 
 @layer base {

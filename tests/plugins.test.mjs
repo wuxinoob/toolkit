@@ -486,55 +486,6 @@ test('plugins: no plugin calls a function it never declares (dead call sites)', 
 
 // ------------------------------ theming invariants ------------------------------
 
-/**
- * The light theme works by overriding the SAME `--color-*` tokens under
- * `:root[data-theme='light']`. That makes one failure mode silent and nasty:
- * add a colour token to `@theme`, forget the light block, and the new token
- * falls back to its dark value in the light theme — a single wrong-coloured
- * element, in one theme, with no error anywhere.
- *
- * So: every colour token must be defined in both themes. A token that happens
- * to be identical in both should still be listed, so the light palette is
- * reviewable in one place.
- */
-function readThemeBlocks() {
-  const css = read('src/assets/app.css');
-  const block = (startRe) => {
-    const m = css.match(startRe);
-    assert.ok(m, `app.css: block not found (${startRe})`);
-    const open = css.indexOf('{', m.index);
-    let depth = 0;
-    let i = open;
-    for (; i < css.length; i++) {
-      if (css[i] === '{') depth += 1;
-      else if (css[i] === '}') {
-        depth -= 1;
-        if (depth === 0) break;
-      }
-    }
-    return css.slice(open + 1, i);
-  };
-  const names = (body) =>
-    new Set([...body.matchAll(/(--[a-z0-9-]+)\s*:/gi)].map((m) => m[1]));
-  return {
-    dark: names(block(/@theme\s*\{/)),
-    light: names(block(/:root\[data-theme='light'\]\s*\{/)),
-  };
-}
-
-test('theming: every colour token is defined in both themes', () => {
-  const { dark, light } = readThemeBlocks();
-  const colors = [...dark].filter((n) => n.startsWith('--color-'));
-  assert.ok(colors.length >= 10, 'expected a real colour palette in @theme');
-  const missing = colors.filter((n) => !light.has(n));
-  assert.deepEqual(
-    missing,
-    [],
-    `these tokens have no light-theme value, so they stay dark in light mode:\n  ${missing.join('\n  ')}`,
-  );
-  const extra = [...light].filter((n) => n.startsWith('--color-') && !dark.has(n));
-  assert.deepEqual(extra, [], `light theme defines tokens @theme does not:\n  ${extra.join('\n  ')}`);
-});
 
 test('theming: every .tb-* class a plugin uses actually exists in the stylesheet', () => {
   // The design system is class-based precisely so Blob-URL plugins can use it.
@@ -557,6 +508,130 @@ test('theming: every .tb-* class a plugin uses actually exists in the stylesheet
     }
   }
   assert.deepEqual([...unknown], [], `classes with no definition in app.css:\n  ${[...unknown].join('\n  ')}`);
+});
+
+/**
+ * The theme layer has three parts, and the failure mode this guards against is
+ * specific to that shape:
+ *
+ *   :root / :root[data-theme='light']   raw values, one block per theme
+ *   @theme inline                       aliases: --color-x: var(--raw)
+ *
+ * A colour token is a `var()` reference to a raw variable. Two things can go
+ * wrong silently:
+ *
+ *   1. The alias points at a raw variable that does not exist — the token
+ *      resolves to nothing and every surface using it renders transparent/black.
+ *   2. The raw variable is defined for one theme only — that token keeps its
+ *      dark value in the light theme, so exactly one element looks wrong.
+ *
+ * Both are checked here. Note this got STRONGER when the layer was introduced:
+ * the old version compared two lists of names, which could not tell a typo in a
+ * variable reference from a missing override.
+ */
+function readThemeBlocks() {
+  const css = read('src/assets/app.css');
+  const block = (startRe) => {
+    const m = css.match(startRe);
+    assert.ok(m, `app.css: block not found (${startRe})`);
+    const open = css.indexOf('{', m.index);
+    let depth = 0;
+    let i = open;
+    for (; i < css.length; i++) {
+      if (css[i] === '{') depth += 1;
+      else if (css[i] === '}') {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+    }
+    return css.slice(open + 1, i);
+  };
+  // `:root { … }` — anchored so it does not also match `:root[data-theme=…]`
+  const dark = block(/^:root\s*\{/m);
+  const light = block(/^:root\[data-theme='light'\]\s*\{/m);
+  const aliases = block(/@theme\s+inline\s*\{/);
+  const decls = (body) => {
+    const out = new Map();
+    for (const m of body.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/gi)) out.set(m[1], m[2].trim());
+    return out;
+  };
+  return { dark: decls(dark), light: decls(light), aliases: decls(aliases) };
+}
+
+test('theming: every colour alias resolves to a raw variable defined in both themes', () => {
+  const { dark, light, aliases } = readThemeBlocks();
+
+  const colors = [...aliases.keys()].filter((n) => n.startsWith('--color-'));
+  assert.ok(colors.length >= 20, 'expected a real colour palette in @theme inline');
+
+  // One list, not two assertions: a second `assert.deepEqual` after a failing
+  // first never runs, so a single typo would mask every missing theme override
+  // in the same run. Reporting them together is the difference between one
+  // build round-trip and three.
+  const problems = [];
+  for (const name of colors) {
+    const value = aliases.get(name);
+    const target = value.match(/^var\((--[a-z0-9-]+)\)$/i)?.[1];
+    if (!target) {
+      problems.push(`${name}: ${value} is not a var() alias`);
+      continue;
+    }
+    if (!dark.has(target)) problems.push(`${name} -> ${target}, which :root does not define`);
+    else if (!light.has(target)) problems.push(`${name} -> ${target}, missing from the light theme`);
+  }
+
+  assert.deepEqual(
+    problems,
+    [],
+    `colour aliases that do not resolve in both themes:\n  ${problems.join('\n  ')}`,
+  );
+});
+
+test('theming: the two vocabularies cover the same raw variables', () => {
+  // The project vocabulary (`--color-brand`) and the shadcn vocabulary
+  // (`--color-primary`) must be aliases of the SAME raw variable, not copies.
+  // If someone "fixes" a colour by editing one of them to a literal, the two
+  // drift and the app ends up with two blues. This pins the pairs that matter.
+  const { aliases } = readThemeBlocks();
+  const pairs = [
+    ['--color-brand', '--color-primary'],
+    ['--color-brand-ink', '--color-primary-foreground'],
+    ['--color-canvas', '--color-background'],
+    ['--color-surface', '--color-card'],
+    ['--color-surface', '--color-popover'],
+    ['--color-surface-2', '--color-secondary'],
+    ['--color-surface-2', '--color-muted'],
+    ['--color-surface-2', '--color-accent'],
+    ['--color-ink', '--color-foreground'],
+    ['--color-ink', '--color-card-foreground'],
+    ['--color-ink', '--color-secondary-foreground'],
+    ['--color-ink-muted', '--color-muted-foreground'],
+    ['--color-line', '--color-border'],
+    ['--color-line', '--color-input'],
+    ['--color-brand', '--color-ring'],
+    ['--color-danger', '--color-destructive'],
+  ];
+  const drift = [];
+  for (const [a, b] of pairs) {
+    assert.ok(aliases.has(a), `${a} is missing`);
+    assert.ok(aliases.has(b), `${b} is missing`);
+    if (aliases.get(a) !== aliases.get(b)) {
+      drift.push(`${a} = ${aliases.get(a)}  but  ${b} = ${aliases.get(b)}`);
+    }
+  }
+  assert.deepEqual(drift, [], `the two vocabularies have drifted apart:\n  ${drift.join('\n  ')}`);
+});
+
+test('theming: the dark: variant is redirected to data-theme, not the OS', () => {
+  // shadcn-vue components carry `dark:` classes. Tailwind's default `dark:`
+  // follows `prefers-color-scheme`, so without this redirect the app's own
+  // theme setting would be ignored by every component — and it would look
+  // right to anyone whose OS happened to match.
+  const css = read('src/assets/app.css');
+  const m = css.match(/@custom-variant\s+dark\s*\(([^)]*)\)/);
+  assert.ok(m, 'app.css: no @custom-variant dark declaration');
+  assert.match(m[1], /data-theme/, 'the dark variant must key off data-theme');
+  assert.doesNotMatch(m[1], /prefers-color-scheme/, 'the dark variant must not follow the OS');
 });
 
 test('theming: no plugin hard-codes a colour', () => {
