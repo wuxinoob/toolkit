@@ -128,6 +128,49 @@
     否则不是"复用组件库"而是"又造了一套"。体积也会明显增长（当前 28K/6KB gzip 会显著变大）。
   - 落地顺序：token 合并 + `@custom-variant dark`（地基，可独立验证）→ 迁外壳验证映射 →
     抽工厂（6 个原语 + portal 修正）→ 审计（工厂词汇表 == 已安装组件）→ 组合组件（teleport/destroy）。
+
+## shadcn-vue 实际落地记录（2026-09-19，外壳已迁完）
+
+- **组件用 `npm run shadcn:pull`（`scripts/shadcn-pull.mjs`）拉**，不用 CLI：
+  `npx shadcn-vue add` 报 "Failed to fetch from registry"，但 registry 本身 HTTP 200 可达
+  —— 是 CLI 的 fetch 层的问题。脚本直接拉 registry JSON 落盘，并记录来源 URL + 每个文件的
+  sha256（`.shadcn-lock.json`），解决 copy-in 模型"不知道是哪个上游版本"的问题。
+  - **registry 的 `dependencies` 字段不可信**：button 只声明 reka-ui，但它的 index.ts
+    import 了 `class-variance-authority`。脚本改为从**实际文件内容**扫 bare import 才不漏。
+  - 注册表里组件是 **TypeScript**，保留原样（Vite 剥类型，上游更新可直接套用）。
+- **`typescript` 必须是 `^5`，不能用 7。** `@vue/compiler-sfc` 解析
+  `defineProps<ImportedType>()` 的导入类型时需要文件系统访问权，走的是 `ts.sys`；
+  **TS 7 没有 `ts.sys`**，于是报 "No fs option provided to compileScript in non-Node
+  environment"（装 TS 之前是 "Failed to load TypeScript"）。这是个很绕的报错链。
+- **shadcn 的原始变量名必须做成"兼容层"，不能只做 Tailwind 别名**：组件不只吃 utility
+  class，还在**内联样式里直接读上游变量名** —— sonner 用 `var(--popover)` /
+  `var(--border)` / `var(--radius)`。缺了它们，声明在计算值阶段失效，元素静默回退。
+  所以 token 层是**四层**：规范值（`:root`，每主题一处）→ shadcn 兼容名
+  （第二个 `:root`，`var()` 引用规范值）→ `@theme inline` 别名（两套命名指向同一个
+  规范变量，永不漂移）→ `.tb-*` 原语。
+- **`vue-sonner/style.css` 必须自己 `@import`**（组件不 import 它自己的 CSS）。
+  缺了之后 toaster 的 `data-y-position="bottom"` 是对的但 `position: static`
+  —— 它照样渲染，只是停在普通流里，看起来像"位置配错"。未分层的 CSS 优先于
+  Tailwind 的 `@layer`，所以 import 位置无所谓。
+- **lucide 用 `@lucide/vue`**（新组件 12 处全用它），被弃用的 `lucide-vue-next` 已移除。
+- **`store.js` 不依赖渲染器**：toast 改为可插拔 sink（`setToastSink`）。store 管"何时
+  产生消息"，外壳管"怎么显示"（App.vue 装 sonner）。默认 sink 是自过期队列，
+  所以 `node --test` 仍能 import store。
+- 外壳只用 Tailwind 工具类 + shadcn 组件，**只剩 `.tb-overlay` 一个 `.tb-*`**
+  （插件 overlay 挂载点，本就该宿主提供）。
+
+## 验证工具：scripts/shot.mjs（重要）
+
+应用主题在首帧就由 `prefers-color-scheme` 决定，一次性的 `--screenshot` 只能拍到
+headless 浏览器碰巧报告的那一种配色。**要验证浅/深成对，必须在导航前模拟配色** ——
+这需要走 CDP。用 Node 22 内置 WebSocket 直接讲 CDP，零依赖。
+
+    node scripts/shot.mjs <url> <out.png> --theme dark|light [--size WxH] [--eval "<expr>"]
+    --no-shot  只求值不截图，可当无头断言工具
+
+`--eval` 在真实页面里取表达式值：截图告诉你"哪里看起来不对"，它告诉你"为什么"。
+配合 `npm run dev`（vite 在 1420）可以核对任何界面。注意：浏览器里没有 Tauri，
+`boot()` 会在热键注册处失败并弹一条错误 toast —— 这是预期的，反而顺带证明了 toast 链路通了。
 - **主题是 `<html>` 上的一个属性，不是换样式表**：`@theme` 定义深色，`:root[data-theme='light']`
   覆盖同一批 token。这是唯一能让 Blob URL 插件被主题化的方式 —— 它们 import 不了东西，
   但**能继承自定义属性**。`src/host/theme.js`（system/light/dark，跟随
