@@ -98,6 +98,36 @@
   - 次选：C「宿主类包」其实就等于**把 `.tb-*` 做厚**（项目一直在做，无需新机制）；
     陷阱是别搬 shadcn 的类名进来（会出现第三套颜色）。
   - 逃生舱：B「插件自带 CSS」= 自由度上限，但**必须先有 L4**，否则裸 `<style>` 是全局的。
+- **复用 shadcn-vue 实现方案 A：可行（2026-09-19 核实）**。官方文档确认
+  **完整支持 Tailwind v4**（"Full support for the new `@theme` directive and `@theme inline`"），
+  所以版本不卡。它的 token 机制与本项目**同构**（自定义属性 + `var()` 间接层），
+  适配是"映射"而非改造。组件是 **copy-in**（"no hidden abstractions"，代码进你的仓库、可改、
+  升级手动）。额外依赖：`reka-ui`（行为原语）、`lucide-vue-next`、`tailwind-merge`+`clsx`（`cn()`）、
+  `tw-animate-css`。toast 已废弃改用 `sonner`。每个原语带 `data-slot` 属性。
+  - **三个必须处理的适配点**：① **`dark:` 变体必须重定向** —— shadcn 组件类带 `dark:` 前缀，
+    Tailwind 默认跟随 `prefers-color-scheme`，而本项目用 `data-theme`；v4 一行：
+    `@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));`
+    **不改这行，组件在浅色主题下会有一半是深色。**
+    ② **token 命名要合并不能并存** —— shadcn 的 `--primary`/`--background`/`--card` vs 本项目的
+    `--color-brand`/`--color-canvas`/`--color-surface`。只加别名迟早分叉；建议按 shadcn-vue v4 的
+    推荐形态重构：原始值放 `:root` / `:root[data-theme='light']`，`@theme inline` 里
+    `--color-brand: var(--brand)`、`--color-primary: var(--brand)` —— 这样别名自动跟随主题，
+    **而且现有那条"每个颜色 token 必须在两套主题里都有定义"的测试会直接覆盖新 token，守卫不用改。**
+    ③ **复合组件的 teleport 会逃出插件作用域** —— Dialog/DropdownMenu/Tooltip 走 reka-ui，
+    默认 teleport 到 `document.body`，就**不在 `[data-plugin='x']` 子树里了，`contributes.theme`
+    对弹层失效**（会出现"按钮是紫的、弹窗是蓝的"这种极难查的现象）。工厂必须把 portal 目标
+    默认设成插件自己的容器（reka-ui 的 `Portal` 支持 `to`）。
+  - **API 形状要调整**：有状态组件不能返回裸 DOM 节点。无状态原语返回 `HTMLElement`；
+    有状态组件返回句柄 `{ el, open(), close(), destroy() }`，且 `destroy()` 必须接到 ctx disposer
+    （`app.unmount()`），否则插件卸载后 Vue 实例还在。
+  - **组件白名单 vs 上一轮否决的工具类白名单，不是一回事**：前者单位是**组件**（可枚举、有名字、
+    有 props 文档、漏了会直接报错、可审计、走 HOST_API 版本号）；后者是**工具类**（组合爆炸、
+    无文档、漏了静默失效）。**"被设计的 API" 可行，"没被设计的集合" 不可行。**
+  - **最大代价：外壳要不要一起迁**。工厂渲染 shadcn 而外壳仍是 `.tb-*` → 两种视觉语言
+    （几何/圆角/间距不同）。倾向**外壳一起迁**（只有 3 个 `.vue`，成本不高），
+    否则不是"复用组件库"而是"又造了一套"。体积也会明显增长（当前 28K/6KB gzip 会显著变大）。
+  - 落地顺序：token 合并 + `@custom-variant dark`（地基，可独立验证）→ 迁外壳验证映射 →
+    抽工厂（6 个原语 + portal 修正）→ 审计（工厂词汇表 == 已安装组件）→ 组合组件（teleport/destroy）。
 - **主题是 `<html>` 上的一个属性，不是换样式表**：`@theme` 定义深色，`:root[data-theme='light']`
   覆盖同一批 token。这是唯一能让 Blob URL 插件被主题化的方式 —— 它们 import 不了东西，
   但**能继承自定义属性**。`src/host/theme.js`（system/light/dark，跟随
