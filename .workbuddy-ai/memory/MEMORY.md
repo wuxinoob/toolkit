@@ -58,6 +58,18 @@
   所以观感靠 **`src/assets/app.css` 里的 `.tb-*` 普通 CSS 类**（`@theme` 令牌 +
   `@layer components`），插件只用类名即可。详见 `docs/UI.md`。
 - **HeroUI 官方只有 React**；shadcn-vue 是成熟 Vue 方案，而 shadcn 的观感来自 token 层。
+- **本项目是 Tailwind v4.3，且没有 `tailwind.config.js`**（v4 是 CSS-first：`@theme` / `@source`）。
+  **`safelist` 在 v4 里已被移除**（`node_modules/tailwindcss/dist/lib.mjs` 里搜不到这个词），
+  等价物是 `@source inline("...")`（支持花括号展开与范围，如 `{hover:,}bg-red-{50,{100..900..100},950}`），
+  排除用 `@source not inline(...)`。**别照抄 v3 的 `tailwind.config.js` 方案** —— 那个文件不存在。
+  v4 自动扫描项目内除 `.gitignore`/`node_modules`/二进制/CSS/lockfile 外的所有文件，
+  所以 `src/plugins/*.js` **本来就被扫**（实测：shell 的工具类与任意值 `max-w-[900px]` 都进了产物）。
+- **不要给插件加 Tailwind safelist**（已评估并否决，2026-09-19）：外部插件在
+  `%APPDATA%\com.tan18.toolbox\plugins\` 下，**构建发生在插件存在之前**，白名单只能是固定词汇表，
+  覆盖不了组合空间（颜色×明度×属性×变体×断点），漏掉的类名静默失效 —— 和拼错 `.tb-*` 同类问题
+  但词汇表大得多、无文档。当前做法（手写 `.tb-*` 常驻 CSS + 内联样式做布局）已经解决同一问题，
+  且产物只有 28K / **6KB gzip**。内置插件实测用 **0 个** Tailwind 工具类。
+  真要更多自由度 → 走 L4（shadow DOM），而不是扩大白名单。
 - **主题是 `<html>` 上的一个属性，不是换样式表**：`@theme` 定义深色，`:root[data-theme='light']`
   覆盖同一批 token。这是唯一能让 Blob URL 插件被主题化的方式 —— 它们 import 不了东西，
   但**能继承自定义属性**。`src/host/theme.js`（system/light/dark，跟随
