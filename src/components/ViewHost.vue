@@ -1,6 +1,7 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { store } from '../host/store.js';
+import { PLUGIN_ATTR } from '../host/pluginTheme.js';
 
 const props = defineProps({ viewId: String });
 const mountEl = ref(null);
@@ -22,10 +23,14 @@ function currentView() {
 function renderCurrent() {
   const view = currentView();
   if (!view || !mountEl.value) return;
+  // The scope for this plugin's `contributes.theme` overrides. Set before
+  // render so the plugin's first paint is already themed; it costs nothing for
+  // a plugin that declares none.
+  mountEl.value.setAttribute(PLUGIN_ATTR, view.pluginId);
   try {
     view.render(mountEl.value);
   } catch (e) {
-    mountEl.value.innerHTML = `<p style="color:#ff9aa8">View render error: ${e}</p>`;
+    mountEl.value.innerHTML = `<p style="color:var(--color-danger)">View render error: ${e}</p>`;
     console.error('[ViewHost] render failed', view.viewId, e);
   }
 }

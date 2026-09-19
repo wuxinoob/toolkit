@@ -6,6 +6,7 @@ import { hub } from '../protocol/hub.js';
 import { Capability, assertSupports } from '../protocol/registry.js';
 import { protocolContract } from '../protocol/contract.js';
 import { store, toast } from './store.js';
+import { PLUGIN_ATTR } from './pluginTheme.js';
 
 /**
  * Build the Host SDK object ("ctx") handed to each plugin on activate.
@@ -168,8 +169,15 @@ export function buildCtx(plugin, disposer) {
     ui: {
       notify: (message, type = 'info') => toast(`${manifest.name}: ${message}`, type),
       mountOverlay: (el) => {
-        if (store.overlayEl) store.overlayEl.appendChild(el);
-        else console.warn(prefix, 'overlay not ready');
+        if (!store.overlayEl) {
+          console.warn(prefix, 'overlay not ready');
+          return;
+        }
+        // The overlay lives outside the view container, so it needs the theme
+        // scope applied here too — otherwise a plugin's `contributes.theme`
+        // would style its view but not its own break screen.
+        el.setAttribute(PLUGIN_ATTR, id);
+        store.overlayEl.appendChild(el);
       },
       unmountOverlay: (el) => el?.remove(),
     },

@@ -65,7 +65,9 @@ without it a light-theme user would see one dark frame per window.
 The important consequence: because a theme is just custom properties on `:root`,
 **a plugin written against the tokens is themed for free** — no plugin code, no
 reload, nothing to opt into. That is the whole reason the design system is
-token-based rather than component-based.
+token-based rather than component-based. A plugin that wants its *own* accent on
+top of that declares `contributes.theme` (see "Giving external plugins more
+freedom" below); it is still just custom properties, scoped to the plugin.
 
 Two things do not inherit, and each needs its own handling:
 
@@ -137,28 +139,63 @@ el.innerHTML = `<div class="myplugin">…</div>`;
 The plugin gets an internal palette that still tracks the app theme. This is the
 right answer for most "I want it to look *mine*" requests, and it costs nothing.
 
-**Level 2 — plugin-declared token overrides (recommended next step).** A manifest
+**Level 2 — plugin-declared token overrides (implemented).** A manifest
 contribution the host injects:
 
 ```jsonc
 "contributes": {
   "theme": {
-    "light": { "brand": "#7a3fd1" },
-    "dark":  { "brand": "#c49bff" }
+    "dark":  { "--color-brand": "#a78bfa", "--color-brand-hover": "#bda4ff" },
+    "light": { "--color-brand": "#6d3fc4", "--color-brand-hover": "#5c33ac" }
   }
 }
 ```
 
-The host writes one `<style>` block when the theme resolves:
+The host (`src/host/pluginTheme.js`) turns that into one scoped rule per theme:
 
 ```css
-[data-plugin="my.plugin"] { --color-brand: #7a3fd1; }
+:root[data-theme='dark']  [data-plugin='x'] { --color-brand: #a78bfa; }
+:root[data-theme='light'] [data-plugin='x'] { --color-brand: #6d3fc4; }
 ```
 
-Scoped to the plugin's own subtree, so it **cannot break the shell**, and it
-re-uses the machinery that already exists (`contributes` + setup-time
-negotiation). Small, safe, and it makes "this plugin is purple" a declarative
-fact rather than a pile of hex. This is the one I would build next.
+`examples/plugins/hello` uses it — that plugin is violet, and its `main.js` has no
+CSS in it at all. Five properties make this worth having rather than just letting
+a plugin ship a stylesheet:
+
+- **Scoped.** The rule targets the plugin's own container (`[data-plugin]`, set by
+  `ViewHost` on the view mount, by `ctx.ui.mountOverlay` on overlay content, and
+  on `<html>` in a plugin window). A plugin cannot restyle the shell, another
+  plugin, or the settings page. Over-declaring is not a way to break out.
+- **No JS at runtime.** Both themes are emitted up front and the `data-theme`
+  attribute picks between them — exactly how the app's own tokens work. No
+  re-injection when the theme changes, nothing to keep in sync.
+- **It composes.** A plugin sets only the tokens it cares about; everything else
+  keeps inheriting, so it still follows the app for the rest.
+- **Validated, not sanitised.** A plugin supplies a *colour*, never CSS. Values
+  are accepted only if they cannot escape a declaration — see below.
+- **Declared in one place.** The same manifest the host already reads for views,
+  hotkeys and permissions, so there is no second registration path.
+
+### Why the value validator looks the way it does
+
+A CSS declaration ends at `;` or `}`, and a `<style>` element ends at `<`.
+`validValue` therefore rejects `; { } < > \ @` and newlines outright — with those
+characters gone there is no way to terminate the declaration and start writing
+rules, so the value can only ever be a value. Everything else (hex, `rgb()`,
+`oklch()`, `color-mix()`, `var()`) is then fine to allow.
+
+On top of that, `url(`, `image-set(`, `expression(` and `-moz-binding(` are
+refused even though their syntax passes the character check. `url()` is the one
+that matters: it turns a colour token into a request to an arbitrary host, which
+is a tracking beacon with extra steps, and no theme needs it.
+
+Bad contributions are **reported, never fatal** — they go to the plugin's log
+(`theme: ignored — …`, which lands in `debug.log`). That matters because the
+failure mode is silent: a typo'd token name means the plugin simply renders
+normally. `tests/plugin-theme.test.mjs` covers the accepted syntaxes, every
+rejection case above, and asserts every shipped contribution declares **both**
+themes — a plugin that declares only `dark` looks right in one theme and
+half-styled in the other, which is the exact mistake this feature invites.
 
 **Level 3 — a stylesheet contract.** `contributes.styles: ["theme.css"]`, with the
 host reading the file and injecting it. Unlimited freedom, but it needs a new
@@ -178,14 +215,14 @@ shadowRoot.adoptedStyleSheets = [sheet, pluginSheet];   // O(1) per view
 ```
 
 One sheet object, shared by every shadow root, no duplication and no parsing per
-plugin. Custom properties inherit through shadow boundaries, so the theme still
-reaches inside without any extra work. This is the correct long-term answer if
+plugin. Custom properties inherit through shadow boundaries, so Level 2 keeps
+working inside a shadow root unchanged. This is the correct long-term answer if
 third-party CSS becomes a real thing; it is also the only option that makes
 Level 3 safe.
 
-**Suggested order:** Level 1 now (free), Level 2 next (small, safe, in the spirit
-of declared capabilities), Level 4 only when a plugin actually needs to ship its
-own CSS — and skip Level 3 in between.
+**Where it stands:** Level 1 and Level 2 are implemented. Level 4 is the next step
+if a plugin ever needs to ship its own CSS — and Level 3 should be skipped unless
+Level 4 lands first.
 
 
 ## Primitives

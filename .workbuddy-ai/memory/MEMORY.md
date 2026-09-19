@@ -81,6 +81,25 @@
 - Tailwind 工具类用于外壳与**内置**插件（它们被打包）；`.tb-*` 用于所有地方。
 - **类名方案的成本是拼错的类名不报错、只是不生效** → 有测试核对插件用到的每个 `.tb-*`
   都在样式表里有定义。
+- **`contributes.theme`：插件声明式覆盖设计令牌（已实现，`src/host/pluginTheme.js`）**。
+  插件写 `{dark:{'--color-brand':…}, light:{…}}`，宿主生成
+  `:root[data-theme='dark'] [data-plugin='x']{…}`。**两套主题都提前生成、靠 data-theme
+  选择** —— 切主题不需要任何 JS 重注入。
+  - 作用域三处：`ViewHost` 设视图挂载点、`ctx.ui.mountOverlay` 设 overlay 内容、
+    插件窗口设到 `<html>`（`[data-plugin='x']` 匹配任何元素含根元素，一条选择器全覆盖）。
+  - **值校验是安全核心**：CSS 声明以 `;`/`}` 结束、`<style>` 以 `<` 结束，所以直接拒绝
+    `; { } < > \ @` 与换行 —— 这些字符不在，值就只能是值。另拒 `url(`/`image-set(`/
+    `expression(`/`-moz-binding(`（`url()` 会把颜色令牌变成对任意主机的请求）。
+  - 坏贡献**只报告不致命**（进插件日志 → debug.log）：失败模式是静默的，令牌名写错
+    插件只是"看起来正常"。
+  - **必须同时声明两套主题**，只声明 dark 的插件在一个主题下会半残（有测试拦）。
+  - 范例是 `examples/plugins/hello`（`main.js` 里零 CSS，紫色全来自声明）。
+  - 导出 `serializeThemeCss` 供 `scripts/build-theme-preview.mjs` 复用，
+    预览与宿主跑同一份序列化代码，不可能漂移。
+- **UI 自由度四级阶梯**（`docs/UI.md`）：L0 用 token / L1 插件自建调色板 /
+  **L2 `contributes.theme` 已实现** / L3 注入插件自带 CSS（没有 L4 别做：未加作用域的
+  插件 CSS 能重写整个应用）/ L4 shadow DOM + 所有 shadow root 共享同一个
+  `adoptedStyleSheets` 的 CSSStyleSheet（O(1)，自定义属性可穿透 shadow 边界）。
 
 
 ## 子进程管理：profile（自启 / 定时 / 重启）
@@ -154,7 +173,7 @@
 - 排查"应用起来了但 JS 不执行"：Rust 侧 `eprintln!` 探针 → `webview.eval()` 写 `document.title` 再 `w.title()` 读回 → `tasklist` 比对 `msedgewebview2` 数量是否随应用启动而增加。
 
 ## 验证命令
-`cargo test`（39，本机不可用见下）· `cargo check --all-targets`（零代码警告，**要在 `src-tauri/` 下跑**，仓库根没有 Cargo.toml）· `node --test`（116）· `npm run build` · `cargo build` · `npm run deploy:examples`（把示例部署进应用数据目录）
+`cargo test`（39，本机不可用见下）· `cargo check --all-targets`（零代码警告，**要在 `src-tauri/` 下跑**，仓库根没有 Cargo.toml）· `node --test`（129）· `npm run build` · `cargo build` · `npm run deploy:examples`（把示例部署进应用数据目录）
 `cargo run --example host-checks`（16 项，替代不可用的 cargo test）· `npm run bench`（codec 实验，**刻意不并入 npm test**：时间敏感）
 `npm run preview:theme`（生成两套主题并排的设计系统预览，需先 build）
 应用内：`npm run tauri dev` 后看 `%APPDATA%\com.tan18.toolbox\debug.log` 的 15/15。

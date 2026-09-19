@@ -5,6 +5,9 @@
  *   __toolbox.schemes()          -> the message-plane table
  *   __toolbox.transports()       -> registered scheme ids
  *   __toolbox.sessions()         -> the host's unified session registry
+ *   __toolbox.pluginThemes()     -> which plugins override which design tokens
+ *   __toolbox.theme()            -> the theme preference and what it resolves to
+ *   __toolbox.setTheme(pref)     -> 'system' | 'light' | 'dark'
  *   __toolbox.selftest()         -> full in-app conformance report
  * Plugins may attach their own handles (e.g. __toolbox.procman).
  */
@@ -14,6 +17,8 @@ import { events } from './events.js';
 import { logger } from '../core/logger.js';
 import { runSelftest } from '../core/selftest.js';
 import { hub } from '../protocol/hub.js';
+import { getResolvedTheme, getThemePref, setTheme } from './theme.js';
+import { listPluginThemes } from './pluginTheme.js';
 
 export function installDebug() {
   const api = {
@@ -27,6 +32,10 @@ export function installDebug() {
     transports: () => hub.transports(),
     sessions: () => hub.sessions('__host__'),
     openStreams: () => hub.openStreamKeys(),
+    /** Which plugins declared `contributes.theme`, and for which tokens. */
+    pluginThemes: () => listPluginThemes(),
+    theme: () => ({ pref: getThemePref(), resolved: getResolvedTheme() }),
+    setTheme,
     selftest: runSelftest,
   };
   // Object.assign, never replace: plugins attach their own handles to the

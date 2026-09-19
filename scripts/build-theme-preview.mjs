@@ -17,6 +17,8 @@ import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { normalizeThemeContribution, serializeThemeCss } from '../src/host/pluginTheme.js';
+
 const root = fileURLToPath(new URL('..', import.meta.url));
 const distAssets = path.join(root, 'dist', 'assets');
 
@@ -35,6 +37,23 @@ for (const needle of ['.tb-card', '.tb-row', '.tb-markdown', '.tb-screen', 'data
     process.exit(1);
   }
 }
+
+/**
+ * The plugin-scope demo rules. Built by the REAL serializer from the REAL
+ * validator, so the preview cannot show a scoping behaviour the host does not
+ * actually implement — and a contribution the validator would reject would show
+ * up here as a missing rule rather than as a working example.
+ */
+const DEMO_PLUGIN = 'demo.plugin';
+const demoContribution = normalizeThemeContribution({
+  dark: { '--color-brand': '#a78bfa', '--color-brand-hover': '#bda4ff' },
+  light: { '--color-brand': '#6d3fc4', '--color-brand-hover': '#5c33ac' },
+});
+if (demoContribution.rejected.length) {
+  console.error('demo contribution is invalid:', demoContribution.rejected);
+  process.exit(1);
+}
+const pluginThemeCss = serializeThemeCss([[DEMO_PLUGIN, demoContribution]]);
 
 /** The gallery. One copy, rendered into a dark document and a light one. */
 const GALLERY = `
@@ -223,6 +242,40 @@ const GALLERY = `
         </div>
       </section>
 
+      <!-- contributes.theme: a plugin restyling only its own subtree -->
+      <section class="tb-card">
+        <div class="tb-card-head">
+          Plugin theme scope
+          <span class="tb-badge ml-auto">contributes.theme</span>
+        </div>
+        <div class="tb-card-body" style="display:flex;flex-direction:column;gap:12px">
+          <p class="tb-hint" style="margin:0">
+            Same markup twice. The left copy is untouched; the right one is inside
+            <code>[data-plugin='demo.plugin']</code>, which the host gave its own
+            <code>--color-brand</code>. Nothing else on this page changed — that is what
+            "scoped" buys.
+          </p>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div class="tb-pane tb-pane-pad" style="display:flex;flex-direction:column;gap:8px">
+              <span class="tb-section-title" style="margin:0">host default</span>
+              <div class="tb-toolbar">
+                <button class="tb-btn tb-btn-primary">Primary</button>
+                <span class="tb-badge tb-badge-ok">ok</span>
+                <span class="tb-t-brand">brand text</span>
+              </div>
+            </div>
+            <div class="tb-pane tb-pane-pad" data-plugin="demo.plugin" style="display:flex;flex-direction:column;gap:8px">
+              <span class="tb-section-title" style="margin:0">inside the plugin scope</span>
+              <div class="tb-toolbar">
+                <button class="tb-btn tb-btn-primary">Primary</button>
+                <span class="tb-badge tb-badge-ok">ok</span>
+                <span class="tb-t-brand">brand text</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
     </div>
   </main>
 </div>`;
@@ -230,6 +283,7 @@ const GALLERY = `
 const frame = (theme) => `<!doctype html>
 <html lang="en" data-theme="${theme}">
 <head><meta charset="utf-8"><style>${css}</style>
+<style>${pluginThemeCss}</style>
 <style>
   /* iframe-only: the real app fills the viewport, this preview scrolls. */
   html,body{height:auto}

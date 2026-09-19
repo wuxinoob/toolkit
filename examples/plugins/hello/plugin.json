@@ -35,7 +35,17 @@
         "min": 50,
         "max": 5000
       }
-    ]
+    ],
+    "theme": {
+      "dark": {
+        "--color-brand": "#a78bfa",
+        "--color-brand-hover": "#bda4ff"
+      },
+      "light": {
+        "--color-brand": "#6d3fc4",
+        "--color-brand-hover": "#5c33ac"
+      }
+    }
   },
   "permissions": [
     "rpc:storage",

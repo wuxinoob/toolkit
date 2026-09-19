@@ -18,6 +18,32 @@ in Settings.
 | Binary push stream (same producer) | `channel-raw` |
 | Unified session registry | `rpc` (host) |
 
+It also demonstrates the **UI** side of a drop-in plugin, which is where the
+constraints are least obvious:
+
+| Feature | How |
+|---|---|
+| Looks native without shipping CSS | the global `.tb-*` classes (`docs/UI.md`) |
+| Follows the light/dark theme | never hard-code a colour; use `var(--color-…)` |
+| Has its own accent colour | `contributes.theme` (this plugin is violet) |
+
+`contributes.theme` is the interesting one. `main.js` contains no CSS at all —
+it declares which design tokens it wants different, per theme, and the host
+injects a rule **scoped to this plugin's own subtree**:
+
+```jsonc
+"theme": {
+  "dark":  { "--color-brand": "#a78bfa" },
+  "light": { "--color-brand": "#6d3fc4" }
+}
+```
+
+Two properties make that safe to offer: the scope means over-declaring cannot
+restyle the shell or another plugin, and the value validator means a plugin
+supplies a *colour*, never a declaration (a value containing `;` or `}` is
+refused). Declare **both** themes — a plugin that declares only `dark` looks
+right in one theme and half-styled in the other.
+
 ## Constraint: single-file ESM
 
 The host fetches this file, wraps it in a `Blob` and dynamically `import()`s it,

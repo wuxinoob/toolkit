@@ -5,6 +5,7 @@ import { store, toast } from './store.js';
 import { events } from './events.js';
 import { hub } from '../protocol/hub.js';
 import { HOST_API } from '../protocol/contract.js';
+import { applyPluginTheme, clearPluginTheme } from './pluginTheme.js';
 
 /** Host identity: used for calls the host makes on a plugin's behalf. */
 const HOST_ID = '__host__';
@@ -116,6 +117,28 @@ async function releaseHotkeys(plugin) {
   }
 }
 
+/**
+ * Apply `contributes.theme`, and report what was dropped.
+ *
+ * Reporting matters more than it looks: the failure mode of a bad contribution
+ * is that the plugin renders *normally*, so a typo'd token name or an unusable
+ * value is invisible unless it is said out loud. It goes to the plugin's own log
+ * (which lands in debug.log) rather than to a toast, because it is a
+ * plugin-author problem, not something the user can act on.
+ */
+function applyThemeContribution(plugin, ctx) {
+  const declared = plugin.manifest.contributes?.theme;
+  if (!declared) return;
+  try {
+    const { applied, rejected } = applyPluginTheme(plugin.manifest.id, declared);
+    if (applied) ctx.log.info(`theme: ${applied} token override(s) applied`);
+    for (const why of rejected) ctx.log.warn(`theme: ignored — ${why}`);
+  } catch (e) {
+    // Never fatal: a plugin that cannot be themed should still run.
+    ctx.log.warn('theme contribution rejected: ' + (e?.message ?? e));
+  }
+}
+
 export async function activate(plugin, { silent = false } = {}) {
   if (plugin._ctx) return; // already active
   try {
@@ -126,6 +149,7 @@ export async function activate(plugin, { silent = false } = {}) {
     // Declared hotkeys go live BEFORE activate runs, so a plugin can rely on
     // them (and check them) during its own activation rather than racing it.
     await registerHotkeys(plugin, ctx);
+    applyThemeContribution(plugin, ctx);
     await plugin.activate(ctx); // may be sync or async
     setPluginState(plugin.manifest.id, 'active');
     if (!silent) toast(`${plugin.manifest.name} enabled`, 'info', 2000);
@@ -148,6 +172,7 @@ export async function deactivate(plugin, { silent = false } = {}) {
     console.error(`[lifecycle] deactivate error for ${plugin.manifest.id}`, e);
   } finally {
     await releaseHotkeys(plugin);
+    clearPluginTheme(plugin.manifest.id);
     await plugin._disposer?.run();
     plugin._disposer = null;
     plugin._ctx = null;

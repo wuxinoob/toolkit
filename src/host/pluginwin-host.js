@@ -22,17 +22,18 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { hub } from '../protocol/hub.js';
 import { protocolContract } from '../protocol/contract.js';
+import { PLUGIN_ATTR, applyPluginTheme } from './pluginTheme.js';
 
 function renderError(title, detail) {
   document.title = title;
-  document.body.style.cssText =
-    "margin:0;background:#14161c;color:#e8ebf0;font-family:system-ui,'Microsoft YaHei',sans-serif;";
   const box = document.createElement('div');
-  box.style.cssText =
-    'max-width:520px;margin:48px auto;padding:18px 20px;border:1px solid #3a2a2a;' +
-    'border-radius:10px;background:#1d1420;line-height:1.6;font-size:13px;';
-  box.innerHTML = `<div style="color:#ff9a9a;font-weight:500;margin-bottom:8px;"></div>
-    <div style="opacity:.8;word-break:break-all;"></div>`;
+  // Design-system classes and tokens, so the failure page follows the theme like
+  // everything else. main.js imports the stylesheet before it branches on
+  // ?mode=, so it is present even on this path.
+  box.className = 'tb-card tb-card-body';
+  box.style.cssText = 'max-width:520px;margin:48px auto;line-height:1.6;font-size:13px;';
+  box.innerHTML = `<div class="tb-t-bad" style="font-weight:500;margin-bottom:8px;"></div>
+    <div class="tb-hint" style="word-break:break-all;"></div>`;
   box.firstElementChild.textContent = `⚠ ${title}`;
   box.lastElementChild.textContent = detail;
   document.body.appendChild(box);
@@ -165,6 +166,15 @@ export async function mountPluginWindow() {
     }
 
     if (item.manifest?.name) document.title = item.manifest.name;
+
+    // This whole document belongs to one plugin, so the theme scope goes on
+    // <html> — the rule `[data-plugin='x']` matches any element, root included.
+    // Applied before mountWindow so the first paint is already themed.
+    document.documentElement.setAttribute(PLUGIN_ATTR, pluginId);
+    const { applied, rejected } = applyPluginTheme(pluginId, item.manifest?.contributes?.theme);
+    if (applied) console.info(`[pluginwin] ${applied} theme token override(s) applied`);
+    for (const why of rejected) console.warn(`[pluginwin] theme ignored — ${why}`);
+
     window.addEventListener('beforeunload', () => {
       // Let the plugin release its streams/subscriptions on the way out.
       try {
