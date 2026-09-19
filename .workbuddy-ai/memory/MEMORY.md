@@ -52,6 +52,23 @@
 - dev 启动自动跑应用内自检（`src/core/selftest.js`，t01–t15），报告同样落盘；随时可 `await window.__toolbox.selftest()`。
 - `window.__toolbox`：store/events/logger/logs/schemes/transports/sessions/openStreams/selftest。
 
+## 界面：设计系统是 CSS，不是组件库
+- **外部插件是 Blob URL 单文件 ESM，无法 import 任何东西** → JS 组件库（shadcn-vue / HeroUI）
+  永远到不了它们；Tailwind 工具类也只生成"扫描到的"类，插件源码在项目外 → 同样到不了。
+  所以观感靠 **`src/assets/app.css` 里的 `.tb-*` 普通 CSS 类**（`@theme` 令牌 +
+  `@layer components`），插件只用类名即可。详见 `docs/UI.md`。
+- **HeroUI 官方只有 React**；shadcn-vue 是成熟 Vue 方案，而 shadcn 的观感来自 token 层。
+- **只做深色**：打不开窗口看效果的浅色主题等于盲发；令牌块就是浅色主题要覆盖的全部面积。
+- **overlay 容器不用 absolute、不设 pointer-events:none**：前者让空容器吞掉全应用点击，
+  后者被子元素继承会让 overlay 按钮永远点不动。插件自己定位（eyecare 用 fixed）。
+- Tailwind 工具类用于外壳与**内置**插件（它们被打包）；`.tb-*` 用于所有地方。
+
+## 子进程管理：profile（自启 / 定时 / 重启）
+- session = 运行实例；**profile = 持久化描述**（跑什么、怎么跑、**什么时候跑**）。
+- 计划**从上次触发起算**（睡过一夜只跑一次，不补跑一串）；**手动停止不被重启策略撤销**；
+  重试次数跨重启累加；停用插件时清掉所有定时器。
+- 规则在 `src/plugins/procman-supervisor.js`（**纯函数**，可脱离时钟与 pty 测试）。
+
 ## 约定与坑
 - **Tauri capability 会静默拒绝 JS 调用**（错在监听器里被吞，界面上只表现为"没反应"）：
   改 `src/**` 里任何 `getCurrentWindow()` / `WebviewWindow` 调用后，必须同步
