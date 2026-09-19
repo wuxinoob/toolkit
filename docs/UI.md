@@ -36,16 +36,157 @@ One `@theme` block in `src/assets/app.css` decides what the app looks like:
 --color-canvas / surface / surface-2      backgrounds, back to front
 --color-line / line-strong                borders
 --color-ink / ink-muted / ink-subtle      text, by emphasis
---color-brand / brand-ink                 accent + text on accent
+--color-brand / brand-ink / brand-hover   accent, text on accent, accent hover
 --color-danger / success / warn           intent
 --radius-sm / md / lg                     corners
 --shadow-panel                            raised surfaces
 ```
 
 Change a token and every surface follows — that is the entire point of having
-them. **Dark only, for now**: the app has always been dark, and a light theme
-that could not be opened in a window to check would have been shipped blind. The
-block above is the whole surface area a light theme needs to override.
+them.
+
+## Themes
+
+A theme is **one attribute on `<html>`**, not a stylesheet swap:
+
+```css
+@theme                     { --color-canvas: #0e1015; /* … */ }
+:root[data-theme='light']  { --color-canvas: #f4f6fa; /* … */ }
+```
+
+`src/host/theme.js` owns the preference (`system` / `light` / `dark`), persists it
+in `localStorage`, follows `prefers-color-scheme` live while on `system`, and
+pushes changes to the other windows through the browser's `storage` event (a push,
+not the storage polling this project forbids). `index.html` carries a tiny inline
+script that sets the attribute *before the first paint* — in a production build
+the stylesheet is a separate `<link>` that applies before any module runs, so
+without it a light-theme user would see one dark frame per window.
+
+The important consequence: because a theme is just custom properties on `:root`,
+**a plugin written against the tokens is themed for free** — no plugin code, no
+reload, nothing to opt into. That is the whole reason the design system is
+token-based rather than component-based.
+
+Two things do not inherit, and each needs its own handling:
+
+- **xterm** paints to a canvas, so it needs a concrete object. `procman.js` reads
+  the tokens off the document (`readTermTheme()`) and re-applies them when the
+  theme changes. This is the only place a token is copied into JS, and the copy is
+  refreshed rather than frozen.
+- **A transparent window** (floatwin) needs alpha, which tokens do not carry. It
+  uses `color-mix(in srgb, var(--color-surface) 97%, transparent)` — same hue,
+  plus the alpha the window needs. Still zero JS.
+
+## Can CSS restyle native controls?
+
+Partly, and the boundary is worth knowing precisely. There are three tiers:
+
+**1. Fully restylable** — anything you are willing to re-implement. `appearance:
+none` removes the platform drawing and you supply your own:
+
+```css
+.tb-input { appearance: none; background: var(--color-canvas); /* … */ }
+.tb-input[type='checkbox']::before { content: '✓'; /* … */ }
+input[type='range']::-webkit-slider-thumb { /* … */ }
+input[type='file']::file-selector-button { /* … */ }
+```
+
+This is what `.tb-btn`, `.tb-input`, `.tb-select` and `.tb-textarea` already do.
+Cost: you also inherit the platform behaviours you removed (focus ring, keyboard
+handling, high-contrast mode), so re-implement sparingly.
+
+**2. Re-tintable only** — `accent-color` re-colours the part the browser draws for
+you: checkbox ticks, radio dots, range track/thumb, progress bars. One colour, no
+shape. The base layer sets it from `--color-brand`, which is why a plain
+`<input type="checkbox">` now matches both themes without a class.
+
+**3. Not reachable at all.** Be honest about these:
+
+| control part | why CSS cannot touch it |
+|---|---|
+| the `<select>` **dropdown popup** | drawn by the OS/WebView compositor, not the page |
+| `<input type="date">` calendar popup | same |
+| `<input type="color">` picker | same |
+| window titlebar / frame | belongs to the OS; the app draws its own chrome instead |
+| scrollbars | reachable — but only via `scrollbar-color` / `::-webkit-scrollbar`, not general CSS |
+
+For all of tier 3 the only lever is `color-scheme`, which flips light/dark and
+nothing else. `theme.js` sets it, so a dropdown opened over the light theme is at
+least light. **The practical rule this project follows: style the *closed* control
+completely, and let `color-scheme` cover the popup.** Replacing a `<select>` with a
+custom listbox is the only way to style the popup, and it is rarely worth it.
+
+## Giving external plugins more freedom
+
+Today a plugin gets the app's look by using `.tb-*` and `var(--color-*)`. That is
+the free tier. If you want more, these are the options in increasing order of
+power — and of cost:
+
+**Level 0 — use the tokens.** Already works, zero host support. The plugin is
+themed in both modes automatically.
+
+**Level 1 — a private palette built on the tokens.** Also already works, still
+zero host support:
+
+```js
+el.innerHTML = `<div class="myplugin">…</div>`;
+// the plugin's own CSS, in a <style> it injects itself:
+// .myplugin { --accent: var(--color-brand); --accent-soft: color-mix(in srgb, var(--accent) 18%, transparent); }
+```
+
+The plugin gets an internal palette that still tracks the app theme. This is the
+right answer for most "I want it to look *mine*" requests, and it costs nothing.
+
+**Level 2 — plugin-declared token overrides (recommended next step).** A manifest
+contribution the host injects:
+
+```jsonc
+"contributes": {
+  "theme": {
+    "light": { "brand": "#7a3fd1" },
+    "dark":  { "brand": "#c49bff" }
+  }
+}
+```
+
+The host writes one `<style>` block when the theme resolves:
+
+```css
+[data-plugin="my.plugin"] { --color-brand: #7a3fd1; }
+```
+
+Scoped to the plugin's own subtree, so it **cannot break the shell**, and it
+re-uses the machinery that already exists (`contributes` + setup-time
+negotiation). Small, safe, and it makes "this plugin is purple" a declarative
+fact rather than a pile of hex. This is the one I would build next.
+
+**Level 3 — a stylesheet contract.** `contributes.styles: ["theme.css"]`, with the
+host reading the file and injecting it. Unlimited freedom, but it needs a new
+native read command and a trust decision, and unscoped plugin CSS can restyle the
+entire app. **Do not ship this without Level 4.**
+
+**Level 4 — shadow DOM isolation.** Mount each plugin view into a shadow root. The
+plugin's CSS cannot leak out; the app's CSS cannot leak in. The usual objection is
+that `.tb-*` would then not apply either — which is solved by constructing the
+design system **once** as a `CSSStyleSheet` and adopting it everywhere:
+
+```js
+import cssText from './assets/app.css?inline';
+const sheet = new CSSStyleSheet();
+sheet.replaceSync(cssText);          // built once
+shadowRoot.adoptedStyleSheets = [sheet, pluginSheet];   // O(1) per view
+```
+
+One sheet object, shared by every shadow root, no duplication and no parsing per
+plugin. Custom properties inherit through shadow boundaries, so the theme still
+reaches inside without any extra work. This is the correct long-term answer if
+third-party CSS becomes a real thing; it is also the only option that makes
+Level 3 safe.
+
+**Suggested order:** Level 1 now (free), Level 2 next (small, safe, in the spirit
+of declared capabilities), Level 4 only when a plugin actually needs to ship its
+own CSS — and skip Level 3 in between.
+
 
 ## Primitives
 
@@ -54,14 +195,34 @@ block above is the whole surface area a light theme needs to override.
 | `.tb-shell` `.tb-sidebar` `.tb-brand` `.tb-nav` `.tb-nav-group` `.tb-nav-item` `.tb-content` | the app frame |
 | `.tb-card` `.tb-card-head` `.tb-card-body` `.tb-card-foot` | a titled surface |
 | `.tb-btn` `-primary` `-danger` `-ghost` `-sm` | actions |
-| `.tb-input` `.tb-select` `.tb-textarea` `.tb-field` `.tb-label` `.tb-hint` | forms |
+| `.tb-icon-btn` `-danger` | a square button holding one glyph (row actions, tab close) |
+| `.tb-input` `.tb-select` `.tb-textarea` `.tb-input-inline` `.tb-field` `.tb-label` `.tb-hint` | forms |
+| `.tb-list` `.tb-row` `.tb-row-label` `.tb-row-actions` | selectable rows (state is `aria-selected`) |
+| `.tb-pane` `-pad` | an inset surface: terminal, log, rendered document |
+| `.tb-tabs` `.tb-tab` | a tab strip (state is `aria-selected`) |
 | `.tb-table` | data |
-| `.tb-badge` `-ok` `-warn` `-bad` | status |
+| `.tb-badge` `-ok` `-warn` `-bad` | status pills |
+| `.tb-dot` `-ok` `-warn` `-bad` | status dots |
+| `.tb-t-brand` `-ok` `-warn` `-bad` `-dim` `-muted` | intent-coloured text with no pill |
 | `.tb-toolbar` `.tb-divider` `.tb-section-title` | layout |
 | `.tb-mono` `.tb-kbd` | code and shortcuts |
+| `.tb-markdown` | rendered Markdown (no classes to hang styles on, so scoped element selectors) |
 | `.tb-empty` | "nothing here yet" |
 | `.tb-toast` `-error` `-success` `.tb-toasts` | feedback |
 | `.tb-overlay` | where a plugin mounts overlay content |
+| `.tb-screen` `-title` `-count` | a full-window takeover (break reminder, blocking prompt) |
+
+Two conventions in the list above are deliberate:
+
+- **State lives in ARIA, not in a modifier class.** A selected row is
+  `aria-selected="true"`, a tab is `aria-selected`, a toggle is `aria-pressed`.
+  The stylesheet keys off the attribute, so the markup is correct for a screen
+  reader and for the theme at the same time, and the two cannot drift.
+- **Nothing hard-codes a colour.** Every rule above reads a token, which is what
+  makes the light theme work with no extra code. `tests/plugins.test.mjs` enforces
+  this for plugins and checks that every `.tb-*` class a plugin names actually
+  exists.
+
 
 A plugin view using them looks native with no stylesheet of its own:
 
@@ -109,3 +270,9 @@ full-screen break screen) — see `src/plugins/eyecare.js` for a working example
 Add it to `@layer components` in `src/assets/app.css`, using tokens rather than
 literal colours, and list it in the table above. If it is a *variant* of an
 existing primitive, prefer `.tb-x-<variant>` so the base class keeps working.
+
+If it is a **colour**, add it to `@theme` **and** to the
+`:root[data-theme='light']` block. Forgetting the second half is a silent bug —
+the token keeps its dark value in the light theme, and only that one element looks
+wrong. `tests/plugins.test.mjs` fails on it.
+
