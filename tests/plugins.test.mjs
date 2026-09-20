@@ -31,6 +31,7 @@ const EXAMPLES = [
   { id: 'hello.demo', dir: 'examples/plugins/hello' },
   { id: 'calc.demo', dir: 'examples/calc-plugin' },
   { id: 'probe.demo', dir: 'examples/plugins/probe' },
+  { id: 'gallery.demo', dir: 'examples/plugins/gallery' },
 ];
 
 /** The permission vocabulary the host understands. */
@@ -837,13 +838,20 @@ test('factory: every tag a built-in plugin names exists', () => {
 
   const problems = [];
   const seen = new Set();
-  for (const name of BUILTIN) {
-    const src = read(`src/plugins/${name}.js`);
+  // Examples too, not just built-ins: the gallery is the reference for what a
+  // drop-in plugin can build, and a wrong tag there is the most misleading kind
+  // of error — it is the file people copy from.
+  const files = [
+    ...BUILTIN.map((n) => `src/plugins/${n}.js`),
+    ...EXAMPLES.map((e) => `${e.dir}/main.js`),
+  ];
+  for (const file of files) {
+    const src = read(file);
     for (const tag of tagsUsedBy(src)) {
       seen.add(tag);
       if (vocabulary.has(tag)) continue;
       if (HTML_TAGS.has(tag)) continue; // a plain element, which the factory allows
-      problems.push(`${name}: el('${tag}') is neither a component nor a plain element`);
+      problems.push(`${file}: el('${tag}') is neither a component nor a plain element`);
     }
   }
   // A guard that extracts nothing reports success forever. (This one DID, for a

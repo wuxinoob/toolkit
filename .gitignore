@@ -27,3 +27,4 @@ dist-ssr
 *.tmp
 .scratch/
 .shots/
+.vite.log

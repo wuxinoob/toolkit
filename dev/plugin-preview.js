@@ -23,7 +23,11 @@ import { createUiKit, loadUiKit } from '../src/host/ui.js';
 import { protocolContract } from '../src/protocol/contract.js';
 import { describeSchemes } from '../src/protocol/registry.js';
 
-const modules = import.meta.glob('../src/plugins/*.js');
+const modules = {
+  ...import.meta.glob('../src/plugins/*.js'),
+  ...import.meta.glob('../examples/plugins/*/main.js'),
+  ...import.meta.glob('../examples/calc-plugin/main.js'),
+};
 
 const q = new URLSearchParams(location.search);
 const want = q.get('plugin');
@@ -148,7 +152,12 @@ async function main() {
   await loadUiKit();
 
   const entries = Object.entries(modules).filter(([p]) => !/-(supervisor|shared|widget)\.js$/.test(p));
-  const names = entries.map(([p]) => p.replace(/.*\/([^/]+)\.js$/, '$1'));
+  // `src/plugins/foo.js` -> `foo`, `examples/plugins/bar/main.js` -> `bar`
+  const nameOf = (p) => {
+    const m = p.match(/examples\/plugins\/([^/]+)\/main\.js$/);
+    return m ? m[1] : p.replace(/.*\/([^/]+)\.js$/, '$1');
+  };
+  const names = entries.map(([p]) => nameOf(p));
 
   const bar = document.createElement('div');
   bar.className = 'tb-toolbar';
@@ -180,7 +189,7 @@ async function main() {
     return;
   }
 
-  const entry = entries.find(([p]) => p.endsWith(`/${want}.js`));
+  const entry = entries.find(([p]) => nameOf(p) === want);
   if (!entry) {
     show(`No plugin module named "${want}".`, `available: ${names.join(', ')}`);
     return;

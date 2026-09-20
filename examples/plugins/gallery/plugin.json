@@ -1,0 +1,19 @@
+{
+  "id": "gallery.demo",
+  "name": "Component Gallery",
+  "version": "0.1.0",
+  "api": 2,
+  "entry": "main.js",
+  "description": "Every component ctx.ui offers, rendered in the main window. Declares zero permissions — it is pure UI.",
+  "contributes": {
+    "views": [
+      {
+        "slot": "tool",
+        "id": "gallery",
+        "title": "Gallery",
+        "icon": "🧩"
+      }
+    ]
+  },
+  "permissions": []
+}

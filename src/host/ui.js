@@ -51,14 +51,50 @@ import { createApp, h } from 'vue';
 /** kebab-case tag -> Vue component. Filled by `loadUiKit()`. */
 const components = new Map();
 
-/** Descriptors carrying one of these tags get a portal target injected. */
+/**
+ * Providers every mounted tree is wrapped in.
+ *
+ * The factory mounts each tree as its OWN Vue app (`createApp(...).mount(...)`),
+ * and a new app does **not** inherit the shell's `provide()` tree. So a component
+ * that injects a context — `Tooltip` does — fails with
+ * `Injection Symbol(TooltipProviderContext) not found`, which says nothing about
+ * what the plugin did wrong. Wrapping here means a plugin writes
+ * `el('tooltip', …)` and it just works, the same way it does in the shell.
+ *
+ * Safe to wrap unconditionally: reka-ui's provider components render only their
+ * slot, so there is no extra element in the DOM and no layout impact.
+ */
 const PORTALLED = new Set([
   'select-content',
   'dialog-content',
-  'dropdown-menu-content',
-  'popover-content',
+  'dialog-scroll-content',
   'tooltip-content',
+  'popover-content',
+  'hover-card-content',
+  'dropdown-menu-content',
+  'context-menu-content',
+  'menubar-content',
+  'menubar-sub-content',
+  'drawer-content',
+  'sheet-content',
+  'alert-dialog-content',
+  'combobox-list',
 ]);
+
+/**
+ * Providers every mounted tree is wrapped in.
+ *
+ * The factory mounts each tree as its OWN Vue app (`createApp(...).mount(...)`),
+ * and a new app does **not** inherit the shell's `provide()` tree. So a component
+ * that injects a context — `Tooltip` does — fails with
+ * `Injection Symbol(TooltipProviderContext) not found`, which says nothing about
+ * what the plugin did wrong. Wrapping here means a plugin writes
+ * `el('tooltip', …)` and it just works, the same way it does in the shell.
+ *
+ * Safe to wrap unconditionally: reka-ui's provider components render only their
+ * slot, so there is no extra element in the DOM and no layout impact.
+ */
+const ROOT_PROVIDERS = ['tooltip-provider'];
 
 /**
  * The plain HTML elements a plugin may ask for.
@@ -89,9 +125,16 @@ const kebab = (name) =>
     .replace(/([A-Z])([A-Z][a-z])/g, '$1-$2')
     .toLowerCase();
 
-/** A Vue component export, as opposed to a helper like `buttonVariants`. */
+/**
+ * A Vue component export, as opposed to a helper like `buttonVariants`.
+ *
+ * "Starts with a capital and is an object" is not enough: `form/index.ts`
+ * re-exports reka-ui's `FORM_ITEM_INJECTION_KEY`, which is an object and starts
+ * with a capital, so it became the tag `form_item_injection_key` in the
+ * vocabulary. PascalCase with no underscores excludes that class of constant.
+ */
 const looksLikeComponent = (name, value) =>
-  /^[A-Z]/.test(name) && value !== null && typeof value === 'object';
+  /^[A-Z][A-Za-z0-9]*$/.test(name) && value !== null && typeof value === 'object';
 
 /**
  * Load every installed component once.
@@ -248,8 +291,25 @@ export function createUiKit({ track } = {}) {
       throw new Error('ui kit not loaded — the host must await loadUiKit() before activating plugins');
     }
     const scoped = container ? injectPortalTarget(tree, container) : tree;
+
+    // A fresh app has its own provide tree, so anything the components inject
+    // has to be provided here. See ROOT_PROVIDERS.
+    const wrap = (node) => {
+      let out = node;
+      for (const tag of ROOT_PROVIDERS) {
+        const Provider = components.get(tag);
+        if (!Provider) continue;
+        // Capture the CURRENT value. Writing `() => out` here reads the
+        // variable, which the next line reassigns to the new VNode — so the
+        // slot would return itself and Vue would recurse until the stack blew.
+        const inner = out;
+        out = h(Provider, {}, () => inner);
+      }
+      return out;
+    };
+
     const host = document.createElement('div');
-    const app = createApp({ render: () => toVNode(scoped) });
+    const app = createApp({ render: () => wrap(toVNode(scoped)) });
     app.mount(host);
     return { app, host, node: host.firstElementChild };
   }

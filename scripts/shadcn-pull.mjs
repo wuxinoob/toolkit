@@ -115,19 +115,31 @@ function rewriteRegistryPaths(content) {
  * portal target, so we add it.
  */
 function forwardPortalTo(content, { portalTag, propsType }) {
-  // Regex, not an exact string: upstream's props blocks differ per component
-  // (DialogContent already carries `showCloseButton`), and an exact match that
-  // silently misses leaves a template referencing an undeclared prop — which
-  // looks like it works, and quietly portals to <body>.
-  const propsRe = new RegExp(`defineProps<\\s*${propsType}\\s*&\\s*\\{([^}]*)\\}\\s*>`);
-  let out = content.replace(propsRe, (_m, inner) => {
-    const cleaned = inner.trim().replace(/[;,]\s*$/, '');
-    return `defineProps<${propsType} & { ${cleaned}; portalTo?: string }>`;
-  });
+  let out = content;
+
+  // Props come in two shapes upstream:
+  //   defineProps<XProps>()                          (SheetContent)
+  //   defineProps<XProps & { class?: … , extra?: … }> (most of the rest)
+  // Both must end up with `portalTo?: string`.
+  const withExtras = new RegExp(`defineProps<\\s*${propsType}\\s*&\\s*\\{([^}]*)\\}\\s*>`);
+  const bare = new RegExp(`defineProps<\\s*${propsType}\\s*>`);
+  if (withExtras.test(out)) {
+    out = out.replace(withExtras, (_m, inner) => {
+      const cleaned = inner.trim().replace(/[;,]\s*$/, '');
+      return `defineProps<${propsType} & { ${cleaned}; portalTo?: string }>`;
+    });
+  } else {
+    out = out.replace(bare, `defineProps<${propsType} & { portalTo?: string }>`);
+  }
+
   // It belongs on the Portal, not on the content element — keep it out of the
   // props that get forwarded there, or it lands as an invalid DOM attribute.
-  out = out.replace('reactiveOmit(props, "class")', 'reactiveOmit(props, "class", "portalTo")');
-  out = out.replace(`<${portalTag}>`, `<${portalTag} :to="props.portalTo">`);
+  // The omit call already lists `class` and sometimes more; append to it.
+  out = out.replace(
+    /reactiveOmit\(props,\s*"class"((?:\s*,\s*"[^"]*")*)\)/,
+    'reactiveOmit(props, "class"$1, "portalTo")',
+  );
+  out = out.replace(new RegExp(`<${portalTag}>`), `<${portalTag} :to="props.portalTo">`);
 
   // All three edits must land. Checking only for the string "portalTo" would
   // pass on a partial patch — which is exactly the bug this replaces.
@@ -143,16 +155,43 @@ function forwardPortalTo(content, { portalTag, propsType }) {
   return out;
 }
 
-const LOCAL_PATCHES = {
-  'select/SelectContent.vue': {
-    why: 'forwards portalTo to SelectPortal so a plugin dropdown stays theme-scoped',
-    apply: (src) => forwardPortalTo(src, { portalTag: 'SelectPortal', propsType: 'SelectContentProps' }),
-  },
-  'dialog/DialogContent.vue': {
-    why: 'forwards portalTo to DialogPortal so a plugin dialog stays theme-scoped',
-    apply: (src) => forwardPortalTo(src, { portalTag: 'DialogPortal', propsType: 'DialogContentProps' }),
-  },
-};
+/**
+ * Every component that renders through a reka-ui Portal.
+ *
+ * The list is not arbitrary: each entry was found by grepping for a `<*Portal>`
+ * tag, and each is a component whose content would otherwise teleport to
+ * `document.body` — outside the plugin's `[data-plugin]` scope, and therefore
+ * outside its `contributes.theme` overrides.
+ */
+const PORTAL_CONTENTS = [
+  ['select/SelectContent.vue', 'SelectPortal', 'SelectContentProps'],
+  ['dialog/DialogContent.vue', 'DialogPortal', 'DialogContentProps'],
+  ['tooltip/TooltipContent.vue', 'TooltipPortal', 'TooltipContentProps'],
+  ['popover/PopoverContent.vue', 'PopoverPortal', 'PopoverContentProps'],
+  ['hover-card/HoverCardContent.vue', 'HoverCardPortal', 'HoverCardContentProps'],
+  ['dropdown-menu/DropdownMenuContent.vue', 'DropdownMenuPortal', 'DropdownMenuContentProps'],
+  ['context-menu/ContextMenuContent.vue', 'ContextMenuPortal', 'ContextMenuContentProps'],
+  ['menubar/MenubarContent.vue', 'MenubarPortal', 'MenubarContentProps'],
+  ['drawer/DrawerContent.vue', 'DrawerPortal', 'DrawerContentProps'],
+  ['sheet/SheetContent.vue', 'DialogPortal', 'SheetContentProps'],
+  ['alert-dialog/AlertDialogContent.vue', 'AlertDialogPortal', 'AlertDialogContentProps'],
+  ['combobox/ComboboxList.vue', 'ComboboxPortal', 'ComboboxContentProps'],
+  ['dialog/DialogScrollContent.vue', 'DialogPortal', 'DialogContentProps'],
+  ['menubar/MenubarSubContent.vue', 'MenubarPortal', 'MenubarSubContentProps'],
+  // NOT patched on purpose: `ContextMenuPortal.vue` IS the portal wrapper, with
+  // no `reactiveOmit` to extend, and a plugin would use ContextMenuContent
+  // rather than reach for the portal directly.
+];
+
+const LOCAL_PATCHES = Object.fromEntries(
+  PORTAL_CONTENTS.map(([file, portalTag, propsType]) => [
+    file,
+    {
+      why: `forwards portalTo to ${portalTag} so plugin popups stay theme-scoped`,
+      apply: (src) => forwardPortalTo(src, { portalTag, propsType }),
+    },
+  ]),
+);
 
 /**
  * Bare imports actually present in the written files.

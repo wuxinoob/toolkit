@@ -9,18 +9,18 @@ defineOptions({
   inheritAttrs: false,
 })
 
-const props = withDefaults(defineProps<TooltipContentProps & { class?: HTMLAttributes["class"] }>(), {
+const props = withDefaults(defineProps<TooltipContentProps & { class?: HTMLAttributes["class"]; portalTo?: string }>(), {
   sideOffset: 4,
 })
 
 const emits = defineEmits<TooltipContentEmits>()
 
-const delegatedProps = reactiveOmit(props, "class")
+const delegatedProps = reactiveOmit(props, "class", "portalTo")
 const forwarded = useForwardPropsEmits(delegatedProps, emits)
 </script>
 
 <template>
-  <TooltipPortal>
+  <TooltipPortal :to="props.portalTo">
     <TooltipContent
       data-slot="tooltip-content"
       v-bind="{ ...forwarded, ...$attrs }"
