@@ -127,6 +127,27 @@ export function el(tag, props = {}, children = undefined, ...rest) {
 const isDescriptor = (v) => v !== null && typeof v === 'object' && v.__uiEl === true;
 
 /**
+ * Describe a PLAIN HTML element, bypassing the component vocabulary.
+ *
+ * Needed because the vocabulary shadows HTML tag names. Most are harmless —
+ * `input`, `button`, `label`, `table` all render the element you expect — but
+ * `select` is not: `el('select', …)` is shadcn's Select (reka-ui, a button plus
+ * a popover), so its `<option>` children render as loose text. A plugin that
+ * needs a REAL `<select>` — typically because it is read back through
+ * `FormData`, which only sees native controls — has no other way to say so.
+ */
+export function nativeEl(tag, props = {}, children = undefined, ...rest) {
+  if (typeof tag !== 'string' || !tag) throw new Error('native(tag, props, children): tag is required');
+  return {
+    __uiEl: true,
+    __uiNative: true,
+    tag,
+    props: props ?? {},
+    children: rest.length ? [children, ...rest] : children,
+  };
+}
+
+/**
  * Point portalled components at the container the plugin rendered into, so the
  * popup stays inside the plugin's `[data-plugin]` scope and keeps its theme.
  * Without this a plugin's dropdown silently falls back to the app's accent.
@@ -152,18 +173,22 @@ function toVNode(node) {
   if (node === null || node === undefined || node === false || node === true) return null;
   if (!isDescriptor(node)) return node; // an already-built VNode or DOM node
 
-  const Comp = components.get(node.tag);
-  if (Comp) {
-    // Slot function, so a component that renders its slot lazily still works
-    // (and so a portalled child is only built when it actually opens).
-    return h(Comp, node.props, () => toVNode(node.children));
+  // `native()` wins even when the tag is also a component name — that is the
+  // whole point of it (see `nativeEl`).
+  if (!node.__uiNative) {
+    const Comp = components.get(node.tag);
+    if (Comp) {
+      // Slot function, so a component that renders its slot lazily still works
+      // (and so a portalled child is only built when it actually opens).
+      return h(Comp, node.props, () => toVNode(node.children));
+    }
   }
 
-  // Not a component — fall through to a plain element, so a plugin can use
-  // `div`, `span`, `code`, `pre`… without those being mistaken for components.
-  // Restricted to dash-free lowercase names: every component tag with a dash
-  // (card-header, select-item) is in the vocabulary, so a dashed miss is a typo
-  // and should say so rather than silently render an unknown element.
+  // Not a component — a plain element, so a plugin can use `div`, `span`,
+  // `code`, `pre`… without those being mistaken for components. Restricted to
+  // dash-free lowercase names: every component tag with a dash (card-header,
+  // select-item) is in the vocabulary, so a dashed miss is a typo and should
+  // say so rather than silently render an unknown element.
   if (/^[a-z][a-z0-9]*$/.test(node.tag)) {
     // Children are resolved eagerly here: the slot-function form is a component
     // concept and a plain element would render it as nothing.
@@ -216,6 +241,7 @@ export function createUiKit({ track } = {}) {
     /** The vocabulary, so a plugin can discover what it may use. */
     components: () => uiKitVocabulary(),
     el,
+    native: nativeEl,
 
     /**
      * Render a descriptor tree into a container, replacing what was there.

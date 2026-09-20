@@ -513,65 +513,106 @@ function reapDetached() {
 
 
 function registerRenderHooks(ctx) {
-  ctx.registerView('procman', (el) => {
-    reapDetached();
-    el.innerHTML = `
-      <div class="pm-root" style="display:grid;grid-template-columns:250px 1fr 270px;gap:8px;height:100%;min-height:0;">
-        <div class="pm-left" style="display:flex;flex-direction:column;gap:8px;min-height:0;">
-          <div style="display:flex;gap:6px;align-items:center;">
-            <span class="tb-section-title" style="margin:0;">Sessions</span>
-            <span class="pm-count tb-hint" style="margin-left:auto;"></span>
-          </div>
-          <div class="pm-sessions tb-list" role="listbox" aria-label="Sessions" style="max-height:32%;"></div>
-          <div class="pm-profiles-panel" style="border-top:1px solid var(--color-line);padding-top:8px;display:flex;flex-direction:column;min-height:0;flex:1;">
-            <div class="tb-toolbar">
-              <span class="tb-section-title" style="margin:0;">Profiles</span>
-              <button data-act="profile-new" class="tb-btn tb-btn-sm" style="margin-left:auto;">+ New</button>
-            </div>
-            <div class="pm-profiles tb-list" style="margin-top:6px;"></div>
-            <div class="pm-profile-editor"></div>
-          </div>
-          <details class="pm-form-wrap tb-pane tb-pane-pad" style="margin-top:auto;">
-            <summary style="cursor:pointer;font-size:12px;">New session…</summary>
-            <form class="pm-form" style="display:flex;flex-direction:column;gap:6px;margin-top:8px;font-size:12px;">
-              <input name="name" placeholder="display name" class="tb-input" />
-              <input name="program" placeholder="program (e.g. node)" required class="tb-input" />
-              <input name="args" placeholder="args (space separated)" class="tb-input" />
-              <input name="cwd" placeholder="cwd (optional)" class="tb-input" />
-              <label class="tb-label" style="display:flex;gap:6px;align-items:center;">
-                <input type="checkbox" name="saveProfile" /> save as profile
-              </label>
-              <button data-act="run" class="pm-run tb-btn" type="submit">Run</button>
-              <div class="pm-form-err tb-t-bad" style="font-size:11px;"></div>
-            </form>
-          </details>
-        </div>
-        <div class="pm-center tb-card" style="display:flex;flex-direction:column;min-height:0;overflow:hidden;">
-          <div class="pm-tabs tb-tabs" role="tablist" aria-label="Sessions"></div>
-          <div class="pm-term-area" style="flex:1;min-height:0;position:relative;background:var(--color-canvas);">
-            <div class="pm-term-empty tb-empty" style="position:absolute;inset:0;">
-              No active session — run something, or hit ▶ on a profile.
-            </div>
-          </div>
-        </div>
-        <div class="pm-detail tb-card" style="padding:10px;overflow:auto;font-size:12px;"></div>
-      </div>`;
+  const { el, render } = ctx.ui;
 
-    el.querySelector('.pm-sessions').addEventListener('click', onSessionClick);
+  ctx.registerView('procman', (root) => {
+    reapDetached();
+
+    render(
+      root,
+      el(
+        'div',
+        { class: 'pm-root', style: 'display:grid;grid-template-columns:250px 1fr 270px;gap:8px;height:100%;min-height:0;' },
+
+        el(
+          'div',
+          { class: 'pm-left', style: 'display:flex;flex-direction:column;gap:8px;min-height:0;' },
+          el(
+            'div',
+            { style: 'display:flex;gap:6px;align-items:center;' },
+            el('span', { class: 'tb-section-title', style: 'margin:0;' }, 'Sessions'),
+            el('span', { class: 'pm-count tb-hint', style: 'margin-left:auto;' }),
+          ),
+          el('div', { class: 'pm-sessions tb-list', role: 'listbox', 'aria-label': 'Sessions', style: 'max-height:32%;' }),
+
+          el(
+            'div',
+            {
+              class: 'pm-profiles-panel',
+              style: 'border-top:1px solid var(--color-line);padding-top:8px;display:flex;flex-direction:column;min-height:0;flex:1;',
+            },
+            el(
+              'div',
+              { class: 'tb-toolbar' },
+              el('span', { class: 'tb-section-title', style: 'margin:0;' }, 'Profiles'),
+              el(
+                'button',
+                { variant: 'outline', size: 'xs', 'data-act': 'profile-new', style: 'margin-left:auto;' },
+                '+ New',
+              ),
+            ),
+            el('div', { class: 'pm-profiles tb-list', style: 'margin-top:6px;' }),
+            el('div', { class: 'pm-profile-editor' }),
+          ),
+
+          el(
+            'details',
+            { class: 'pm-form-wrap tb-pane tb-pane-pad', style: 'margin-top:auto;' },
+            el('summary', { style: 'cursor:pointer;font-size:12px;' }, 'New session…'),
+            el(
+              'form',
+              { class: 'pm-form', style: 'display:flex;flex-direction:column;gap:6px;margin-top:8px;font-size:12px;' },
+              el('input', { name: 'name', placeholder: 'display name' }),
+              el('input', { name: 'program', placeholder: 'program (e.g. node)', required: true }),
+              el('input', { name: 'args', placeholder: 'args (space separated)' }),
+              el('input', { name: 'cwd', placeholder: 'cwd (optional)' }),
+              // A native checkbox, not the Checkbox component: this one is read
+              // out of a real <form> via FormData, and a reka-ui Checkbox is a
+              // button, so it would never appear in the form's entries.
+              el(
+                'label',
+                { class: 'tb-label', style: 'display:flex;gap:6px;align-items:center;' },
+                el('input', { type: 'checkbox', name: 'saveProfile' }),
+                ' save as profile',
+              ),
+              el('button', { variant: 'default', 'data-act': 'run', type: 'submit' }, 'Run'),
+              el('div', { class: 'pm-form-err tb-t-bad', style: 'font-size:11px;' }),
+            ),
+          ),
+        ),
+
+        el(
+          'div',
+          { class: 'pm-center tb-card', style: 'display:flex;flex-direction:column;min-height:0;overflow:hidden;' },
+          el('div', { class: 'pm-tabs tb-tabs', role: 'tablist', 'aria-label': 'Sessions' }),
+          el(
+            'div',
+            { class: 'pm-term-area', style: 'flex:1;min-height:0;position:relative;background:var(--color-canvas);' },
+            el(
+              'div',
+              { class: 'pm-term-empty tb-empty', style: 'position:absolute;inset:0;' },
+              'No active session — run something, or hit ▶ on a profile.',
+            ),
+          ),
+        ),
+
+        el('div', { class: 'pm-detail tb-card', style: 'padding:10px;overflow:auto;font-size:12px;' }),
+      ),
+    );
+
+    // Delegation is unchanged: the tree keeps the same `data-*` hooks and class
+    // names the handlers were written against, so only the DOM building moved.
+    root.querySelector('.pm-sessions').addEventListener('click', onSessionClick);
     // Bound to the PANEL, not the list: "+ New" lives in the header, and a
     // listener on the list alone never saw it (the button did nothing).
-    el.querySelector('.pm-profiles-panel').addEventListener('click', (ev) => onProfileClick(el, ev));
-    el.querySelector('.pm-profile-editor').addEventListener('change', (ev) => {
-      // a toggle fires change, not click
-      if (ev.target.closest('[data-act="profile-toggle"]')) onProfileClick(el, ev);
-    });
-    el.querySelector('.pm-tabs').addEventListener('click', onTabClick);
-    el.querySelector('.pm-form').addEventListener('submit', onRunSubmit);
+    root.querySelector('.pm-profiles-panel').addEventListener('click', (ev) => onProfileClick(root, ev));
+    root.querySelector('.pm-tabs').addEventListener('click', onTabClick);
+    root.querySelector('.pm-form').addEventListener('submit', onRunSubmit);
 
-    renderSessionList(el);
-    renderProfiles(el);
-    renderProfileEditor(el);
-    renderTabs(el);
+    renderSessionList(root);
+    renderProfiles(root);
+    renderProfileEditor(root);
+    renderTabs(root);
     activateSession(state.activeCh);
     renderDetail();
   });
@@ -645,7 +686,7 @@ async function onRunSubmit(ev) {
 /** A status dot. The colour comes from the stylesheet, so it themes. */
 function dot(status) {
   const variant = status === 'running' ? 'tb-dot-ok' : status === 'exited' ? '' : 'tb-dot-bad';
-  return `<span class="tb-dot ${variant}" title="${esc(status)}"></span>`;
+  return state.ctx.ui.el('span', { class: `tb-dot ${variant}`.trim(), title: status });
 }
 
 function refreshSessionRows() {
@@ -658,28 +699,34 @@ function refreshSessionRows() {
 function renderSessionList(root) {
   const host = (root || document).querySelector('.pm-sessions');
   if (!host) return;
+  const { el, render } = state.ctx.ui;
   const items = [...state.sessions.values()].reverse();
   const countEl = (root || document).querySelector('.pm-count');
   if (countEl) {
     countEl.textContent = `${items.filter((s) => s.status === 'running').length} running / ${items.length}`;
   }
-  host.innerHTML = items.length
-    ? items
-        .map(
-          (s) => `
-      <div class="tb-row" data-ch="${s.ch}" role="option" aria-selected="${s.ch === state.activeCh}">
-        ${dot(s.status)}<span class="tb-row-label">${esc(s.name)}</span>
-        ${
-          s.status === 'running' || s.status === 'starting'
-            ? `<span class="tb-row-actions"><button class="tb-icon-btn tb-icon-btn-danger" data-act="kill" title="Stop" aria-label="Stop">✕</button></span>`
-            : ''
-        }
-      </div>`,
+  const running = (s) => s.status === 'running' || s.status === 'starting';
+  render(
+    host,
+    items.length
+      ? items.map((s) =>
+          el(
+            'div',
+            { class: 'tb-row', 'data-ch': s.ch, role: 'option', 'aria-selected': String(s.ch === state.activeCh) },
+            dot(s.status),
+            el('span', { class: 'tb-row-label' }, s.name),
+            running(s)
+              ? el(
+                  'span',
+                  { class: 'tb-row-actions' },
+                  el('button', { class: 'tb-icon-btn tb-icon-btn-danger', 'data-act': 'kill', title: 'Stop', 'aria-label': 'Stop' }, '✕'),
+                )
+              : null,
+          ),
         )
-        .join('')
-    : `<div class="tb-hint">No sessions yet.</div>`;
+      : el('div', { class: 'tb-hint' }, 'No sessions yet.'),
+  );
 }
-
 
 /* ---------------------------------- profiles UI -------------------------------- */
 
@@ -687,112 +734,195 @@ function renderSessionList(root) {
 function renderProfiles(root) {
   const host = root.querySelector('.pm-profiles');
   if (!host) return;
+  const { el, render } = state.ctx.ui;
+
   if (!state.profiles.length) {
-    host.innerHTML = `<div class="tb-hint">No profiles. A profile can auto-start with the app and run on a schedule.</div>`;
+    render(
+      host,
+      el('div', { class: 'tb-hint' }, 'No profiles. A profile can auto-start with the app and run on a schedule.'),
+    );
     return;
   }
-  host.innerHTML = state.profiles
-    .map((p) => {
+
+  const redraw = () => {
+    renderProfiles(root);
+    renderProfileEditor(root);
+  };
+
+  render(
+    host,
+    state.profiles.map((p) => {
       const live = runningFor(p.id).length;
-      const badges = [
-        p.autoStart ? `<span class="tb-badge">auto</span>` : '',
-        p.schedule.kind !== 'none' ? `<span class="tb-badge">${esc(describeSchedule(p.schedule))}</span>` : '',
-        p.restart.policy !== 'never' ? `<span class="tb-badge" title="restart policy">↻</span>` : '',
-      ]
-        .filter(Boolean)
-        .join(' ');
-      return `
-      <div class="pm-profile tb-pane tb-pane-pad" data-id="${esc(p.id)}" style="padding:6px;${p.enabled ? '' : 'opacity:.5;'}">
-        <div style="display:flex;align-items:center;gap:5px;">
-          <input type="checkbox" data-act="profile-toggle" ${p.enabled ? 'checked' : ''} title="Enabled" />
-          <span class="tb-row-label" style="font-weight:500;">${esc(p.name || p.program)}</span>
-          <span class="tb-hint" title="${live ? `${live} running` : 'not running'}">
-            ${live ? `<span class="tb-dot tb-dot-ok"></span> ${live}` : `<span class="tb-dot"></span>`}
-          </span>
-        </div>
-        <div class="tb-hint tb-mono" style="margin-top:2px;">
-          ${esc([p.program, ...p.args].join(' '))}
-        </div>
-        <div style="display:flex;gap:4px;align-items:center;margin-top:5px;">
-          ${badges}
-          <span class="tb-row-actions" style="gap:3px;">
-            <button class="tb-btn tb-btn-sm" data-act="profile-run" title="Run now" aria-label="Run now">▶</button>
-            <button class="tb-btn tb-btn-sm" data-act="profile-stop" title="Stop" aria-label="Stop" ${live ? '' : 'disabled'}>■</button>
-            <button class="tb-btn tb-btn-sm" data-act="profile-edit" title="Edit" aria-label="Edit">✎</button>
-            <button class="tb-btn tb-btn-sm" data-act="profile-del" title="Delete" aria-label="Delete">✕</button>
-          </span>
-        </div>
-      </div>`;
-    })
-    .join('');
+      return el(
+        'div',
+        {
+          class: 'pm-profile tb-pane tb-pane-pad',
+          'data-id': p.id,
+          style: `padding:6px;${p.enabled ? '' : 'opacity:.5;'}`,
+        },
+        el(
+          'div',
+          { style: 'display:flex;align-items:center;gap:6px;' },
+          // The enabled toggle is a real Checkbox, so its state arrives through
+          // `update:modelValue` rather than a delegated `change` on a native
+          // input. Attaching it here keeps the event next to the control that
+          // owns it.
+          el('checkbox', {
+            'data-act': 'profile-toggle',
+            title: 'Enabled',
+            defaultValue: p.enabled,
+            'onUpdate:modelValue': (v) => {
+              upsertProfile({ ...p, enabled: !!v });
+              redraw();
+            },
+          }),
+          el('span', { class: 'tb-row-label', style: 'font-weight:500;' }, p.name || p.program),
+          el(
+            'span',
+            { class: 'tb-hint', title: live ? `${live} running` : 'not running' },
+            live ? el('span', { class: 'tb-dot tb-dot-ok' }) : el('span', { class: 'tb-dot' }),
+            live ? ` ${live}` : '',
+          ),
+        ),
+        el('div', { class: 'tb-hint tb-mono', style: 'margin-top:2px;' }, [p.program, ...p.args].join(' ')),
+        el(
+          'div',
+          { style: 'display:flex;gap:4px;align-items:center;margin-top:5px;' },
+          p.autoStart ? el('badge', { variant: 'outline' }, 'auto') : null,
+          p.schedule.kind !== 'none' ? el('badge', { variant: 'outline' }, describeSchedule(p.schedule)) : null,
+          p.restart.policy !== 'never' ? el('badge', { variant: 'outline', title: 'restart policy' }, '↻') : null,
+          el(
+            'span',
+            { class: 'tb-row-actions', style: 'gap:3px;' },
+            el('button', { variant: 'outline', size: 'icon-xs', 'data-act': 'profile-run', title: 'Run now', 'aria-label': 'Run now' }, '▶'),
+            el(
+              'button',
+              { variant: 'outline', size: 'icon-xs', 'data-act': 'profile-stop', title: 'Stop', 'aria-label': 'Stop', disabled: !live },
+              '■',
+            ),
+            el('button', { variant: 'outline', size: 'icon-xs', 'data-act': 'profile-edit', title: 'Edit', 'aria-label': 'Edit' }, '✎'),
+            el('button', { variant: 'outline', size: 'icon-xs', 'data-act': 'profile-del', title: 'Delete', 'aria-label': 'Delete' }, '✕'),
+          ),
+        ),
+      );
+    }),
+  );
 }
 
-/** The add/edit form. Only one profile is edited at a time. */
+/**
+ * The add/edit form. Only one profile is edited at a time.
+ *
+ * Text and number fields are shadcn `input`/`textarea`, which render real
+ * `<input>`/`<textarea>` elements, so `FormData` still sees them. The two
+ * dropdowns and the two toggles stay native on purpose: reka-ui's `Select` and
+ * `Checkbox` render buttons, not form controls, so `FormData` would silently
+ * drop them and every save would lose the schedule and the flags. Rewriting the
+ * submit handler to read component state is the alternative — worth doing, but
+ * it is a behaviour change, not a styling one.
+ */
 function renderProfileEditor(root) {
   const host = root.querySelector('.pm-profile-editor');
   if (!host) return;
-  const editing = state.editingId ? state.profiles.find((p) => p.id === state.editingId) : null;
-  if (!state.editingId) {
-    host.innerHTML = '';
+  const { el, native, render } = state.ctx.ui;
+
+  // `null` is "closed"; `''` is "creating a new one". The original guard was
+  // `if (!state.editingId)`, which is TRUE for `''` — so "+ New" cleared the
+  // editor instead of opening it. Same reported symptom as the mis-bound
+  // listener fixed earlier, different cause.
+  if (state.editingId === null) {
+    render(host, null);
     return;
   }
+
+  const editing = state.profiles.find((p) => p.id === state.editingId) ?? null;
   const p = editing ?? { ...DEFAULT_PROFILE, id: newProfileId() };
   const field = (label, input) =>
-    `<label style="display:flex;flex-direction:column;gap:2px;font-size:10.5px;opacity:.75;">${label}${input}</label>`;
-  const num = (name, value, min, max) =>
-    `<input class="tb-input" name="${name}" type="number" min="${min}" max="${max}" value="${value}" />`;
+    el(
+      'label',
+      { style: 'display:flex;flex-direction:column;gap:3px;font-size:10.5px;' },
+      el('span', { class: 'tb-label' }, label),
+      input,
+    );
+  const num = (name, value, min, max) => el('input', { name, type: 'number', min, max, defaultValue: value });
+  // `native(...)`, not `el(...)`: `el('select')` is shadcn's Select component,
+  // whose options would render as loose text instead of a real form control.
+  const nativeSelect = (name, options, current) =>
+    native(
+      'select',
+      { name, class: 'tb-select' },
+      options.map((k) => el('option', { value: k, selected: current === k }, k)),
+    );
+  const nativeToggle = (name, label, checked) =>
+    el(
+      'label',
+      { class: 'tb-label', style: 'display:flex;gap:5px;align-items:center;' },
+      el('input', { type: 'checkbox', name, checked }),
+      ` ${label}`,
+    );
 
-  host.innerHTML = `
-    <form class="pm-profile-form tb-pane tb-pane-pad" data-id="${esc(p.id)}" style="display:flex;flex-direction:column;gap:5px;margin-top:8px;">
-      <div style="font-size:11px;opacity:.7;">${editing ? 'Edit profile' : 'New profile'}</div>
-      ${field('name', `<input class="tb-input" name="name" value="${esc(p.name)}" placeholder="My backend" />`)}
-      ${field('program', `<input class="tb-input" name="program" value="${esc(p.program)}" placeholder="node" />`)}
-      ${field('args (space separated)', `<input class="tb-input" name="args" value="${esc(p.args.join(' '))}" />`)}
-      ${field('cwd', `<input class="tb-input" name="cwd" value="${esc(p.cwd)}" placeholder="optional" />`)}
-      ${field('env (KEY=VALUE, one per line)', `<textarea class="tb-textarea" name="env" rows="2">${esc(p.env.join('\n'))}</textarea>`)}
-      <div style="display:flex;gap:6px;">
-        ${field('cols', num('cols', p.cols, 20, 500))}
-        ${field('rows', num('rows', p.rows, 5, 200))}
-      </div>
-      <div style="display:flex;gap:10px;font-size:11px;">
-        <label style="display:flex;gap:4px;align-items:center;"><input type="checkbox" name="enabled" ${p.enabled ? 'checked' : ''} /> enabled</label>
-        <label style="display:flex;gap:4px;align-items:center;"><input type="checkbox" name="autoStart" ${p.autoStart ? 'checked' : ''} /> start with app</label>
-      </div>
-      ${field(
-        'schedule',
-        `<select name="schedKind" class="tb-select">
-           ${['none', 'daily', 'interval']
-             .map((k) => `<option value="${k}" ${p.schedule.kind === k ? 'selected' : ''}>${k === 'none' ? 'manual only' : k}</option>`)
-             .join('')}
-         </select>`,
-      )}
-      <div style="display:flex;gap:6px;">
-        ${field('at (daily)', `<input class="tb-input" name="schedAt" type="time" value="${esc(p.schedule.at)}" />`)}
-        ${field('every (min)', num('schedEvery', p.schedule.everyMinutes, 1, 1440))}
-      </div>
-      ${field(
-        'restart on exit',
-        `<select name="restartPolicy" class="tb-select">
-           ${['never', 'on-failure', 'always']
-             .map((k) => `<option value="${k}" ${p.restart.policy === k ? 'selected' : ''}>${k}</option>`)
-             .join('')}
-         </select>`,
-      )}
-      <div style="display:flex;gap:6px;">
-        ${field('max retries', num('maxRetries', p.restart.maxRetries, 0, 100))}
-        ${field('delay (ms)', num('delayMs', p.restart.delayMs, 0, 600000))}
-      </div>
-      <div style="display:flex;gap:6px;">
-        <button type="submit" class="tb-btn">Save</button>
-        <button type="button" data-act="profile-cancel" class="tb-btn">Cancel</button>
-      </div>
-      <div class="pm-profile-err tb-t-bad" style="font-size:11px;"></div>
-    </form>`;
-  host.querySelector('.pm-profile-form').addEventListener('submit', onProfileSubmit);
-  host.querySelector('[data-act="profile-cancel"]').addEventListener('click', () => {
-    state.editingId = null;
-    renderProfileEditor(root);
-  });
+  render(
+    host,
+    el(
+      'form',
+      {
+        class: 'pm-profile-form tb-pane tb-pane-pad',
+        'data-id': p.id,
+        style: 'display:flex;flex-direction:column;gap:6px;margin-top:8px;',
+        onSubmit: onProfileSubmit,
+      },
+      el('div', { class: 'tb-section-title', style: 'margin:0;' }, editing ? 'Edit profile' : 'New profile'),
+      field('name', el('input', { name: 'name', defaultValue: p.name, placeholder: 'My backend' })),
+      field('program', el('input', { name: 'program', defaultValue: p.program, placeholder: 'node' })),
+      field('args (space separated)', el('input', { name: 'args', defaultValue: p.args.join(' ') })),
+      field('cwd', el('input', { name: 'cwd', defaultValue: p.cwd, placeholder: 'optional' })),
+      field('env (KEY=VALUE, one per line)', el('textarea', { name: 'env', rows: 2, defaultValue: p.env.join('\n') })),
+      el(
+        'div',
+        { style: 'display:flex;gap:6px;' },
+        field('cols', num('cols', p.cols, 20, 500)),
+        field('rows', num('rows', p.rows, 5, 200)),
+      ),
+      el(
+        'div',
+        { style: 'display:flex;gap:12px;font-size:11px;' },
+        nativeToggle('enabled', 'enabled', p.enabled),
+        nativeToggle('autoStart', 'start with app', p.autoStart),
+      ),
+      field('schedule', nativeSelect('schedKind', ['none', 'daily', 'interval'], p.schedule.kind)),
+      el(
+        'div',
+        { style: 'display:flex;gap:6px;' },
+        field('at (daily)', el('input', { name: 'schedAt', type: 'time', defaultValue: p.schedule.at })),
+        field('every (min)', num('schedEvery', p.schedule.everyMinutes, 1, 1440)),
+      ),
+      field('restart on exit', nativeSelect('restartPolicy', ['never', 'on-failure', 'always'], p.restart.policy)),
+      el(
+        'div',
+        { style: 'display:flex;gap:6px;' },
+        field('max retries', num('maxRetries', p.restart.maxRetries, 0, 100)),
+        field('delay (ms)', num('delayMs', p.restart.delayMs, 0, 600000)),
+      ),
+      el(
+        'div',
+        { style: 'display:flex;gap:6px;' },
+        el('button', { variant: 'default', type: 'submit' }, 'Save'),
+        el(
+          'button',
+          {
+            variant: 'outline',
+            type: 'button',
+            'data-act': 'profile-cancel',
+            onClick: () => {
+              state.editingId = null;
+              renderProfileEditor(root);
+            },
+          },
+          'Cancel',
+        ),
+      ),
+      el('div', { class: 'pm-profile-err tb-t-bad', style: 'font-size:11px;' }),
+    ),
+  );
 }
 
 function onProfileClick(root, ev) {
@@ -809,11 +939,6 @@ function onProfileClick(root, ev) {
 
   if (!btn) return;
   switch (btn.dataset.act) {
-    case 'profile-toggle':
-      upsertProfile({ ...profile, enabled: btn.checked });
-      renderProfiles(root);
-      renderProfileEditor(root);
-      break;
     case 'profile-run':
       launchProfile(profile, 'manual');
       break;
@@ -874,16 +999,23 @@ function onProfileSubmit(ev) {
 function renderTabs(root) {
   const host = (root || document).querySelector('.pm-tabs');
   if (!host) return;
-  const items = [...state.sessions.values()].reverse();
-  host.innerHTML = items
-    .map(
-      (s) => `
-    <div class="tb-tab" data-ch="${s.ch}" role="tab" aria-selected="${s.ch === state.activeCh}">
-      ${dot(s.status)}${esc(s.name)}
-      <span class="tb-icon-btn" data-act="close" role="button" title="Remove tab" aria-label="Remove tab">×</span>
-    </div>`,
-    )
-    .join('');
+  const { el, render } = state.ctx.ui;
+  render(
+    host,
+    [...state.sessions.values()].reverse().map((s) =>
+      el(
+        'div',
+        { class: 'tb-tab', 'data-ch': s.ch, role: 'tab', 'aria-selected': String(s.ch === state.activeCh) },
+        dot(s.status),
+        s.name,
+        el(
+          'span',
+          { class: 'tb-icon-btn', 'data-act': 'close', role: 'button', title: 'Remove tab', 'aria-label': 'Remove tab' },
+          '×',
+        ),
+      ),
+    ),
+  );
 }
 
 function activateSession(ch) {
@@ -932,55 +1064,103 @@ function removeSession(ch) {
 function renderDetail() {
   const host = document.querySelector('.pm-detail');
   if (!host) return;
+  const { el, render } = state.ctx.ui;
+
   const s = state.sessions.get(state.selectedCh);
   if (!s) {
-    host.innerHTML = `<div class="tb-hint">Select a session to inspect it.</div>`;
+    render(host, el('div', { class: 'tb-hint' }, 'Select a session to inspect it.'));
     return;
   }
+
   const uptime = s.status === 'running' ? `${((Date.now() - s.startedAt) / 1000).toFixed(1)}s` : '—';
   const running = s.status === 'running' || s.status === 'starting';
-  host.innerHTML = `
-    <strong style="font-size:13px;">${esc(s.name)}</strong>
-    <div class="tb-t-muted" style="margin:8px 0;display:flex;flex-direction:column;gap:4px;">
-      <div>${dot(s.status)} status: ${s.status}${s.status === 'exited' ? ` (code ${s.exitCode})` : ''}</div>
-      <div>program: <code class="tb-mono tb-t-muted">${esc(s.cfg.program)} ${esc((s.cfg.args || []).join(' '))}</code></div>
-      ${s.cfg.cwd ? `<div>cwd: ${esc(s.cfg.cwd)}</div>` : ''}
-      ${s.cfg.env && Object.keys(s.cfg.env).length ? `<div>env: <code class="tb-mono">${esc(Object.keys(s.cfg.env).join(', '))}</code></div>` : ''}
-      ${(() => {
-        const prof = state.profiles.find((p) => p.id === s.profileId);
-        if (!prof) return '';
-        return `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--color-line);">
-          <div>profile: <code class="tb-mono tb-t-brand">${esc(prof.name || prof.id)}</code></div>
-          <div>schedule: ${esc(describeSchedule(prof.schedule))}</div>
-          <div>restart: ${esc(describeRestart(prof.restart))}${s.attempts ? ` · restarted ${s.attempts}×` : ''}</div>
-          ${s.stoppedByUser ? '<div class="tb-hint">stopped by you — no restart</div>' : ''}
-        </div>`;
-      })()}
-      <div>channel: <code class="tb-mono tb-t-muted">${esc(s.ch)}</code></div>
-      <div>pid: ${s.pid ?? '—'}</div>
-      <div>uptime: ${uptime}</div>
-      <div>bytes in: ${s.bytesIn}</div>
-      <div>scheme: pty-stream (raw-binary)</div>
-    </div>
-    <div class="tb-toolbar" style="margin-top:10px;">
-      <button class="tb-btn tb-btn-danger" data-act="kill-sel" ${running ? '' : 'disabled'}>Stop</button>
-      <button class="tb-btn" data-act="close-sel" ${running ? 'disabled title="Stop it first"' : ''}>Remove tab</button>
-    </div>
-    <div style="margin-top:12px;border-top:1px solid var(--color-line);padding-top:8px;">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;">
-        <span class="tb-section-title" style="margin:0;">output ring (last 4KB)</span>
-        <label class="tb-hint" style="margin-left:auto;display:flex;gap:4px;align-items:center;cursor:pointer;" title="raw = byte-accurate stream incl. ANSI escapes (debug)">
-          <input type="checkbox" data-act="ring-raw" ${state.ringRaw ? 'checked' : ''} /> raw
-        </label>
-      </div>
-      <pre class="pm-ring tb-pane tb-mono" style="margin:0;padding:6px;white-space:pre-wrap;word-break:break-all;max-height:220px;">${esc(ringText(s)) || '(empty)'}</pre>
-    </div>`;
-  host.querySelector('[data-act="kill-sel"]')?.addEventListener('click', () => killSession(s.ch));
-  host.querySelector('[data-act="close-sel"]')?.addEventListener('click', () => removeSession(s.ch));
-  host.querySelector('[data-act="ring-raw"]')?.addEventListener('change', (ev) => {
-    state.ringRaw = ev.target.checked;
-    renderDetail();
-  });
+  const prof = state.profiles.find((p) => p.id === s.profileId);
+  const code = (text, cls = 'tb-mono tb-t-muted') => el('code', { class: cls }, text);
+
+  render(
+    host,
+    el(
+      'div',
+      {},
+      el('strong', { style: 'font-size:13px;' }, s.name),
+      el(
+        'div',
+        { class: 'tb-t-muted', style: 'margin:8px 0;display:flex;flex-direction:column;gap:4px;' },
+        el('div', {}, dot(s.status), ` status: ${s.status}${s.status === 'exited' ? ` (code ${s.exitCode})` : ''}`),
+        el('div', {}, 'program: ', code([s.cfg.program, ...(s.cfg.args || [])].join(' '))),
+        s.cfg.cwd ? el('div', {}, `cwd: ${s.cfg.cwd}`) : null,
+        s.cfg.env && Object.keys(s.cfg.env).length
+          ? el('div', {}, 'env: ', code(Object.keys(s.cfg.env).join(', ')))
+          : null,
+        prof
+          ? el(
+              'div',
+              { style: 'margin-top:6px;padding-top:6px;border-top:1px solid var(--color-line);' },
+              el('div', {}, 'profile: ', code(prof.name || prof.id, 'tb-mono tb-t-brand')),
+              el('div', {}, `schedule: ${describeSchedule(prof.schedule)}`),
+              el('div', {}, `restart: ${describeRestart(prof.restart)}${s.attempts ? ` · restarted ${s.attempts}×` : ''}`),
+              s.stoppedByUser ? el('div', { class: 'tb-hint' }, 'stopped by you — no restart') : null,
+            )
+          : null,
+        el('div', {}, 'channel: ', code(s.ch)),
+        el('div', {}, `pid: ${s.pid ?? '—'}`),
+        el('div', {}, `uptime: ${uptime}`),
+        el('div', {}, `bytes in: ${s.bytesIn}`),
+        el('div', {}, 'scheme: pty-stream (raw-binary)'),
+      ),
+      el(
+        'div',
+        { class: 'tb-toolbar', style: 'margin-top:10px;' },
+        el(
+          'button',
+          { variant: 'destructive', 'data-act': 'kill-sel', disabled: !running, onClick: () => killSession(s.ch) },
+          'Stop',
+        ),
+        el(
+          'button',
+          {
+            variant: 'outline',
+            'data-act': 'close-sel',
+            disabled: running,
+            title: running ? 'Stop it first' : undefined,
+            onClick: () => removeSession(s.ch),
+          },
+          'Remove tab',
+        ),
+      ),
+      el(
+        'div',
+        { style: 'margin-top:12px;border-top:1px solid var(--color-line);padding-top:8px;' },
+        el(
+          'div',
+          { style: 'display:flex;align-items:center;gap:8px;margin-bottom:5px;' },
+          el('span', { class: 'tb-section-title', style: 'margin:0;' }, 'output ring (last 4KB)'),
+          el(
+            'label',
+            {
+              class: 'tb-hint',
+              style: 'margin-left:auto;display:flex;gap:5px;align-items:center;cursor:pointer;',
+              title: 'raw = byte-accurate stream incl. ANSI escapes (debug)',
+            },
+            el('checkbox', {
+              'data-act': 'ring-raw',
+              defaultValue: state.ringRaw,
+              'onUpdate:modelValue': (v) => {
+                state.ringRaw = !!v;
+                renderDetail();
+              },
+            }),
+            ' raw',
+          ),
+        ),
+        el(
+          'pre',
+          { class: 'pm-ring tb-pane tb-mono', style: 'margin:0;padding:6px;white-space:pre-wrap;word-break:break-all;max-height:220px;' },
+          ringText(s) || '(empty)',
+        ),
+      ),
+    ),
+  );
 }
 
 /* ---------------------------------- helpers ----------------------------------- */

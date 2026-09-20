@@ -315,10 +315,25 @@ test('example plugins: the window entry exports mountWindow, as the window host 
  *
  * Every plugin builds its UI as a big HTML template string. Without this, the
  * audit would read markup ("Run", "save as profile") as if it were code.
+ *
+ * Regex literals need explicit handling, and skipping them is not optional:
+ * every plugin has an `esc()` whose pattern is `/[&<>"']/g`, and the `"` inside
+ * it reads as the start of a string. That one character used to swallow the rest
+ * of the file — so a function declared below `esc` looked undeclared while its
+ * call site above it survived, and the audit reported a phantom dead call.
+ * Telling a regex from division is the classic hard case; the heuristic below
+ * (a `/` in expression position opens a regex) is the standard one and is
+ * exactly right for the code this audit reads.
  */
+const REGEX_PRECEDERS = new Set([
+  '(', ',', '=', ':', '[', '!', '&', '|', '?', '{', '}', ';', '+', '-', '*', '%', '<', '>', '~', '^', 'return',
+]);
+
 function codeOnly(src) {
   let out = '';
   let i = 0;
+  /** Last significant character emitted — decides regex vs division. */
+  let prev = '\n';
   while (i < src.length) {
     const c = src[i];
     const d = src[i + 1];
@@ -332,6 +347,29 @@ function codeOnly(src) {
       i += 2;
       continue;
     }
+    if (c === '/' && REGEX_PRECEDERS.has(prev)) {
+      // A regex literal: skip to the closing slash, honouring escapes and
+      // character classes (`[/]` contains a slash that does not close it).
+      i += 1;
+      let inClass = false;
+      while (i < src.length) {
+        const ch = src[i];
+        if (ch === '\\') {
+          i += 2;
+          continue;
+        }
+        if (ch === '[') inClass = true;
+        else if (ch === ']') inClass = false;
+        else if (ch === '/' && !inClass) break;
+        else if (ch === '\n') break; // not a regex after all; bail out safely
+        i += 1;
+      }
+      i += 1;
+      while (i < src.length && /[a-z]/.test(src[i])) i += 1; // flags
+      out += ' ';
+      prev = ')';
+      continue;
+    }
     if (c === "'" || c === '"') {
       i += 1;
       while (i < src.length && src[i] !== c) {
@@ -340,6 +378,7 @@ function codeOnly(src) {
       }
       i += 1;
       out += ' ';
+      prev = ')';
       continue;
     }
     if (c === '`') {
@@ -369,9 +408,11 @@ function codeOnly(src) {
       }
       i += 1;
       out += ' ';
+      prev = ')';
       continue;
     }
     out += c;
+    if (!/\s/.test(c)) prev = c;
     i += 1;
   }
   return out;

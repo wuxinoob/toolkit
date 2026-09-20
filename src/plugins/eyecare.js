@@ -45,15 +45,20 @@ function endBreak(ctx) {
 
 function runBreak(ctx, cfg) {
   if (overlay) return; // already in a break
-  overlay = document.createElement('div');
-  // .tb-screen is a tokenised full-window takeover, so the break screen is a
-  // light screen in the light theme instead of a black one with green text.
-  overlay.className = 'tb-screen';
-  overlay.innerHTML = `
-    <div class="tb-screen-title">Please look at something 20 feet away</div>
-    <div class="ec-count tb-screen-count">${cfg.breakSec}</div>
-    <button class="ec-skip tb-btn">Skip</button>`;
-  overlay.querySelector('.ec-skip').addEventListener('click', () => endBreak(ctx));
+  const { el, node } = ctx.ui;
+  // Built through the factory, then handed to the overlay layer. `node()` (not
+  // `render()`) because the overlay mounts into the host's overlay container
+  // rather than into this plugin's view — there is no container to render into
+  // at this point, and nothing here is portalled, so no theme scope is lost.
+  overlay = node(
+    el(
+      'div',
+      { class: 'tb-screen' },
+      el('div', { class: 'tb-screen-title' }, 'Please look at something 20 feet away'),
+      el('div', { class: 'ec-count tb-screen-count' }, String(cfg.breakSec)),
+      el('button', { variant: 'default', size: 'lg', class: 'ec-skip', onClick: () => endBreak(ctx) }, 'Skip'),
+    ),
+  );
   ctx.ui.mountOverlay(overlay);
 
   countdown = cfg.breakSec;
