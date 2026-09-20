@@ -21,12 +21,34 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-/** `<dir>/<plugin folder>` -> the id it must be deployed under. */
-const EXAMPLES = [
-  ['examples/plugins/probe', 'probe.demo'],
-  ['examples/plugins/hello', 'hello.demo'],
-  ['examples/calc-plugin', 'calc.demo'],
-];
+/**
+ * `<dir>` -> the id it must be deployed under, DISCOVERED not listed.
+ *
+ * The id comes from each example's own `plugin.json`, so adding a folder is
+ * enough to get it deployed. This used to be a hardcoded array, and when the
+ * gallery example was added the script simply did not know about it — the kind
+ * of omission that is invisible because the run still succeeds.
+ */
+async function discoverExamples() {
+  const out = [];
+  for (const root of ['examples/plugins', 'examples']) {
+    const abs = join(ROOT, root);
+    if (!existsSync(abs)) continue;
+    for (const entry of await readdir(abs, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const dir = `${root}/${entry.name}`;
+      const manifestPath = join(ROOT, dir, 'plugin.json');
+      if (!existsSync(manifestPath)) continue;
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+      if (!manifest.id) continue;
+      if (out.some(([, id]) => id === manifest.id)) continue; // scanned from two roots
+      out.push([dir, manifest.id]);
+    }
+  }
+  return out.sort((a, b) => a[1].localeCompare(b[1]));
+}
+
+const EXAMPLES = await discoverExamples();
 
 /** Where the app keeps its data, per platform, from the app identifier. */
 function pluginsDir(identifier) {

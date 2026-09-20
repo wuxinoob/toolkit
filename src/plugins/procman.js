@@ -82,6 +82,8 @@ const state = {
   log: null,
   /** Persisted launch profiles — the things that auto-start and are scheduled. */
   profiles: [],
+  /** "save as profile" on the run form — a Checkbox is a button, not a form control. */
+  runSave: false,
   /** profileId -> timer, so a schedule can be re-armed without leaking timers. */
   schedTimers: new Map(),
   /** profileId -> when it last fired, so an interval counts from the last run. */
@@ -513,7 +515,7 @@ function reapDetached() {
 
 
 function registerRenderHooks(ctx) {
-  const { el, render } = ctx.ui;
+  const { el, native, render } = ctx.ui;
 
   ctx.registerView('procman', (root) => {
     reapDetached();
@@ -559,20 +561,28 @@ function registerRenderHooks(ctx) {
             'details',
             { class: 'pm-form-wrap tb-pane tb-pane-pad', style: 'margin-top:auto;' },
             el('summary', { style: 'cursor:pointer;font-size:12px;' }, 'New session…'),
-            el(
+            // `native('form')`, not `el('form')`: the vocabulary contains a Form
+            // COMPONENT (upstream's validation wrapper), and a component's submit
+            // event is not a native one — `ev.preventDefault` does not exist on it.
+            native(
               'form',
               { class: 'pm-form', style: 'display:flex;flex-direction:column;gap:6px;margin-top:8px;font-size:12px;' },
               el('input', { name: 'name', placeholder: 'display name' }),
               el('input', { name: 'program', placeholder: 'program (e.g. node)', required: true }),
               el('input', { name: 'args', placeholder: 'args (space separated)' }),
               el('input', { name: 'cwd', placeholder: 'cwd (optional)' }),
-              // A native checkbox, not the Checkbox component: this one is read
-              // out of a real <form> via FormData, and a reka-ui Checkbox is a
-              // button, so it would never appear in the form's entries.
+              // The text fields below are read with FormData, which works because
+              // shadcn's Input renders a real <input>. A Checkbox does NOT — it
+              // is a button — so this one keeps its state in `state.runSave`.
               el(
                 'label',
                 { class: 'tb-label', style: 'display:flex;gap:6px;align-items:center;' },
-                el('input', { type: 'checkbox', name: 'saveProfile' }),
+                el('checkbox', {
+                  defaultValue: false,
+                  'onUpdate:modelValue': (v) => {
+                    state.runSave = !!v;
+                  },
+                }),
                 ' save as profile',
               ),
               el('button', { variant: 'default', 'data-act': 'run', type: 'submit' }, 'Run'),
@@ -671,7 +681,7 @@ async function onRunSubmit(ev) {
   renderTabs();
   renderSessionList();
   renderDetail();
-  if (fd.get('saveProfile')) {
+  if (state.runSave) {
     // "Save as profile" is the one-click path from "I just ran this" to "run
     // this again on a schedule". It writes an ordinary profile — the same
     // record the editor edits — so the two entry points cannot diverge.
@@ -679,6 +689,7 @@ async function onRunSubmit(ev) {
     renderProfiles(form.closest('.pm-root') || document);
   }
   form.reset();
+  state.runSave = false;
 }
 
 /* --------------------------------- renderers ---------------------------------- */
@@ -812,13 +823,12 @@ function renderProfiles(root) {
 /**
  * The add/edit form. Only one profile is edited at a time.
  *
- * Text and number fields are shadcn `input`/`textarea`, which render real
- * `<input>`/`<textarea>` elements, so `FormData` still sees them. The two
- * dropdowns and the two toggles stay native on purpose: reka-ui's `Select` and
- * `Checkbox` render buttons, not form controls, so `FormData` would silently
- * drop them and every save would lose the schedule and the flags. Rewriting the
- * submit handler to read component state is the alternative — worth doing, but
- * it is a behaviour change, not a styling one.
+ * The controls are the real components — no native `<select>` or `<input
+ * type=checkbox>` left. That costs a little bookkeeping: reka-ui's Select and
+ * Checkbox render buttons, so `FormData` cannot see them, and reading the form
+ * back would silently drop the schedule and both flags. Instead each control
+ * writes into `state.draft` and the submit handler reads that. The trade is a
+ * dozen lines of wiring for controls that are actually styled by the theme.
  */
 function renderProfileEditor(root) {
   const host = root.querySelector('.pm-profile-editor');
@@ -830,12 +840,42 @@ function renderProfileEditor(root) {
   // editor instead of opening it. Same reported symptom as the mis-bound
   // listener fixed earlier, different cause.
   if (state.editingId === null) {
+    state.draft = null;
     render(host, null);
     return;
   }
 
   const editing = state.profiles.find((p) => p.id === state.editingId) ?? null;
   const p = editing ?? { ...DEFAULT_PROFILE, id: newProfileId() };
+  const d = (state.draft = {
+    id: p.id,
+    name: p.name,
+    program: p.program,
+    args: p.args.join(' '),
+    cwd: p.cwd,
+    env: p.env.join('\n'),
+    cols: p.cols,
+    rows: p.rows,
+    enabled: p.enabled,
+    autoStart: p.autoStart,
+    schedKind: p.schedule.kind,
+    schedAt: p.schedule.at,
+    schedEvery: p.schedule.everyMinutes,
+    restartPolicy: p.restart.policy,
+    maxRetries: p.restart.maxRetries,
+    delayMs: p.restart.delayMs,
+  });
+
+  const set = (key) => (v) => {
+    d[key] = v;
+  };
+  const text = (key, extra = {}) =>
+    el('input', {
+      defaultValue: d[key],
+      onInput: (e) => set(key)(e.target.value),
+      ...extra,
+    });
+  const number = (key, min, max) => text(key, { type: 'number', min, max });
   const field = (label, input) =>
     el(
       'label',
@@ -843,64 +883,63 @@ function renderProfileEditor(root) {
       el('span', { class: 'tb-label' }, label),
       input,
     );
-  const num = (name, value, min, max) => el('input', { name, type: 'number', min, max, defaultValue: value });
-  // `native(...)`, not `el(...)`: `el('select')` is shadcn's Select component,
-  // whose options would render as loose text instead of a real form control.
-  const nativeSelect = (name, options, current) =>
-    native(
-      'select',
-      { name, class: 'tb-select' },
-      options.map((k) => el('option', { value: k, selected: current === k }, k)),
-    );
-  const nativeToggle = (name, label, checked) =>
+  const toggle = (key, label) =>
     el(
-      'label',
-      { class: 'tb-label', style: 'display:flex;gap:5px;align-items:center;' },
-      el('input', { type: 'checkbox', name, checked }),
-      ` ${label}`,
+      'div',
+      { style: 'display:flex;gap:6px;align-items:center;' },
+      el('checkbox', { defaultValue: d[key], 'onUpdate:modelValue': set(key) }),
+      el('label', {}, label),
+    );
+  const choice = (key, options, labels = {}) =>
+    el(
+      'select',
+      { defaultValue: d[key], 'onUpdate:modelValue': set(key) },
+      el('select-trigger', { class: 'w-full' }, el('select-value', {})),
+      el(
+        'select-content',
+        {},
+        options.map((k) => el('select-item', { value: k }, labels[k] ?? k)),
+      ),
     );
 
   render(
     host,
-    el(
+    // Same reason as the run form: `el('form')` is the Form component, and its
+    // submit event has no `preventDefault`.
+    native(
       'form',
       {
         class: 'pm-profile-form tb-pane tb-pane-pad',
-        'data-id': p.id,
+        'data-id': d.id,
         style: 'display:flex;flex-direction:column;gap:6px;margin-top:8px;',
         onSubmit: onProfileSubmit,
       },
       el('div', { class: 'tb-section-title', style: 'margin:0;' }, editing ? 'Edit profile' : 'New profile'),
-      field('name', el('input', { name: 'name', defaultValue: p.name, placeholder: 'My backend' })),
-      field('program', el('input', { name: 'program', defaultValue: p.program, placeholder: 'node' })),
-      field('args (space separated)', el('input', { name: 'args', defaultValue: p.args.join(' ') })),
-      field('cwd', el('input', { name: 'cwd', defaultValue: p.cwd, placeholder: 'optional' })),
-      field('env (KEY=VALUE, one per line)', el('textarea', { name: 'env', rows: 2, defaultValue: p.env.join('\n') })),
+      field('name', text('name', { placeholder: 'My backend' })),
+      field('program', text('program', { placeholder: 'node' })),
+      field('args (space separated)', text('args')),
+      field('cwd', text('cwd', { placeholder: 'optional' })),
+      field('env (KEY=VALUE, one per line)', el('textarea', { rows: 2, defaultValue: d.env, onInput: (e) => set('env')(e.target.value) })),
       el(
         'div',
         { style: 'display:flex;gap:6px;' },
-        field('cols', num('cols', p.cols, 20, 500)),
-        field('rows', num('rows', p.rows, 5, 200)),
+        field('cols', number('cols', 20, 500)),
+        field('rows', number('rows', 5, 200)),
       ),
-      el(
-        'div',
-        { style: 'display:flex;gap:12px;font-size:11px;' },
-        nativeToggle('enabled', 'enabled', p.enabled),
-        nativeToggle('autoStart', 'start with app', p.autoStart),
-      ),
-      field('schedule', nativeSelect('schedKind', ['none', 'daily', 'interval'], p.schedule.kind)),
+      el('div', { style: 'display:flex;gap:14px;font-size:11px;' }, toggle('enabled', 'enabled'), toggle('autoStart', 'start with app')),
+      field('schedule', choice('schedKind', ['none', 'daily', 'interval'], { none: 'manual only' })),
       el(
         'div',
         { style: 'display:flex;gap:6px;' },
-        field('at (daily)', el('input', { name: 'schedAt', type: 'time', defaultValue: p.schedule.at })),
-        field('every (min)', num('schedEvery', p.schedule.everyMinutes, 1, 1440)),
+        field('at (daily)', text('schedAt', { type: 'time' })),
+        field('every (min)', number('schedEvery', 1, 1440)),
       ),
-      field('restart on exit', nativeSelect('restartPolicy', ['never', 'on-failure', 'always'], p.restart.policy)),
+      field('restart on exit', choice('restartPolicy', ['never', 'on-failure', 'always'])),
       el(
         'div',
         { style: 'display:flex;gap:6px;' },
-        field('max retries', num('maxRetries', p.restart.maxRetries, 0, 100)),
-        field('delay (ms)', num('delayMs', p.restart.delayMs, 0, 600000)),
+        field('max retries', number('maxRetries', 0, 100)),
+        field('delay (ms)', number('delayMs', 0, 600000)),
       ),
       el(
         'div',
@@ -914,6 +953,7 @@ function renderProfileEditor(root) {
             'data-act': 'profile-cancel',
             onClick: () => {
               state.editingId = null;
+              state.draft = null;
               renderProfileEditor(root);
             },
           },
@@ -962,35 +1002,27 @@ function onProfileClick(root, ev) {
 
 function onProfileSubmit(ev) {
   ev.preventDefault();
-  const form = ev.target;
-  const data = new FormData(form);
-  const argsText = String(data.get('args') ?? '').trim();
+  const d = state.draft;
+  if (!d) return;
   upsertProfile({
-    id: form.dataset.id,
-    name: String(data.get('name') ?? '').trim(),
-    program: String(data.get('program') ?? '').trim(),
+    id: d.id,
+    name: String(d.name ?? '').trim(),
+    program: String(d.program ?? '').trim(),
     // Simple whitespace split: quoting is not supported, and pretending
     // otherwise would silently mangle an argument with a space in it.
-    args: argsText ? argsText.split(/\s+/) : [],
-    cwd: String(data.get('cwd') ?? '').trim(),
-    env: String(data.get('env') ?? '').split('\n'),
-    cols: data.get('cols'),
-    rows: data.get('rows'),
-    enabled: data.get('enabled') === 'on',
-    autoStart: data.get('autoStart') === 'on',
-    schedule: {
-      kind: data.get('schedKind'),
-      at: data.get('schedAt'),
-      everyMinutes: data.get('schedEvery'),
-    },
-    restart: {
-      policy: data.get('restartPolicy'),
-      maxRetries: data.get('maxRetries'),
-      delayMs: data.get('delayMs'),
-    },
+    args: String(d.args ?? '').trim() ? String(d.args).trim().split(/\s+/) : [],
+    cwd: String(d.cwd ?? '').trim(),
+    env: String(d.env ?? '').split('\n'),
+    cols: d.cols,
+    rows: d.rows,
+    enabled: !!d.enabled,
+    autoStart: !!d.autoStart,
+    schedule: { kind: d.schedKind, at: d.schedAt, everyMinutes: d.schedEvery },
+    restart: { policy: d.restartPolicy, maxRetries: d.maxRetries, delayMs: d.delayMs },
   });
   state.editingId = null;
-  const root = form.closest('.pm-root');
+  state.draft = null;
+  const root = ev.target.closest('.pm-root');
   renderProfiles(root);
   renderProfileEditor(root);
   renderDetail();

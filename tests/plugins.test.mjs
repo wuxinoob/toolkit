@@ -861,6 +861,32 @@ test('factory: every tag a built-in plugin names exists', () => {
   assert.deepEqual(problems, [], `tags the factory would reject:\n  ${problems.join('\n  ')}`);
 });
 
+test("factory: el('form') is never what a plugin wants — use native('form')", () => {
+  // The vocabulary shadows HTML tag names. For most of them the component IS the
+  // element (Input renders an <input>, Table a <table>), so `el('input')` is
+  // right. `form` is the exception: `el('form')` is upstream's Form component, a
+  // validation wrapper whose submit event is NOT native — so `ev.preventDefault`
+  // is undefined and the handler throws. That bit for real, and it only showed up
+  // when the form was actually submitted.
+  //
+  // `select` is deliberately NOT in this list. It is a genuine judgement call:
+  // `el('select')` is the styled Select (a button + popover) and is usually what
+  // you want; `native('select')` is for a real form control that `FormData`
+  // reads. Both are correct in different places, so a blanket rule would be wrong.
+  const offenders = [];
+  const files = [
+    ...BUILTIN.map((n) => `src/plugins/${n}.js`),
+    ...EXAMPLES.map((e) => `${e.dir}/main.js`),
+  ];
+  for (const file of files) {
+    const code = withoutComments(read(file));
+    if (/\bel\(\s*'form'/.test(code)) {
+      offenders.push(`${file}: el('form') is the Form component; use native('form')`);
+    }
+  }
+  assert.deepEqual(offenders, [], `ambiguous tag used as a component:\n  ${offenders.join('\n  ')}`);
+});
+
 test('factory: built-in plugin views are built through the factory, not innerHTML', () => {
   // This is the invariant behind "main-window content is rendered with the
   // component library". An `innerHTML =` assignment bypasses the factory, and
