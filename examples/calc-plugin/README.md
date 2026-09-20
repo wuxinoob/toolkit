@@ -65,6 +65,15 @@ Copy the whole folder to the app's plugins directory and click **Rescan**:
 - `main.js` must stay a single-file ESM (it is loaded from a Blob URL), which is
   why it takes the envelope constructors from `ctx.protocol` / `bridge.protocol`
   instead of importing them.
+- **This plugin is also the reference for a window that styles itself.**
+  `mountWindow` injects its own `<style>` with its own hardcoded palette
+  (`#14161c`, `#6aa1ff`), and it looks nothing like the app — deliberately. A
+  plugin window is a separate `document`, so that stylesheet cannot reach the
+  main window; the isolation is structural, not a policy. It wins over the app's
+  stylesheet because unlayered CSS beats anything in `@layer`.
+  The trade-off: hardcoded colours do not follow the light/dark theme. Use
+  `var(--color-*)` instead of literals if the window should follow the app.
+  See `docs/UI.md` → "Where each half of the app gets its styles".
 - Permissions: `rpc:proc` (running the sidecar — see the scheme/permission table
   in `docs/PROTOCOL.md`), `rpc:host` (the unified session list) and `win:manage`
   (the plugin window). Both `plugin.json` and the in-code `manifest` must declare

@@ -20,6 +20,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { register } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -662,7 +663,7 @@ test('theming: every variable a utility resolves to holds a value, not another a
   assert.deepEqual(
     problems,
     [],
-    `tokens that a utility cannot actually be overridden through://n  ${problems.join('\n  ')}`,
+    `tokens that a utility cannot actually be overridden through:\n  ${problems.join('\n  ')}`,
   );
 });
 
@@ -691,7 +692,7 @@ test('theming: the two vocabularies cover the same raw variables', () => {
       drift.push(`${a} = ${aliases.get(a)}  but  ${b} = ${aliases.get(b)}`);
     }
   }
-  assert.deepEqual(drift, [], `the two vocabularies have drifted apart://n  ${drift.join('\n  ')}`);
+  assert.deepEqual(drift, [], `the two vocabularies have drifted apart:\n  ${drift.join('\n  ')}`);
 });
 
 test('theming: tokens that share a role stay in sync within a theme', () => {
@@ -728,7 +729,7 @@ test('theming: tokens that share a role stay in sync within a theme', () => {
       }
     }
   }
-  assert.deepEqual(drift, [], `roles that should be one colour have drifted://n  ${drift.join('\n  ')}`);
+  assert.deepEqual(drift, [], `roles that should be one colour have drifted:\n  ${drift.join('\n  ')}`);
 });
 
 test('theming: the dark: variant is redirected to data-theme, not the OS', () => {
@@ -765,6 +766,123 @@ test('theming: no plugin hard-codes a colour', () => {
     offenders,
     [],
     `colours that cannot follow the theme (use var(--color-…) or a .tb-* class):\n  ${offenders.join('\n  ')}`,
+  );
+});
+
+// ------------------------- the component-factory vocabulary ---------------------
+
+// The kit loads `.vue`/`.ts` files and a Vite `import.meta.glob`; the stub loader
+// fakes the rendering while keeping every export NAME real, so the vocabulary
+// this test checks against is the real one.
+register('./browser-stubs-loader.mjs', import.meta.url);
+const { loadUiKit, uiKitVocabulary } = await import('../src/host/ui.js');
+await loadUiKit();
+
+/**
+ * Tags a plugin names, with comments stripped but STRING LITERALS KEPT.
+ *
+ * `codeOnly` is the wrong tool here and using it made this audit pass vacuously:
+ * it blanks every string literal, and the tag name IS a string literal, so
+ * `el('card', …)` became `el( , …)` and the audit found zero tags. A guard that
+ * matches nothing is worse than no guard — it reports success forever.
+ */
+function withoutComments(src) {
+  let out = '';
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    const d = src[i + 1];
+    if (c === '/' && d === '/') {
+      while (i < src.length && src[i] !== '\n') i += 1;
+      continue;
+    }
+    if (c === '/' && d === '*') {
+      i += 2;
+      while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i += 1;
+      i += 2;
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
+
+function tagsUsedBy(src) {
+  const code = withoutComments(src);
+  const tags = new Set();
+  for (const m of code.matchAll(/\b(?:el|native)\(\s*'([^']+)'/g)) tags.add(m[1]);
+  return tags;
+}
+
+// Same allow-list the factory uses, so this test and the runtime agree on what
+// "a plain element" means. A shape test here (`/^[a-z]+$/`) would have skipped
+// every dash-free typo, which is exactly the case worth catching.
+const HTML_TAGS = new Set(
+  (
+    'a abbr address area article aside audio b bdi bdo blockquote br button canvas caption cite code col ' +
+    'colgroup data datalist dd del details dfn div dl dt em embed fieldset figcaption figure footer form ' +
+    'h1 h2 h3 h4 h5 h6 header hgroup hr i iframe img input ins kbd label legend li main map mark menu meter ' +
+    'nav noscript object ol optgroup option output p picture pre progress q rp rt ruby s samp search section ' +
+    'select slot small source span strong sub summary sup table tbody td tfoot th thead time tr track u ul var video wbr'
+  ).split(' '),
+);
+
+test('factory: every tag a built-in plugin names exists', () => {
+  // The factory throws on an unknown tag, which is the right runtime behaviour —
+  // but only when that view renders. A typo in a rarely-opened view would sit
+  // there until someone opened it, so it is checked statically instead.
+  const vocabulary = new Set(uiKitVocabulary());
+  assert.ok(vocabulary.size >= 20, 'the component vocabulary did not load');
+
+  const problems = [];
+  const seen = new Set();
+  for (const name of BUILTIN) {
+    const src = read(`src/plugins/${name}.js`);
+    for (const tag of tagsUsedBy(src)) {
+      seen.add(tag);
+      if (vocabulary.has(tag)) continue;
+      if (HTML_TAGS.has(tag)) continue; // a plain element, which the factory allows
+      problems.push(`${name}: el('${tag}') is neither a component nor a plain element`);
+    }
+  }
+  // A guard that extracts nothing reports success forever. (This one DID, for a
+  // while: the extractor ran `codeOnly` first, which blanks string literals —
+  // and a tag name is a string literal.)
+  assert.ok(seen.size >= 10, `the extractor found only ${seen.size} tag(s) — it is not working`);
+  assert.deepEqual(problems, [], `tags the factory would reject:\n  ${problems.join('\n  ')}`);
+});
+
+test('factory: built-in plugin views are built through the factory, not innerHTML', () => {
+  // This is the invariant behind "main-window content is rendered with the
+  // component library". An `innerHTML =` assignment bypasses the factory, and
+  // because it is invisible to every other check it is exactly the kind of thing
+  // a later edit reintroduces. (Passing `innerHTML` as a PROP is fine — that goes
+  // through Vue, and is how the Markdown preview is rendered.)
+  //
+  // No exception list: the only remaining `innerHTML =` in the tree is
+  // `floatwin-widget.js`, which is a plugin's own WINDOW — a separate document
+  // that builds its own DOM with its own CSS. It is not in BUILTIN precisely
+  // because it is not a view. (The first version of this test carried an
+  // exception list for it anyway, and an assertion about the list being
+  // non-empty caught that it was dead code.)
+  const offenders = [];
+  for (const name of BUILTIN) {
+    const file = `src/plugins/${name}.js`;
+    const code = codeOnly(read(file));
+    // Any `.innerHTML =` — the receiver may be `querySelector('…')`, not just a
+    // bare name. An earlier version required an identifier immediately before
+    // the dot, so it silently missed `root.querySelector('.x').innerHTML = …`
+    // and reported success on code that plainly violated the rule.
+    for (const m of code.matchAll(/\.\s*innerHTML\s*=/g)) {
+      const line = code.slice(0, m.index).split('\n').length;
+      offenders.push(`${file}:${line}: .innerHTML = …`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `main-window DOM built outside the component factory:\n  ${offenders.join('\n  ')}`,
   );
 });
 

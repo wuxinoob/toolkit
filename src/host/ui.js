@@ -60,6 +60,29 @@ const PORTALLED = new Set([
   'tooltip-content',
 ]);
 
+/**
+ * The plain HTML elements a plugin may ask for.
+ *
+ * An allow-list, not a shape test. "Any dash-free lowercase name" would be
+ * simpler but silently accepts `el('crad')` and renders an inert element that
+ * looks like a missing component — the same silent-failure mode as a typo'd
+ * `.tb-*` class. With a list, a miss is a thrown error naming the tag.
+ *
+ * Document-level elements are deliberately absent. `el('style', {}, '…')` from
+ * a plugin in the MAIN window would be a global stylesheet injection, which is
+ * exactly what the `contributes.theme` scoping exists to prevent; a plugin's own
+ * window is the supported way to ship arbitrary CSS.
+ */
+const HTML_TAGS = new Set(
+  (
+    'a abbr address area article aside audio b bdi bdo blockquote br button canvas caption cite code col ' +
+    'colgroup data datalist dd del details dfn div dl dt em embed fieldset figcaption figure footer form ' +
+    'h1 h2 h3 h4 h5 h6 header hgroup hr i iframe img input ins kbd label legend li main map mark menu meter ' +
+    'nav noscript object ol optgroup option output p picture pre progress q rp rt ruby s samp search section ' +
+    'select slot small source span strong sub summary sup table tbody td tfoot th thead time tr track u ul var video wbr'
+  ).split(' '),
+);
+
 const kebab = (name) =>
   name
     .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
@@ -185,11 +208,10 @@ function toVNode(node) {
   }
 
   // Not a component — a plain element, so a plugin can use `div`, `span`,
-  // `code`, `pre`… without those being mistaken for components. Restricted to
-  // dash-free lowercase names: every component tag with a dash (card-header,
-  // select-item) is in the vocabulary, so a dashed miss is a typo and should
-  // say so rather than silently render an unknown element.
-  if (/^[a-z][a-z0-9]*$/.test(node.tag)) {
+  // `code`, `pre`… without those being mistaken for components. Checked against
+  // a real tag list rather than a shape, so a typo like `crad` is an error
+  // instead of an inert element that reads as a missing component.
+  if (HTML_TAGS.has(node.tag)) {
     // Children are resolved eagerly here: the slot-function form is a component
     // concept and a plain element would render it as nothing.
     return h(node.tag, node.props, toVNode(node.children));
@@ -197,7 +219,10 @@ function toVNode(node) {
 
   // A silent no-op here would look like a layout bug. Naming the tag, and
   // listing what IS available, turns it into a one-line fix.
-  throw new Error(`unknown component "${node.tag}". Available: ${uiKitVocabulary().join(', ')}`);
+  throw new Error(
+    `unknown tag "${node.tag}": not a component and not an HTML element. ` +
+      `Components: ${uiKitVocabulary().join(', ')}`,
+  );
 }
 
 /**

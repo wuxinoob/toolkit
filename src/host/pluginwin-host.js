@@ -15,6 +15,18 @@
  *   bridge.sidecar/pty/stream(...)                (stdio-line / pty-stream / channel)
  *
  * A fatal load error renders inline (no host chrome exists in this window).
+ *
+ * ## Styles: this window belongs to the plugin
+ *
+ * The app stylesheet is loaded here like in any window, so the design tokens and
+ * `.tb-*` classes work and a plugin can look native for free. But a plugin that
+ * wants its own look just injects a `<style>` and wins — unlayered CSS beats
+ * anything in `@layer`, and this is a separate `document`, so it **cannot reach
+ * the main window**. That is a structural guarantee rather than a policy, which
+ * is why self-styling needs no sandbox and no review.
+ *
+ * See `docs/UI.md` → "Where each half of the app gets its styles", and
+ * `examples/calc-plugin` for a window that takes this path.
  */
 
 import { invoke } from '@tauri-apps/api/core';

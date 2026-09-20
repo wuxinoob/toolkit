@@ -202,6 +202,53 @@ shadcn 名当兼容层，于是 `--color-primary: var(--brand)`、`bg-primary` �
 —— 直接防上面那个 bug 复发。
 
 
+## 插件视图迁移（5 个内置插件已全部完成）
+
+- **`render()` 语义是"替换"**，按容器记 app、重画时先 unmount 上一个。原来是 append，
+  插件每次按键重画列表就**泄漏一个 Vue app**（都活着、都不可达）。
+- **`el()` 兼容变参**：`el(tag, props, children)` 只收一个 children，但调用起来和 Vue 的
+  `h` 长得一样，很容易写成 `el(a,b,c,d)` —— 第四个参数**静默丢弃**，元素整块消失，
+  看起来像布局 bug。现在 `el('div', {}, [a,b])` / `el('div', {}, a)` / `el('div', {}, a, b)` 都行。
+- **`ctx.ui.native(tag, props, children)`**：显式要普通 HTML 元素、绕过词汇表。
+  必须存在，因为**词汇表遮蔽了同名 HTML 标签**：`el('select')` 是 shadcn 的 Select
+  （reka-ui，按钮 + 弹层），`<option>` 子节点会渲染成散落文本。
+- **reka-ui 的 Select/Checkbox 渲染的是 button，不是表单控件** → 用 `FormData` 读的表单里
+  它们会**静默消失**。procman 的 profile 表单因此保留下拉与开关为原生控件
+  （`native('select')` / 原生 `<input type=checkbox>`），文本与数字字段用 shadcn Input/Textarea
+  （它们本来就是原生元素，FormData 看得到）。
+- **内置插件也不用 Tailwind 工具类**，只用组件工厂 + `.tb-*` + 内联布局样式。
+  内置插件源码在仓库里、Tailwind 会为它生成工具类，但**外部插件源码在项目外、Tailwind
+  永远看不到**；内置插件用了就成了误导性示范。
+- **组件的 `size` 才是尺寸的正确入口**：传 `class="tb-btn-sm"` 不缩小按钮 ——
+  utility 只设 padding，shadcn 的 `h-9` 仍然赢高度。用 `size: 'icon-xs'` 等。
+- 迁移手法：procman 用 `data-act`/`data-ch`/`data-id` 做事件委托，所以**只换 DOM 构建、
+  保留这些钩子，处理函数一行不用改**。
+
+## dev/plugin-preview.js（重要验证工具）
+
+**插件在 Tauri 之外无法激活**（loader 第一件事是向原生权限网关注册），所以迁移插件本来
+是完全盲改。这个页面用 mock ctx（与 host/ctx.js 同形状）驱动插件真实的 activate 与
+registerView：
+
+    npm run dev -> http://127.0.0.1:1420/plugin-preview.html?plugin=notepad
+
+`ctx.ui` 是**真的组件工厂**，`ctx.protocol` 是**真的契约**；storage/bus 内存版；
+进程/流调用直接 reject（依赖它们的插件会走错误路径，那本身也值得看）。
+
+踩过的三个坑：① `registry` 不是 registry.js 的导出（用 `describeSchemes`）；
+② **页面里已有 `#app`，不要再建一个同 id 的** —— app.css 给 `#app{height:100%}`，
+那个空的首元素把内容整体推下一整个视口，症状是"DOM 里有文字、截图全黑"；
+③ **panel 要给显式高度**，插件视图普遍用 `height:100%`，否则塌成内容高度、看着像布局坏了。
+
+## 静态审计的正则字面量 bug（守卫自己的 bug）
+
+`no plugin calls a function it never declares` 出过**假阳性**：`codeOnly()` 不认正则字面量，
+每个插件的 `esc()` 里 `/[&<>"']/g` 的 `"` 被当成字符串起点，**吞掉文件剩下部分** ——
+`esc` 之后的声明全部消失、之前的调用点还在，于是成了幽灵死调用。
+已修：表达式位置的 `/` 开正则，处理转义与字符类。
+**守卫自己出错比没有守卫更糟**，它会挡住合法代码。
+
+
 ## 验证工具：scripts/shot.mjs（重要）
 
 应用主题在首帧就由 `prefers-color-scheme` 决定，一次性的 `--screenshot` 只能拍到

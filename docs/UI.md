@@ -28,6 +28,44 @@ Two footnotes worth knowing:
   they are always emitted. Tailwind is therefore for the shell and builtin
   plugins; `.tb-*` is for everyone.
 
+## Where each half of the app gets its styles
+
+There are two halves, and they are styled by **different mechanisms on purpose**.
+The dividing line is the window, not the plugin.
+
+| | main window | a plugin's own window |
+|---|---|---|
+| who renders it | the host, for the plugin | the plugin, in its own document |
+| how a plugin styles it | `ctx.ui` (the component factory) + `.tb-*` + tokens | **its own `<style>`, anything it likes** |
+| follows the app theme | yes, automatically | only if the plugin chooses to |
+| can it break the app | no — scoped to `[data-plugin]` | no — **it is a different document** |
+
+The second row is the interesting one. A plugin window is a separate
+`WebviewWindow`, so it is a separate `document`: a `<style>` injected there
+**cannot reach the main window at all**. That is a structural guarantee, not a
+policy — which is why this path needs no sandbox, no shadow DOM, and no review.
+
+It also means the two mechanisms do not compete. `pluginwin-host.js` loads the
+app stylesheet like every other window, so a plugin window gets the tokens and
+`.tb-*` for free; a plugin that wants a completely different look simply writes
+its own CSS and wins, because **unlayered CSS beats anything in `@layer`**
+regardless of order — verified, not assumed:
+
+```
+app.css        body { background: var(--color-canvas) }   /* @layer base */
+plugin <style> body { background: rgb(1, 2, 3) }          /* unlayered   */
+-> computed body background is rgb(1, 2, 3)
+```
+
+`examples/calc-plugin` is the working demonstration: it injects a stylesheet
+with its own hardcoded palette and looks nothing like the app, and that is a
+legitimate choice for a window that belongs entirely to it.
+
+The trade-off to be aware of: a plugin that hardcodes its window palette does
+not follow the light/dark theme. Use `var(--color-*)` instead of literals if the
+window should follow the app; use literals if it should not. Both are supported,
+and neither requires host changes.
+
 ## Tokens
 
 One `@theme` block in `src/assets/app.css` decides what the app looks like:
