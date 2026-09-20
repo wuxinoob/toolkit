@@ -275,7 +275,44 @@ registerView：
 审计 `factory: every tag a plugin names exists` 现在**也扫 examples** ——
 gallery 是别人照抄的样板，那里的错 tag 最误导人。
 
-## 坑：别把 dev server 留着
+## 词汇表遮蔽 HTML 标签名 —— `form` 与 `select` 两个坑
+
+**`el('form')` 是上游的 Form 组件（校验包装器），不是原生 `<form>`。**
+它的 submit 事件不是原生事件，`ev.preventDefault` 根本不存在 → 处理器直接抛错。
+**最阴的地方**：表单能渲染、能看、能填，**只有真的提交才炸**。
+用 CDP 抓控制台才看到真因（`ev.preventDefault is not a function`）。
+两处表单都改用 `native('form', …)`。已加守卫
+`el('form') is never what a plugin wants`。
+
+**`select` 是判断题，不加规则**：`el('select')` 是要样式化的 Select（按钮 + 弹层，
+通常就是你想要的），`native('select')` 是要 `FormData` 能读到的真控件。
+两者在不同场合都正确，一刀切的规则反而是错的。
+
+一般规律：**组件与同名 HTML 元素里，Input/Button/Label/Table/Textarea 渲染的就是
+那个原生元素（放心用）；form / select 不是。** 插件里凡是"要被 `FormData` 读"
+或"要接原生事件"的控件，一律走 `native()`。
+
+## 主窗口已无原生控件
+
+原来还剩 4 个（procman 表单里的 2 个下拉 + 2 个勾选框），原因是 `FormData` 读不到
+reka-ui 的 Select/Checkbox（渲染的是 button）。改为**每个控件写进 `state.draft`、
+提交处理器读它**，代价是十几行状态接线。已实测往返：改名 → Save → 列表更新、表单关闭。
+
+仍然保留原生外观的三类（刻意）：插件**自己的窗口**（独立 document）、
+**窗口标题栏/边框**（OS 画）、**xterm 终端**（canvas）。
+
+## 部署脚本：发现，不要列举
+
+`npm run deploy:examples` 原来硬编码示例数组，gallery 加进来时它根本不知道 ——
+**而且运行照常成功，这种遗漏是看不见的**。改成从各示例自己的 `plugin.json` 发现。
+
+## 环境：后台进程要挂在工具的 task 上
+
+`nohup npx vite &` 起的 dev server 会随 shell 退出而死；要用工具的后台任务机制。
+（之前活了 22 小时的那个正是这么起的 —— 也正是它占着 1420 让 `tauri dev` 报错。）
+用完务必关掉，否则下次 `tauri dev` 会因为 beforeDevCommand 失败而 CLI 退出、
+窗口却留着。
+
 
 `npm run tauri dev` 的 beforeDevCommand 是 `npm run dev`。**如果 1420 被占**（比如我
 之前留着的 dev server），vite 会失败，但 `cargo run` 已经先把 app 启动了 ——
