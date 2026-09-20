@@ -240,6 +240,51 @@ registerView：
 那个空的首元素把内容整体推下一整个视口，症状是"DOM 里有文字、截图全黑"；
 ③ **panel 要给显式高度**，插件视图普遍用 `height:100%`，否则塌成内容高度、看着像布局坏了。
 
+## 组件词汇表：上游 66 个组件全部拉入（376 个 tag）
+
+第一轮只拉了 23 个（插件真会伸手的那一小撮），现已补齐全部 66 个。
+`examples/plugins/gallery/` 是活示范（`permissions: []`，零 import）。
+
+- **上游有 4 个名字不是注册表组件**，是文档里的组合模式：数据表格 = Table + 排序分页、
+  排版 = h1/p/code + token、日期选择器 = Popover + Calendar、Toast 已废弃改 sonner。
+- **`number-field` 是"可加减的输入框"**（NumberField/Content/Decrement/Input/Increment）。
+  第一轮确实漏了 —— 只有 `input type=number`，没有步进器。
+- **代价**：CSS 28K → 164K raw（6KB → 26KB gzip），因为 Tailwind 会把
+  `src/components/ui/` 下所有组件的类都编进去，用不用都一样。JS 按组件分包、懒加载
+  （chart 123KB / form 38KB / useCalendar 36KB 都是按需）。要收窄就传显式清单给
+  `scripts/shadcn-pull.mjs`。
+
+### 拉全之后暴露并修掉的四个真 bug
+
+1. **工厂挂载的树拿不到宿主的 provide**：每棵树都是 `createApp().mount()`，
+   **新 app 不继承宿主的 provide 树** → `Tooltip` 报
+   `Injection Symbol(TooltipProviderContext) not found`（错误信息完全看不出插件错在哪）。
+   新增 `ROOT_PROVIDERS`，挂载前自动套一层 provider；reka-ui 的 provider 只渲染 slot、
+   不产生额外元素，无布局影响。
+2. **`() => out` 闭包读到的是变量**：`out = h(Provider, {}, () => out)` 里 slot 返回自己
+   → `Maximum call stack size exceeded`。要先 `const inner = out` 捕获当前值。
+3. **词汇表混进 `form_item_injection_key`**：判断"是不是组件"用的是"首字母大写且是对象"，
+   而 reka-ui 的 `FORM_ITEM_INJECTION_KEY` 两条都满足。收紧为 PascalCase 且不含下划线。
+4. **portal 转发只覆盖 5 个，实际有 14 个**：tooltip / popover / hover-card /
+   dropdown-menu / context-menu / menubar / drawer / sheet / alert-dialog / combobox
+   + dialog 的 scroll 变体、menubar 的 sub 变体。补丁表改为由 `PORTAL_CONTENTS` 生成，
+   `forwardPortalTo` 兼容上游两种 props 写法（`XProps` 与 `XProps & {...}`）。
+   **补丁每次拉取自动重放**，拉取因此幂等。
+   `*-sub-content` 不进 `PORTALLED`：它们渲染在父 portal 内部，继承父的目标。
+
+审计 `factory: every tag a plugin names exists` 现在**也扫 examples** ——
+gallery 是别人照抄的样板，那里的错 tag 最误导人。
+
+## 坑：别把 dev server 留着
+
+`npm run tauri dev` 的 beforeDevCommand 是 `npm run dev`。**如果 1420 被占**（比如我
+之前留着的 dev server），vite 会失败，但 `cargo run` 已经先把 app 启动了 ——
+app 连上那个占着端口的 server 照常显示，而 CLI 因 beforeDevCommand 非零退出。
+症状就是"命令退出了但窗口还在"。**用完 dev server 一定要关。**
+本机 `taskkill` 在 Git Bash 里参数会被吞；用 PowerShell 的 `Stop-Process -Id <pid> -Force`
+（PowerShell 工具不返回 stdout，用 netstat 复核）。
+
+
 ## 静态审计：守卫自己出错比没有守卫更糟（三个真实 bug）
 
 1. **正则字面量**：`codeOnly()` 不认正则，每个插件 `esc()` 里 `/[&<>"']/g` 的 `"`
