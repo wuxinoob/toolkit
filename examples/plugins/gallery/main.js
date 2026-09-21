@@ -184,7 +184,16 @@ function forms(el) {
           el('native-select-option', { value: 'a' }, 'native A'),
           el('native-select-option', { value: 'b' }, 'native B'),
         ),
-        note(el, 'a real <select> — the one to use when FormData reads the form'),
+        note(
+          el,
+          'a real <select> — use it when something reads the form back with FormData, which cannot see the Select component (that one is a button).',
+        ),
+        // Worth stating plainly rather than letting it read as an unfixed bug:
+        // opening this adds ZERO nodes to the DOM (measured 1614 -> 1614). The
+        // option list is drawn by the OS outside the document, so no CSS can
+        // reach it — not a gap in the styling, a platform limit. `select` above
+        // is fully themeable precisely because its popup is a real DOM element.
+        note(el, '↑ the open dropdown is drawn by the OS and cannot be themed; compare the select above.'),
       ),
     ),
     section(

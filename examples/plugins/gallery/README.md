@@ -56,6 +56,21 @@ this plugin renders the simplest working form of each rather than a full demo:
 They are all installed and available through `ctx.ui`; they simply need more
 setup than a one-line gallery entry.
 
+## One thing that looks broken and is not
+
+`native-select` renders a **real `<select>`**, and its open dropdown is drawn by
+the operating system *outside the document* — opening it adds **zero nodes to the
+DOM** (measured: 1614 → 1614). No CSS can reach it, so it cannot be themed. That
+is a platform limit, not a gap in the styling.
+
+Its **closed** state is fully styled (border, radius, custom chevron), because
+that part *is* an element.
+
+Use it only when something reads the form back with `FormData` — reka-ui's
+`Select` is a button plus a popover, so `FormData` never sees it. When you just
+want a dropdown that follows the theme, use `select`, whose popup is a real DOM
+element and therefore fully themeable.
+
 ## Sizing note
 
 Pulling the full registry means Tailwind emits the classes for **all** of them,
