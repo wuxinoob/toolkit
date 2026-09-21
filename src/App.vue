@@ -78,6 +78,12 @@ const navClass = (active) =>
 
         <ScrollArea class="min-h-0 flex-1">
           <nav class="flex flex-col gap-0.5 px-2 pb-2">
+            <!-- Where the plugin rows will appear. Saying nothing here while
+                 they load looks like an empty list rather than a pending one. -->
+            <div v-if="!store.booted" class="px-2.5 py-2 text-xs text-muted-foreground">
+              Loading plugins…
+            </div>
+
             <template v-for="[slot, views] in grouped" :key="slot">
               <div class="px-2.5 pt-3 pb-1 text-[10.5px] tracking-[0.6px] text-muted-foreground uppercase">
                 {{ label(slot) }}
@@ -135,6 +141,17 @@ const navClass = (active) =>
       <main class="relative min-w-0 flex-1 overflow-auto p-3.5">
         <SettingsView v-if="store.activeViewId === '__settings'" />
         <ViewHost v-else-if="store.activeViewId" :view-id="store.activeViewId" />
+        <!--
+          Booting and empty are different states, and saying "no plugin views
+          yet" while the plugins are still activating is simply wrong — it reads
+          as a failure. The window is revealed as soon as the shell has painted,
+          so this is on screen for the whole of `boot()`.
+        -->
+        <div v-else-if="!store.booted" class="flex h-full flex-col items-center justify-center gap-1.5 text-muted-foreground">
+          <div class="text-[22px] opacity-50">⏳</div>
+          <div class="text-sm">Starting up…</div>
+          <div class="text-xs">Loading plugins.</div>
+        </div>
         <div v-else class="flex h-full flex-col items-center justify-center gap-1.5 text-muted-foreground">
           <div class="text-[22px] opacity-50">🧩</div>
           <div class="text-sm">No plugin views yet</div>

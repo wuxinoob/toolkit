@@ -68,21 +68,44 @@ async function reapOrphanSessions() {
 }
 
 export async function boot() {
+  // A startup budget. Without one, "startup feels slow" is unanswerable — the
+  // window now appears as soon as the shell has painted (see main.js), so every
+  // millisecond between that and the plugin list showing up is visible to the
+  // user as an empty sidebar.
+  const t0 = performance.now();
+  const marks = [];
+  const mark = (label) => {
+    marks.push(`${label} ${Math.round(performance.now() - t0)}`);
+  };
+
   await report(`--- boot ${new Date().toISOString()} ---`);
   try {
     installDebug(); // window.__toolbox before plugins attach their own handles
+    mark('debug');
 
     // Before anything opens a session of its own.
     await reapOrphanSessions();
+    mark('reap');
 
     // The scheme table is a static contract; snapshot it for the diagnostics view.
     store.schemes = hub.schemes();
     await report(`message plane: ${hub.transports().join(', ')}`);
+    mark('schemes');
 
     // First enabled plugin's first view becomes the initial screen.
     await bootPlugins(builtinSources());
+    mark('builtins');
+
     await scanExternalPlugins(); // drop-in plugins from {appData}/plugins/*
+    mark('external');
+
     await applySummonShortcut();
+    mark('hotkey');
+
+    // Reported BEFORE the per-plugin lines and the selftest: those are
+    // diagnostics, and their cost must not be attributed to the plugin list
+    // the user is waiting for.
+    await report(`boot timing (ms): ${marks.join(' | ')}`);
 
     store.booted = true;
     const line = `boot ok: ${store.plugins.length} plugins, ${store.views.length} views, active=${store.activeViewId}`;
