@@ -235,11 +235,6 @@ function persistProfiles() {
   ctx.storage.set(PROFILES_KEY, state.profiles).catch((e) => ctx.log.warn('profiles persist failed', e));
 }
 
-/** The session belonging to a profile, whatever its status — one profile owns one. */
-function sessionOf(profileId) {
-  return [...state.sessions.values()].find((s) => s.profileId === profileId) ?? null;
-}
-
 /** Live sessions belonging to a profile. */
 function runningFor(profileId) {
   return [...state.sessions.values()].filter(
@@ -252,16 +247,6 @@ async function launchProfile(rawProfile, reason = 'manual') {
   if (!p.program) {
     state.ui?.notify(`profile "${p.name || p.id}" has no program to run`, 'error');
     return null;
-  }
-  // One profile owns one process. Pressing run on a live profile focuses what is
-  // already there instead of starting a second copy — "取消多开". A restart is
-  // unaffected: the exited session is no longer counted as running.
-  const live = runningFor(p.id);
-  if (live.length) {
-    state.activeCh = live[0].ch;
-    state.selectedCh = live[0].ch;
-    state.ui?.notify(`"${p.name || p.id}" is already running`, 'info');
-    return live[0];
   }
   state.lastFired.set(p.id, Date.now());
   const session = await spawnFromSpec({
@@ -530,7 +515,7 @@ function reapDetached() {
 
 
 function registerRenderHooks(ctx) {
-  const { el, render } = ctx.ui;
+  const { el, native, render } = ctx.ui;
 
   ctx.registerView('procman', (root) => {
     reapDetached();
@@ -539,60 +524,102 @@ function registerRenderHooks(ctx) {
       root,
       el(
         'div',
-        { class: 'pm-root', style: 'display:grid;grid-template-columns:340px 1fr;gap:8px;height:100%;min-height:0;' },
+        { class: 'pm-root', style: 'display:grid;grid-template-columns:250px 1fr 270px;gap:8px;height:100%;min-height:0;' },
 
         el(
           'div',
           { class: 'pm-left', style: 'display:flex;flex-direction:column;gap:8px;min-height:0;' },
           el(
             'div',
-            { class: 'tb-toolbar' },
-            el('span', { class: 'tb-section-title', style: 'margin:0;' }, 'Profiles'),
+            { style: 'display:flex;gap:6px;align-items:center;' },
+            el('span', { class: 'tb-section-title', style: 'margin:0;' }, 'Sessions'),
             el('span', { class: 'pm-count tb-hint', style: 'margin-left:auto;' }),
-            el('button', { variant: 'outline', size: 'xs', 'data-act': 'profile-new' }, '+ New'),
           ),
-          el('div', {
-            class: 'pm-profiles tb-list',
-            role: 'listbox',
-            'aria-label': 'Profiles',
-            style: 'flex:1;min-height:0;',
-          }),
-          // The old right-hand column, merged in. With one profile owning one
-          // process, "the detail of the selected session" is just "the detail of
-          // the selected profile" — so it belongs next to the list, not in a
-          // permanently reserved third column costing the terminal 270px.
-          el('div', {
-            class: 'pm-detail tb-pane',
-            style: 'padding:10px;overflow:auto;font-size:12px;max-height:46%;flex:0 0 auto;',
-          }),
-          // The editor mounts here as a dialog; nothing renders into it inline.
-          el('div', { class: 'pm-profile-editor' }),
+          el('div', { class: 'pm-sessions tb-list', role: 'listbox', 'aria-label': 'Sessions', style: 'max-height:32%;' }),
+
+          el(
+            'div',
+            {
+              class: 'pm-profiles-panel',
+              style: 'border-top:1px solid var(--color-line);padding-top:8px;display:flex;flex-direction:column;min-height:0;flex:1;',
+            },
+            el(
+              'div',
+              { class: 'tb-toolbar' },
+              el('span', { class: 'tb-section-title', style: 'margin:0;' }, 'Profiles'),
+              el(
+                'button',
+                { variant: 'outline', size: 'xs', 'data-act': 'profile-new', style: 'margin-left:auto;' },
+                '+ New',
+              ),
+            ),
+            el('div', { class: 'pm-profiles tb-list', style: 'margin-top:6px;' }),
+            el('div', { class: 'pm-profile-editor' }),
+          ),
+
+          el(
+            'details',
+            { class: 'pm-form-wrap tb-pane tb-pane-pad', style: 'margin-top:auto;' },
+            el('summary', { style: 'cursor:pointer;font-size:12px;' }, 'New session…'),
+            // `native('form')`, not `el('form')`: the vocabulary contains a Form
+            // COMPONENT (upstream's validation wrapper), and a component's submit
+            // event is not a native one — `ev.preventDefault` does not exist on it.
+            native(
+              'form',
+              { class: 'pm-form', style: 'display:flex;flex-direction:column;gap:6px;margin-top:8px;font-size:12px;' },
+              el('input', { name: 'name', placeholder: 'display name' }),
+              el('input', { name: 'program', placeholder: 'program (e.g. node)', required: true }),
+              el('input', { name: 'args', placeholder: 'args (space separated)' }),
+              el('input', { name: 'cwd', placeholder: 'cwd (optional)' }),
+              // The text fields below are read with FormData, which works because
+              // shadcn's Input renders a real <input>. A Checkbox does NOT — it
+              // is a button — so this one keeps its state in `state.runSave`.
+              el(
+                'label',
+                { class: 'tb-label', style: 'display:flex;gap:6px;align-items:center;' },
+                el('checkbox', {
+                  defaultValue: false,
+                  'onUpdate:modelValue': (v) => {
+                    state.runSave = !!v;
+                  },
+                }),
+                ' save as profile',
+              ),
+              el('button', { variant: 'default', 'data-act': 'run', type: 'submit' }, 'Run'),
+              el('div', { class: 'pm-form-err tb-t-bad', style: 'font-size:11px;' }),
+            ),
+          ),
         ),
 
         el(
           'div',
           { class: 'pm-center tb-card', style: 'display:flex;flex-direction:column;min-height:0;overflow:hidden;' },
-          el('div', { class: 'pm-tabs tb-tabs', role: 'tablist', 'aria-label': 'Running profiles' }),
+          el('div', { class: 'pm-tabs tb-tabs', role: 'tablist', 'aria-label': 'Sessions' }),
           el(
             'div',
             { class: 'pm-term-area', style: 'flex:1;min-height:0;position:relative;background:var(--color-canvas);' },
             el(
               'div',
               { class: 'pm-term-empty tb-empty', style: 'position:absolute;inset:0;' },
-              'Nothing running — hit ▶ on a profile, or create one with + New.',
+              'No active session — run something, or hit ▶ on a profile.',
             ),
           ),
         ),
+
+        el('div', { class: 'pm-detail tb-card', style: 'padding:10px;overflow:auto;font-size:12px;' }),
       ),
     );
 
     // Delegation is unchanged: the tree keeps the same `data-*` hooks and class
     // names the handlers were written against, so only the DOM building moved.
-    // Bound to the whole left column so "+ New", the rows and the detail panel
-    // all reach one handler.
-    root.querySelector('.pm-left').addEventListener('click', (ev) => onProfileClick(root, ev));
+    root.querySelector('.pm-sessions').addEventListener('click', onSessionClick);
+    // Bound to the PANEL, not the list: "+ New" lives in the header, and a
+    // listener on the list alone never saw it (the button did nothing).
+    root.querySelector('.pm-profiles-panel').addEventListener('click', (ev) => onProfileClick(root, ev));
     root.querySelector('.pm-tabs').addEventListener('click', onTabClick);
+    root.querySelector('.pm-form').addEventListener('submit', onRunSubmit);
 
+    renderSessionList(root);
     renderProfiles(root);
     renderProfileEditor(root);
     renderTabs(root);
@@ -600,6 +627,22 @@ function registerRenderHooks(ctx) {
     renderDetail();
   });
 }
+
+function onSessionClick(ev) {
+  const row = ev.target.closest('[data-ch]');
+  if (!row) return;
+  const ch = row.dataset.ch;
+  if (ev.target.closest('[data-act="kill"]')) {
+    killSession(ch);
+    return;
+  }
+  state.activeCh = ch;
+  state.selectedCh = ch;
+  activateSession(ch);
+  renderTabs();
+  renderDetail();
+}
+
 
 function onTabClick(ev) {
   const tab = ev.target.closest('[data-ch]');
@@ -616,6 +659,42 @@ function onTabClick(ev) {
   renderDetail();
 }
 
+async function onRunSubmit(ev) {
+  ev.preventDefault();
+  const form = ev.currentTarget;
+  const fd = new FormData(form);
+  const program = String(fd.get('program') || '').trim();
+  const errEl = form.querySelector('.pm-form-err');
+  if (!program) {
+    errEl.textContent = 'program is required';
+    return;
+  }
+  errEl.textContent = '';
+  const args = String(fd.get('args') || '').split(/\s+/).filter(Boolean);
+  const spec = {
+    name: String(fd.get('name') || '').trim() || program,
+    program,
+    args,
+    cwd: String(fd.get('cwd') || '').trim() || undefined,
+  };
+  await spawnFromSpec(spec);
+  renderTabs();
+  renderSessionList();
+  renderDetail();
+  if (state.runSave) {
+    // "Save as profile" is the one-click path from "I just ran this" to "run
+    // this again on a schedule". It writes an ordinary profile — the same
+    // record the editor edits — so the two entry points cannot diverge.
+    upsertProfile({ ...spec, id: newProfileId() });
+    renderProfiles(form.closest('.pm-root') || document);
+  }
+  form.reset();
+  state.runSave = false;
+}
+
+/* --------------------------------- renderers ---------------------------------- */
+
+/** A status dot. The colour comes from the stylesheet, so it themes. */
 function dot(status) {
   const variant = status === 'running' ? 'tb-dot-ok' : status === 'exited' ? '' : 'tb-dot-bad';
   return state.ctx.ui.el('span', { class: `tb-dot ${variant}`.trim(), title: status });
@@ -624,11 +703,43 @@ function dot(status) {
 function refreshSessionRows() {
   const root = document.querySelector('.pm-root');
   if (!root) return;
-  // The profile rows carry the live status now that the separate sessions list
-  // is gone, so refreshing rows means redrawing the profile list.
-  renderProfiles(root);
+  renderSessionList(root);
   renderTabs(root);
 }
+
+function renderSessionList(root) {
+  const host = (root || document).querySelector('.pm-sessions');
+  if (!host) return;
+  const { el, render } = state.ctx.ui;
+  const items = [...state.sessions.values()].reverse();
+  const countEl = (root || document).querySelector('.pm-count');
+  if (countEl) {
+    countEl.textContent = `${items.filter((s) => s.status === 'running').length} running / ${items.length}`;
+  }
+  const running = (s) => s.status === 'running' || s.status === 'starting';
+  render(
+    host,
+    items.length
+      ? items.map((s) =>
+          el(
+            'div',
+            { class: 'tb-row', 'data-ch': s.ch, role: 'option', 'aria-selected': String(s.ch === state.activeCh) },
+            dot(s.status),
+            el('span', { class: 'tb-row-label' }, s.name),
+            running(s)
+              ? el(
+                  'span',
+                  { class: 'tb-row-actions' },
+                  el('button', { class: 'tb-icon-btn tb-icon-btn-danger', 'data-act': 'kill', title: 'Stop', 'aria-label': 'Stop' }, '✕'),
+                )
+              : null,
+          ),
+        )
+      : el('div', { class: 'tb-hint' }, 'No sessions yet.'),
+  );
+}
+
+/* ---------------------------------- profiles UI -------------------------------- */
 
 /** One row per profile: what it runs, when, and the actions available. */
 function renderProfiles(root) {
@@ -652,21 +763,13 @@ function renderProfiles(root) {
   render(
     host,
     state.profiles.map((p) => {
-      const sess = sessionOf(p.id);
-      const live = sess && (sess.status === 'running' || sess.status === 'starting');
-      // The row is the selector: clicking it puts that profile's process in the
-      // terminal and shows its detail in the panel below. With one process per
-      // profile there is nothing else to disambiguate.
-      const selected = !!sess && state.selectedCh === sess.ch;
+      const live = runningFor(p.id).length;
       return el(
         'div',
         {
           class: 'pm-profile tb-pane tb-pane-pad',
           'data-id': p.id,
-          'aria-selected': String(selected),
-          style: `padding:6px;cursor:pointer;${
-            selected ? 'box-shadow:inset 0 0 0 1px var(--color-brand);' : ''
-          }${p.enabled ? '' : 'opacity:.5;'}`,
+          style: `padding:6px;${p.enabled ? '' : 'opacity:.5;'}`,
         },
         el(
           'div',
@@ -687,9 +790,9 @@ function renderProfiles(root) {
           el('span', { class: 'tb-row-label', style: 'font-weight:500;' }, p.name || p.program),
           el(
             'span',
-            { class: 'tb-hint', title: sess ? sess.status : 'not started' },
-            el('span', { class: `tb-dot ${live ? 'tb-dot-ok' : sess ? 'tb-dot-bad' : ''}`.trim() }),
-            sess ? sess.status : 'idle',
+            { class: 'tb-hint', title: live ? `${live} running` : 'not running' },
+            live ? el('span', { class: 'tb-dot tb-dot-ok' }) : el('span', { class: 'tb-dot' }),
+            live ? ` ${live}` : '',
           ),
         ),
         el('div', { class: 'tb-hint tb-mono', style: 'margin-top:2px;' }, [p.program, ...p.args].join(' ')),
@@ -799,50 +902,19 @@ function renderProfileEditor(root) {
       ),
     );
 
-  const close = () => {
-    state.editingId = null;
-    state.draft = null;
-    renderProfileEditor(root);
-  };
-
   render(
     host,
-    // A dialog, not an inline panel. Sixteen fields do not fit a 340px column,
-    // and as a panel they pushed the profile list off the bottom of the window.
-    // `defaultOpen` keeps it uncontrolled: the whole tree is rebuilt on every
-    // state change rather than patched, so "open" is a property of the render.
-    el(
-      'dialog',
+    // Same reason as the run form: `el('form')` is the Form component, and its
+    // submit event has no `preventDefault`.
+    native(
+      'form',
       {
-        defaultOpen: true,
-        'onUpdate:open': (open) => {
-          if (!open) close();
-        },
+        class: 'pm-profile-form tb-pane tb-pane-pad',
+        'data-id': d.id,
+        style: 'display:flex;flex-direction:column;gap:6px;margin-top:8px;',
+        onSubmit: onProfileSubmit,
       },
-      el(
-        'dialog-content',
-        { class: 'max-h-[85vh] overflow-y-auto sm:max-w-[560px]' },
-        el(
-          'dialog-header',
-          {},
-          el('dialog-title', {}, editing ? 'Edit profile' : 'New profile'),
-          el(
-            'dialog-description',
-            {},
-            'One profile owns one process — the schedule and restart policy below apply to that single process.',
-          ),
-        ),
-        // `native('form')`, not `el('form')`: the vocabulary contains a Form
-        // COMPONENT, whose submit event is not native, so `ev.preventDefault`
-        // would not exist on it.
-        native(
-          'form',
-          {
-            class: 'pm-profile-form',
-            'data-id': d.id,
-            style: 'display:flex;flex-direction:column;gap:8px;',
-            onSubmit: onProfileSubmit,
-          },
+      el('div', { class: 'tb-section-title', style: 'margin:0;' }, editing ? 'Edit profile' : 'New profile'),
       field('name', text('name', { placeholder: 'My backend' })),
       field('program', text('program', { placeholder: 'node' })),
       field('args (space separated)', text('args')),
@@ -869,15 +941,26 @@ function renderProfileEditor(root) {
         field('max retries', number('maxRetries', 0, 100)),
         field('delay (ms)', number('delayMs', 0, 600000)),
       ),
-          el(
-            'dialog-footer',
-            {},
-            el('button', { variant: 'outline', type: 'button', 'data-act': 'profile-cancel', onClick: close }, 'Cancel'),
-            el('button', { variant: 'default', type: 'submit' }, 'Save'),
-          ),
-          el('div', { class: 'pm-profile-err tb-t-bad', style: 'font-size:11px;' }),
+      el(
+        'div',
+        { style: 'display:flex;gap:6px;' },
+        el('button', { variant: 'default', type: 'submit' }, 'Save'),
+        el(
+          'button',
+          {
+            variant: 'outline',
+            type: 'button',
+            'data-act': 'profile-cancel',
+            onClick: () => {
+              state.editingId = null;
+              state.draft = null;
+              renderProfileEditor(root);
+            },
+          },
+          'Cancel',
         ),
       ),
+      el('div', { class: 'pm-profile-err tb-t-bad', style: 'font-size:11px;' }),
     ),
   );
 }
@@ -894,21 +977,7 @@ function onProfileClick(root, ev) {
   const profile = state.profiles.find((p) => p.id === id);
   if (!profile) return;
 
-  // A click on the row itself (not on one of its buttons) selects the profile:
-  // its process goes to the terminal and its detail to the panel below. This is
-  // what the separate sessions list used to do.
-  if (!btn) {
-    const sess = sessionOf(id);
-    if (!sess) return;
-    state.selectedCh = sess.ch;
-    state.activeCh = sess.ch;
-    activateSession(sess.ch);
-    renderProfiles(root);
-    renderTabs(root);
-    renderDetail();
-    return;
-  }
-
+  if (!btn) return;
   switch (btn.dataset.act) {
     case 'profile-run':
       launchProfile(profile, 'manual');
@@ -1019,6 +1088,7 @@ function removeSession(ch) {
   if (state.activeCh === ch) state.activeCh = [...state.sessions.keys()][0] || null;
   if (state.selectedCh === ch) state.selectedCh = state.activeCh;
   renderTabs();
+  renderSessionList();
   activateSession(state.activeCh);
   renderDetail();
 }
@@ -1030,7 +1100,7 @@ function renderDetail() {
 
   const s = state.sessions.get(state.selectedCh);
   if (!s) {
-    render(host, el('div', { class: 'tb-hint' }, 'Select a profile to see its process.'));
+    render(host, el('div', { class: 'tb-hint' }, 'Select a session to inspect it.'));
     return;
   }
 
