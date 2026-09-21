@@ -262,6 +262,43 @@ registerView：
   "要不要自绘"更关键。
 
 
+## 双滚动条 bug 的根因（已修，2026-09-21）
+
+**`main` 有 `overflow-auto` 但 `position: static`。** CSS 规范：**滚动容器只裁剪
+「以它为包含块」的绝对定位后代**，而成为包含块需要 `position` 非 static。所以插件视图里
+任何 `position: absolute` 元素（reka-ui 的 slider/switch/隐藏 label 里到处都是）
+**逃出 `main` 的裁剪**，转而以 `relative` 的根 div 定位，**把文档撑高**。
+
+症状：两个滚动条（`main` 一个、文档一个）+ 拖文档滚动条时侧栏跟着走。
+实测（真实 app，gallery 页）：文档 scrollHeight **4830** / 视口 720，侧栏 `top` **-300**。
+修复：`<main class="relative min-w-0 flex-1 overflow-auto p-3.5">` → 文档 **720**、
+侧栏 `top` **0**、`window.scrollTo` 完全滚不动。
+守卫：`layout: the main scroll container is also a containing block`。
+
+**一般规律：任何 `overflow: auto/scroll` 的盒子，如果要裁剪内部内容，
+都应该同时是 `position: relative`。** 否则绝对定位后代逃逸。
+
+## 浏览器测不出来 → 用 CDP 进真实 app（重要手段）
+
+**headless 浏览器打 dev server 只能看到「页面」，看不到「app」** ——
+插件激活、原生权限闸、窗口布局都不存在。所以**浏览器复现不了的问题，别继续在浏览器里找**。
+
+    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222" npm run tauri dev
+    node scripts/app-eval.mjs "<async 函数体>"      # 或 --file probe.js
+
+`scripts/app-eval.mjs`：零依赖（Node 内置 WebSocket 直接讲 CDP），
+`Runtime.evaluate` + `awaitPromise` + `returnByValue`。配合 `window.__toolbox`
+（`boot.js` 早期安装，boot 失败也存在）可以脚本化驱动真实 app。
+
+**上面那个 bug 就是靠这个找到的** —— 浏览器里三种尺寸都复现不了。
+
+原生窗口截图：`GetWindowRect` 返回的是**扩展边框**（含 Win 不可见的调整边框），
+直接用 `CopyFromScreen` 会偏 ~7px/边、看起来像"内容溢出边缘"。
+要用 `GetClientRect` + `ClientToScreen` 才像素精确。驱动鼠标用
+`SetCursorPos` + `mouse_event`，坐标**必须从刚读到的窗口 rect 算**（窗口会移动）。
+
+这套已写进 skill `tauri-headless-verification` 的 Step 7。
+
 ## 组件词汇表：上游 66 个组件全部拉入（376 个 tag）
 
 第一轮只拉了 23 个（插件真会伸手的那一小撮），现已补齐全部 66 个。
