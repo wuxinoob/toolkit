@@ -183,15 +183,46 @@ const PORTAL_CONTENTS = [
   // rather than reach for the portal directly.
 ];
 
-const LOCAL_PATCHES = Object.fromEntries(
-  PORTAL_CONTENTS.map(([file, portalTag, propsType]) => [
-    file,
-    {
-      why: `forwards portalTo to ${portalTag} so plugin popups stay theme-scoped`,
-      apply: (src) => forwardPortalTo(src, { portalTag, propsType }),
+/**
+ * Fixes that are not about portals.
+ *
+ * `outline` is the one Button variant written with a bare `border` — no colour —
+ * and it only names one in the dark theme (`dark:border-input`). Upstream gets
+ * away with it because their preflight still resolves a bare `border` to the
+ * theme's border colour; in this app that left every outline button with a
+ * near-black border on white (measured: border and text both `rgb(23,26,33)`).
+ *
+ * Naming the token explicitly makes the button's outline use the CONTROL colour
+ * in both themes, which is what it is — a control outline, not a region divider.
+ * The systemic half of the fix is the base rule in app.css; this is the part
+ * that needs a specific value.
+ */
+const BUTTON_PATCH = {
+  'button/index.ts': {
+    why: 'the outline variant uses a bare `border`, which resolves to currentColor',
+    apply: (src) => {
+      const from = '"border bg-background shadow-xs hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:border-input dark:hover:bg-input/50"';
+      const to = '"border border-input bg-background shadow-xs hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:hover:bg-input/50"';
+      if (!src.includes(from)) {
+        throw new Error('button outline variant changed upstream — re-check the patch');
+      }
+      return src.replace(from, to);
     },
-  ]),
-);
+  },
+};
+
+const LOCAL_PATCHES = {
+  ...Object.fromEntries(
+    PORTAL_CONTENTS.map(([file, portalTag, propsType]) => [
+      file,
+      {
+        why: `forwards portalTo to ${portalTag} so plugin popups stay theme-scoped`,
+        apply: (src) => forwardPortalTo(src, { portalTag, propsType }),
+      },
+    ]),
+  ),
+  ...BUTTON_PATCH,
+};
 
 /**
  * Bare imports actually present in the written files.

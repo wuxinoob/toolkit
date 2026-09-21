@@ -188,6 +188,28 @@
 }
 
 @layer base {
+  /*
+   * Tailwind v4's preflight sets `border-color: currentColor`, so a bare
+   * `border` class inherits the TEXT colour. shadcn's `outline` button variant
+   * is written exactly that way (`border bg-background … dark:border-input`) —
+   * fine in dark, where `dark:border-input` overrides it, but in the light theme
+   * every outline button drew a near-black border on white. Measured: border and
+   * colour both `rgb(23,26,33)`, identical, because one IS the other.
+   *
+   * v3's preflight defaulted this to the theme's border colour; v4 dropped it,
+   * and shadcn's v4 setup notes tell you to put it back. Restoring it here fixes
+   * the whole class of bug at once, including any bare `border` in a plugin's
+   * own markup — which is the part that matters, because a plugin cannot be
+   * audited component by component.
+   */
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-border);
+  }
+
   html,
   body,
   #app {
