@@ -77,8 +77,15 @@
   --accent-foreground: #e7eaf0;
   --destructive: #ff8b9a;
   --destructive-foreground: #2a0a10;
-  --border: #262c38;
-  --input: #262c38;
+  /* Dividers vs control outlines — DIFFERENT values on purpose.
+     They used to be the same colour, which meant one line had to satisfy two
+     opposite jobs: a region divider should recede as far as it can while still
+     reading as a boundary, and a control outline has to be visible enough that
+     an input looks like an input. Sharing a value forced a compromise that
+     satisfied neither — reported as "the lines dividing the window look bad".
+     Keeping them separate is the point; the exact values are tunable. */
+  --border: #1c212b;
+  --input: #333b4a;
   --ring: #6f9cf5;
 
   /* The app's own extras — levels and intents shadcn has no name for. */
@@ -116,8 +123,8 @@
   --accent-foreground: #171a21;
   --destructive: #c93a52;
   --destructive-foreground: #ffffff;
-  --border: #dfe4ee;
-  --input: #dfe4ee;
+  --border: #e9edf4;
+  --input: #c8d1e0;
   --ring: #2f6bd8;
 
   --line-strong: #c3cbdb;

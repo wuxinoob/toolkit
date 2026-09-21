@@ -707,12 +707,15 @@ test('theming: tokens that share a role stay in sync within a theme', () => {
   // and the risk is drift: edit `--card` and the app quietly grows a second
   // surface colour. This pins the intent. A plugin may still override any ONE
   // of them — that is the point of them being separate.
+  //
+  // `--border` and `--input` are deliberately NOT in this list. They were, and
+  // pinning them together is what forced one line to serve two opposite roles
+  // (region divider vs control outline). See the note in app.css.
   const { dark, light } = readThemeBlocks();
   const groups = [
     ['--card', '--popover'],
     ['--foreground', '--card-foreground', '--secondary-foreground', '--accent-foreground'],
     ['--secondary', '--muted', '--accent'],
-    ['--border', '--input'],
     ['--primary', '--ring'],
   ];
   const drift = [];
