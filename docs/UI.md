@@ -66,6 +66,87 @@ not follow the light/dark theme. Use `var(--color-*)` instead of literals if the
 window should follow the app; use literals if it should not. Both are supported,
 and neither requires host changes.
 
+## Who draws the window frame
+
+Three windows, two mechanisms, and one rule that keeps it honest.
+
+| window | label | frame | capability file |
+|---|---|---|---|
+| main | `main` | **native** (OS) | `capabilities/default.json` |
+| floating widget | `floatwin` | **self-drawn** | `capabilities/floatwin.json` |
+| plugin windows | `plugin-*` | **self-drawn** | `capabilities/pluginwin.json` |
+
+A self-drawn window is a plugin calling `ctx.windows.create(label, { decorations: false, … })`
+and then drawing its own bar, dragging it with `bridge.drag()` (`startDragging`).
+
+### The rule: capabilities are matched by window LABEL, so the label is the boundary
+
+Tauri's capability system scopes permissions per window, and it matches on the
+**label** — which is why the three files above exist rather than one. The plugin
+windows get three permissions each:
+
+```
+core:default, core:window:allow-start-dragging, core:window:allow-close
+```
+
+That is exactly what a self-drawn titlebar needs and nothing more. Window-level
+operations — size, position, always-on-top, click-through — deliberately stay
+with the **creating** window (`main`), because a plugin that can resize itself is
+a different proposition from one that can be dragged. `pluginwin.json` says this
+in its own description, which is the closest thing to a contract.
+
+**None of the three declares `remote`.** Tauri's default is that the API is only
+reachable from bundled code, so a window pointed at a remote origin gets no IPC
+at all. That is the safety net under the next point.
+
+### The gap that was closed: `options` had no allow-list
+
+`ctx.windows.create(label, options)` forwarded `options` straight into
+`new WebviewWindow(label, options)`. Every other surface in this host is an
+explicit, fail-closed list — service actions, capabilities, the component
+vocabulary — and this was the exception.
+
+The blast radius was small: capabilities match on label, and the only labels a
+plugin can reach grant three permissions each, so **no option could escalate**.
+What it could do is surprise. `url` in particular would replace the host page
+with arbitrary content and skip `pluginwin-host.js` — the documented loader that
+hands the plugin its `bridge`.
+
+So options are now validated against an allow-list, and `url` must be the app's
+own entry page:
+
+```js
+ctx.windows.create('mywin', { url: 'index.html?mode=pluginwin&plugin=…' })  // ok
+ctx.windows.create('mywin', { url: 'https://example.com' })                 // throws
+ctx.windows.create('mywin', { someFutureOption: true })                     // throws
+```
+
+Validation runs **before** the async window lookup, so a bad option fails the
+same way whether or not that window already exists.
+
+### If the main window is to be self-drawn too
+
+Two additions, both small:
+
+1. `"decorations": false` on the main window in `tauri.conf.json`
+2. `core:window:allow-{minimize,toggle-maximize,start-dragging}` in
+   `capabilities/default.json` — none are there today
+
+And one thing to decide first, because it is not a styling question: **who draws
+a plugin window's bar?** Today the plugin does, and it works — the floating
+widget has done so since it was written. The alternative is the host handing
+plugins a titlebar component, which takes a piece of freedom away from a window
+that is otherwise entirely theirs. `docs/UI.md` → "Where each half of the app
+gets its styles" is the same trade in the styling dimension.
+
+### What is lost on Windows
+
+Self-drawing means giving up **Snap Layouts** — the split-screen picker on hover
+over the maximize button. It hangs off the native caption, so it cannot be
+reproduced from the webview. Double-click-to-maximize has to be reimplemented
+(a few lines, and easy to forget). Window shadow and Windows 11 rounded corners
+may need `transparent: true` plus CSS.
+
 ## Tokens
 
 One `@theme` block in `src/assets/app.css` decides what the app looks like:

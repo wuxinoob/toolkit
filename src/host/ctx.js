@@ -32,6 +32,63 @@ export function buildCtx(plugin, disposer) {
   const { manifest } = plugin;
   const id = manifest.id;
   const prefix = `[plugin:${id}]`;
+
+  /**
+   * The window options a plugin may set.
+   *
+   * `options` used to go straight into `new WebviewWindow(label, options)`, which
+   * made it the one surface here with no allow-list — everything else (service
+   * actions, capabilities, the component vocabulary) is an explicit, fail-closed
+   * list. The blast radius was small, because Tauri matches capabilities by
+   * window LABEL and the only labels a plugin can reach (`plugin-*`, `floatwin`)
+   * grant three permissions each; so no option could escalate. What it could do
+   * is surprise.
+   */
+  const WINDOW_OPTIONS = new Set([
+    'url',
+    'title',
+    'width',
+    'height',
+    'x',
+    'y',
+    'center',
+    'transparent',
+    'decorations',
+    'shadow',
+    'alwaysOnTop',
+    'skipTaskbar',
+    'resizable',
+    'maximizable',
+    'minimizable',
+    'closable',
+    'focus',
+    'visible',
+  ]);
+
+  /**
+   * A plugin window may only load the app's OWN entry page.
+   *
+   * Both built-ins pass `index.html?mode=…`, which is how the host page decides
+   * what to render. An arbitrary URL would replace the host page with remote
+   * content and skip `pluginwin-host.js` — the documented loader that hands the
+   * plugin its `bridge`. The window would carry no IPC (no capability declares a
+   * remote origin, so Tauri denies it by default), so this is not an escalation;
+   * it is an undeclared capability that breaks the one contract the window host
+   * has.
+   */
+  function sanitizeWindowOptions(options) {
+    const unknown = Object.keys(options).filter((k) => !WINDOW_OPTIONS.has(k));
+    if (unknown.length) {
+      throw new Error(`${prefix} window option(s) not allowed: ${unknown.join(', ')}`);
+    }
+    if (options.url !== undefined && !/^index\.html(\?|$)/.test(String(options.url))) {
+      throw new Error(
+        `${prefix} window url must be the app's own entry page (index.html?…), got "${options.url}"`,
+      );
+    }
+    return { ...options };
+  }
+
   const perms = manifest.permissions || [];
   const hasPermission = (perm) => perms.includes(perm);
 
@@ -191,13 +248,16 @@ export function buildCtx(plugin, disposer) {
     windows: {
       create: (label, options = {}) =>
         gatedWin(async () => {
+          // Validated before the lookup, so a bad option fails the same way
+          // whether or not a window with that label already exists.
+          const clean = sanitizeWindowOptions(options);
           const existing = await WebviewWindow.getByLabel(label);
           if (existing) {
             await existing.show();
             await existing.setFocus();
             return 'exists';
           }
-          const win = new WebviewWindow(label, options);
+          const win = new WebviewWindow(label, clean);
           return new Promise((resolve, reject) => {
             win.once('tauri://created', () => resolve('created'));
             win.once('tauri://error', (e) =>
