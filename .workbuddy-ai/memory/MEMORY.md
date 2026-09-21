@@ -318,6 +318,46 @@ iframe**：独立 document，`:root` 真的是根，真样式表原样生效。�
 
 这套已写进 skill `tauri-headless-verification` 的 Step 7。
 
+## Tailwind v4：裸 `border` 的颜色是 currentColor（踩过，2026-09-21）
+
+**v4 的 preflight 把 `border-color` 默认成 `currentColor`**（v3 是主题边框色）。
+于是任何写了裸 `border`、没写颜色的元素，边框 = **文字色**。
+
+实测症状：浅色主题下每个 outline 按钮的边框是 `rgb(23,26,33)`（近黑）——
+因为它的 border 和 color 是**同一个值**。深色主题没暴露，因为那一档有 `dark:border-input`。
+
+修了两层：
+1. **系统性**：`@layer base` 里恢复 `*,::after,::before,::backdrop,::file-selector-button
+   { border-color: var(--color-border) }`。shadcn 的 v4 说明也要求补这条。
+   它同时保护**插件自己写的裸 `border`** —— 那是无法逐个审计的部分。
+2. **具体**：Button 的 outline variant 改用 `border-input`（两个主题都是），
+   进了拉取脚本的 `LOCAL_PATCHES`，重拉自动重放。
+
+**排查手法**：`getComputedStyle` 同时打印 border 和 color —— 两者相同就是 currentColor。
+
+## 窗口栏机制（已审计，2026-09-21）
+
+**三个 capability 文件按 window LABEL 分域**：`main` / `floatwin` / `plugin-*`。
+插件窗口各只拿三个权限（`core:default` + `start-dragging` + `close`）—— 恰好是自绘
+标题栏需要的。尺寸/位置/置顶/透传刻意留在**创建它的**主窗口。
+**三个都没有 `remote`**，所以指向远端 origin 的窗口拿不到任何 IPC（Tauri 默认）。
+
+**补上的缺口**：`ctx.windows.create(label, options)` 原本把 options **原样**塞进
+`new WebviewWindow(label, options)` —— 本宿主里唯一没有白名单的入口。
+影响面不大（capability 按 label 匹配，插件能拿到的 label 只给三个权限，没有选项能提权），
+但 `url` 能替换宿主页、跳过 `pluginwin-host.js`（那个把 bridge 交给插件的加载器）。
+现在选项走白名单 + url 必须是 `index.html?…`，校验放在异步查找**之前**。
+
+**主窗口若要自绘**还需两处：`tauri.conf.json` 的 `decorations: false`，
+以及 capability 加 `allow-{minimize,toggle-maximize,start-dragging}`（现在都没有）。
+Windows 上会失去 **Snap Layouts**。
+
+**测试手法**：`tests/window-options.test.mjs` 里有一条**从插件源码抽出真实选项**
+再比对白名单 —— 手写清单会在有人给插件加选项时漂移。这个模式可复用到其他"清单必须
+覆盖现有用法"的场合。
+
+详见 `docs/UI.md` →「Who draws the window frame」。
+
 ## procman 已按用户裁定重构（2026-09-21）
 
 用户的裁定是**同一件事的三面 —— 一个 profile 拥有一个进程**：
