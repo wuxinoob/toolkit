@@ -136,3 +136,38 @@ test('windows.create: the allow-list covers every option the built-ins pass', ()
   assert.ok(seen >= 10, `only ${seen} options extracted — the extractor is not working`);
   assert.deepEqual(problems, [], `the allow-list would break a built-in window://n  ${problems.join('\n  ')}`);
 });
+
+test('startup: the hidden-window handshake is intact on all three sides', () => {
+  // Three files have to agree or the app misbehaves in a way that is easy to
+  // ship and hard to notice:
+  //
+  //   tauri.conf.json  visible:false  — no unpainted frame is ever shown
+  //   src/main.js      show()         — the frontend reveals it after first paint
+  //   src-tauri/lib.rs show()         — the backstop if the frontend never does
+  //
+  // Drop the config and the white flash returns (worst on a FIRST run, where
+  // WebView2 has no caches). Drop either show() and the window never appears at
+  // all — the app looks like it failed to start.
+  const conf = JSON.parse(readFileSync(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
+  const main = conf.app.windows.find((w) => w.title === 'Toolbox');
+  assert.ok(main, 'no main window in tauri.conf.json');
+  assert.equal(main.visible, false, 'the main window must start hidden, or the white flash comes back');
+
+  const mainJs = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+  assert.ok(
+    /getCurrentWindow\(\)[\s\S]{0,120}?\.show\(\)/.test(mainJs),
+    'src/main.js must reveal the window — nothing else does',
+  );
+
+  const libRs = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
+  assert.ok(libRs.includes('is_visible'), 'lib.rs must have the backstop that shows a window the frontend never revealed');
+
+  // And the frontend is only ALLOWED to show it because the capability says so.
+  const cap = JSON.parse(
+    readFileSync(new URL('../src-tauri/capabilities/default.json', import.meta.url), 'utf8'),
+  );
+  assert.ok(
+    cap.permissions.includes('core:window:allow-show'),
+    'the main-window capability must allow `show`',
+  );
+});

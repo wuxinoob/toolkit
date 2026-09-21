@@ -14,7 +14,8 @@
       {
         "title": "Toolbox",
         "width": 1080,
-        "height": 720
+        "height": 720,
+        "visible": false
       }
     ],
     "security": {

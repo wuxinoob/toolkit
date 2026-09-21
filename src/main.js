@@ -1,4 +1,5 @@
 import { createApp } from 'vue';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 // One stylesheet for every window: the design tokens and the `.tb-*` primitives
 // are global on purpose — external plugins (Blob-URL ESM) cannot import a
 // component library, but they CAN use these classes.
@@ -29,6 +30,26 @@ if (mode === 'floatwin') {
 } else {
   const app = createApp(App);
   app.mount('#app');
+
+  // The window is created hidden (`visible: false` in tauri.conf.json) so nobody
+  // ever sees an unpainted frame. Reveal it once a frame has actually been
+  // painted — showing right after `mount()` still races the compositor, because
+  // mount() returns before the browser has drawn anything.
+  //
+  // This matters most on a FIRST run, where WebView2 has no GPU/shader/code
+  // caches yet and takes seconds to come up; a warm profile hides the problem,
+  // which is exactly why it is worth fixing rather than tolerating.
+  //
+  // A failure here must not be silent, and must not be fatal: the native side
+  // shows the window anyway after a few seconds (see `lib.rs`), so a frontend
+  // that never gets this far still leaves a usable window.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      getCurrentWindow()
+        .show()
+        .catch((e) => console.error('[shell] could not show the window', e));
+    });
+  });
 
   boot();
 }

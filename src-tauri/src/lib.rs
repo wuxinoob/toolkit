@@ -19,6 +19,7 @@ pub mod services;
 
 use serde_json::{json, Value};
 use tauri::ipc::{Channel, InvokeResponseBody};
+use tauri::Manager;
 
 use protocol::envelope::Envelope;
 
@@ -182,6 +183,28 @@ pub fn run() {
             services::external::plugin_read_entry,
             services::external::plugin_open_dir
         ])
+        .setup(|app| {
+            // The main window is created hidden so nobody ever sees an unpainted
+            // frame; the frontend reveals it after its first paint (see
+            // `src/main.js`). If the frontend never gets that far — a JS error,
+            // a dev server that is down, a blank page — the window would stay
+            // hidden forever and the app would look like it failed to launch.
+            // This is the backstop for that, and the reason the hidden start is
+            // safe to ship.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                if let Some(w) = handle.get_webview_window("main") {
+                    if !w.is_visible().unwrap_or(true) {
+                        let _ = w.show();
+                        eprintln!(
+                            "[host] frontend did not reveal the window within 5s — showing it anyway"
+                        );
+                    }
+                }
+            });
+            Ok(())
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, event| {
