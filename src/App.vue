@@ -119,7 +119,20 @@ const navClass = (active) =>
         </nav>
       </aside>
 
-      <main class="min-w-0 flex-1 overflow-auto p-3.5">
+      <!--
+        `relative` is load-bearing, not decoration.
+
+        `overflow-auto` alone does NOT clip absolutely-positioned descendants:
+        per spec a scroller only clips them if it is also their containing
+        block, which requires `position` to be something other than `static`.
+        So any `position: absolute` element a plugin view renders (reka-ui puts
+        several in every slider / switch / hidden label) escaped this box,
+        positioned against the `relative` wrapper instead, and grew the
+        DOCUMENT's scroll height. The result was two scrollbars and a page that
+        scrolled out from under the sidebar — measured at 4830px of document
+        height inside a 720px viewport. With `relative`, it is 720.
+      -->
+      <main class="relative min-w-0 flex-1 overflow-auto p-3.5">
         <SettingsView v-if="store.activeViewId === '__settings'" />
         <ViewHost v-else-if="store.activeViewId" :view-id="store.activeViewId" />
         <div v-else class="flex h-full flex-col items-center justify-center gap-1.5 text-muted-foreground">

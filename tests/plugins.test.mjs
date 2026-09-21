@@ -733,6 +733,27 @@ test('theming: tokens that share a role stay in sync within a theme', () => {
   assert.deepEqual(drift, [], `roles that should be one colour have drifted:\n  ${drift.join('\n  ')}`);
 });
 
+test('layout: the main scroll container is also a containing block', () => {
+  // `overflow-auto` alone does not clip absolutely-positioned descendants — per
+  // spec a scroller clips them only if it is ALSO their containing block, which
+  // needs `position` to be non-static. Without `relative`, any `position:
+  // absolute` element a plugin view renders escapes the box and grows the
+  // DOCUMENT instead, which gives two scrollbars and a page that scrolls out
+  // from under the sidebar.
+  //
+  // Measured in the running app before the fix: document scrollHeight 4830 in a
+  // 720px viewport, sidebar pushed 300px off the top. After: 720, sidebar at 0.
+  const app = read('src/App.vue');
+  const main = app.match(/<main\s+class="([^"]+)"/);
+  assert.ok(main, 'App.vue has no <main class="…">');
+  const cls = main[1];
+  assert.ok(cls.includes('overflow-auto'), '<main> must still scroll');
+  assert.ok(
+    cls.includes('relative'),
+    '<main> has overflow-auto but no `relative` — absolute descendants will escape it',
+  );
+});
+
 test('theming: the dark: variant is redirected to data-theme, not the OS', () => {
   // shadcn-vue components carry `dark:` classes. Tailwind's default `dark:`
   // follows `prefers-color-scheme`, so without this redirect the app's own
