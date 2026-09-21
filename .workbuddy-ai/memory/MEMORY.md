@@ -384,12 +384,22 @@ JS 上下文，但**宿主进程还活着**，于是上一次 boot 开的会话�
 **教训**：为了排查而改名 profile 之后，**一定要记得换回来**；
 判据是 `du -sh`，不是"看起来目录都在"。
 
-## 结构性问题：窗口在页面画出来之前就显示了
+## 白屏已从结构上修掉：窗口等首帧画完再显示（2026-09-21）
 
-`tauri.conf.json` 的窗口配置没有 `visible: false`，所以 Tauri 建完窗口立刻显示，
-webview 还在加载 → **必然有一段白屏**，长度取决于页面加载耗时。
-彻底消除要用 `visible: false` + 前端 ready 后再 `show()`（记得留超时兜底，
-否则 boot 失败时窗口永远不出现）。
+**三处必须一致**（`tests/window-options.test.mjs` 有一条握手契约测试钉住）：
+
+| 文件 | 作用 |
+|---|---|
+| `tauri.conf.json` | `"visible": false` |
+| `src/main.js` | 首帧画完后 `show()`。**必须两个 `requestAnimationFrame`** —— `mount()` 返回时浏览器还没画，一个 rAF 仍与合成器赛跑 |
+| `src-tauri/lib.rs` | 兜底：5 秒后仍不可见就显示，并打一行 stderr |
+
+**兜底是"隐藏启动"能安全发布的原因**：前端若因 JS 报错 / dev server 挂了 /
+页面空白而走不到 `show()`，窗口永远不出现 —— 比白屏更糟。
+capability 里 `core:window:allow-show` 本来就有。
+
+**为什么值得做**：暖 profile 会掩盖白屏，**新用户第一次启动时最严重** ——
+而那恰恰是最该留好印象的场景。
 
 ## Tailwind v4：裸 `border` 的颜色是 currentColor（踩过，2026-09-21）
 
