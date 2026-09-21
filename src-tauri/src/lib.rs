@@ -136,6 +136,31 @@ mod console_exit {
     }
 }
 
+/// Drop sessions left behind by a previous frontend.
+///
+/// A page reload replaces the JS context while this process keeps running — in
+/// dev that is every HMR update. The previous incarnation's sessions stay
+/// registered, and they hold **real OS processes**, so this is a leak rather
+/// than a stale entry: reload ten times and ten orphans accumulate, and the
+/// in-app selftest starts reporting failures that are not failures.
+///
+/// `RunEvent::Exit` and the console handler both drain on the way out. A reload
+/// passes through neither, so the new frontend has to say so itself.
+///
+/// Main window only. This is the host's own boot talking; a plugin window has no
+/// business ending sessions it did not open, and app commands are not ACL-gated,
+/// so the label check is the gate.
+#[tauri::command]
+fn plugin_reap_orphans(window: tauri::WebviewWindow) -> Result<usize, String> {
+    if window.label() != "main" {
+        return Err(format!(
+            "plugin_reap_orphans is main-window only (called from \"{}\")",
+            window.label()
+        ));
+    }
+    Ok(crate::services::session::kill_all())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Before the window exists: Ctrl+C must drain sessions too.
@@ -152,6 +177,7 @@ pub fn run() {
             plugin_stream_open,
             plugin_stream_open_raw,
             plugin_stream_close,
+            plugin_reap_orphans,
             services::external::plugin_scan,
             services::external::plugin_read_entry,
             services::external::plugin_open_dir

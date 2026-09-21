@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { register, unregisterAll, isRegistered } from '@tauri-apps/plugin-global-shortcut';
 
@@ -44,10 +45,35 @@ async function report(line) {
   }
 }
 
+/**
+ * Drop sessions a previous frontend left behind.
+ *
+ * A page reload replaces this JS context while the host process keeps running —
+ * in dev that is every HMR update. The previous incarnation's sessions stay
+ * registered, and they hold real OS processes, so they leak: reload a few times
+ * and the in-app selftest starts reporting failures that are not failures
+ * (its own `selftest-pty` is already open, so t10 and t11 go red).
+ *
+ * Exit and Ctrl+C both drain sessions; a reload passes through neither, so the
+ * new frontend says so itself. Outside the app (tests, a plain browser) there is
+ * no host to talk to, and that is not an error worth reporting.
+ */
+async function reapOrphanSessions() {
+  try {
+    const n = await invoke('plugin_reap_orphans');
+    if (n > 0) await report(`reaped ${n} session(s) left by a previous frontend`);
+  } catch {
+    // No host (browser, node --test) — nothing to reap.
+  }
+}
+
 export async function boot() {
   await report(`--- boot ${new Date().toISOString()} ---`);
   try {
     installDebug(); // window.__toolbox before plugins attach their own handles
+
+    // Before anything opens a session of its own.
+    await reapOrphanSessions();
 
     // The scheme table is a static contract; snapshot it for the diagnostics view.
     store.schemes = hub.schemes();
