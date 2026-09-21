@@ -362,6 +362,35 @@ JS 上下文，但**宿主进程还活着**，于是上一次 boot 开的会话�
 排查这类"窗口全白"的顺序：① 进程有没有窗口句柄（`MainWindowHandle`）
 ② 前端在浏览器里能不能渲染（排除代码）③ 才去怀疑环境。
 
+## 启动白屏 2.3 秒：根因是 WebView2 profile 被换掉了（2026-09-21）
+
+**排查过程（先用测量排除，别猜）**：
+
+| 假设 | 测法 | 结果 |
+|---|---|---|
+| 我的代码阻塞首帧 | 看 `main.js` | ❌ `app.mount('#app')` 在 `boot()` **之前**且不 await |
+| 前端慢 | headless 量 FCP（冷，清空 `.vite` 后） | ❌ **440ms** |
+| 系统代理拦 127.0.0.1 | 查 WinINET + env | ❌ 无代理 |
+| WebView2 运行时升级 | 查版本 | ❌ 仍是 153.0.4234.48 |
+| 我的改动 | 回退重编译 A/B | ❌ 窗口照样白 |
+
+**真因**：我为测"profile 是否坏了"把 `EBWebView` 改名，应用随即**新建了一个全新 profile**，
+而**原来的暖 profile 被留在了 `EBWebView.bak`**。
+`du -sh` 一量就清楚：**新 87M vs 原 234M**。冷 profile 要重建 GPU/shader/Code Cache
+并做首轮组件初始化 → 每次启动多几秒白屏。
+
+**已恢复**（把 234M 的原 profile 换回来，删掉 87M 那个）。
+
+**教训**：为了排查而改名 profile 之后，**一定要记得换回来**；
+判据是 `du -sh`，不是"看起来目录都在"。
+
+## 结构性问题：窗口在页面画出来之前就显示了
+
+`tauri.conf.json` 的窗口配置没有 `visible: false`，所以 Tauri 建完窗口立刻显示，
+webview 还在加载 → **必然有一段白屏**，长度取决于页面加载耗时。
+彻底消除要用 `visible: false` + 前端 ready 后再 `show()`（记得留超时兜底，
+否则 boot 失败时窗口永远不出现）。
+
 ## Tailwind v4：裸 `border` 的颜色是 currentColor（踩过，2026-09-21）
 
 **v4 的 preflight 把 `border-color` 默认成 `currentColor`**（v3 是主题边框色）。
