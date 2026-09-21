@@ -401,6 +401,27 @@ capability 里 `core:window:allow-show` 本来就有。
 **为什么值得做**：暖 profile 会掩盖白屏，**新用户第一次启动时最严重** ——
 而那恰恰是最该留好印象的场景。
 
+## 启动期是"启动中"还是"空的"——不能混为一谈（2026-09-21）
+
+窗口改成"首帧画完就显示"之后，暴露出下一层：**窗口出现时插件还没加载完**
+（插件在 `boot()` 里才加载），于是用户看着空侧栏等几秒。
+
+**之前启动期显示的是空状态文案** —— "No plugin views yet / Drop a plugin folder…"，
+在插件正在加载时这么说是**错的**，读起来像加载失败。
+现在按 `store.booted` 分流：`!booted` → "Starting up… / Loading plugins."，
+侧栏也补一行 "Loading plugins…"（用户看的正是那块）。`store.booted` 本来就有。
+
+**日志里现在有一行启动时间账**：
+
+    boot timing (ms): debug 2 | reap 15 | schemes 18 | builtins 1900 | external 2100 | hotkey 2120
+
+它**特意放在每个插件状态行和自检之前** —— 那些是诊断信息，
+耗时不该算进用户等待的插件列表。没有这一行，"启动慢"是无法回答的问题。
+
+**已排除的假设**：Vite 转换插件模块慢 —— 实测每个内置插件模块首次转换只要
+10–25ms（notepad 26 / eyecare 9 / procman 19 / streamlab 6 / floatwin 11）。
+所以瓶颈在 `bootPlugins` 里插件的**激活**本身。
+
 ## Tailwind v4：裸 `border` 的颜色是 currentColor（踩过，2026-09-21）
 
 **v4 的 preflight 把 `border-color` 默认成 `currentColor`**（v3 是主题边框色）。
