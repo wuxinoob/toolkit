@@ -339,7 +339,13 @@ JS 上下文，但**宿主进程还活着**，于是上一次 boot 开的会话�
 并把 WebView2 profile 搞成坏状态：**应用能起窗口但窗口全白**，页面根本不加载
 （因此没有 boot 日志、CDP 也不起来）。
 
-**判据**：同一份代码在浏览器里渲染正常 + `cargo check` 与测试都过 ⇒ 是环境不是代码。
+**判据（已做 A/B 验证）**：
+1. 同一份代码在浏览器里渲染正常（dev server HTTP 200，shell 正常渲染）
+2. `cargo check` 与 142/142 测试都过
+3. **把我改的 `lib.rs` + `boot.js` 回退到改动前、重新编译，窗口依然全白** ⇒ 排除我的代码
+4. 换一个全新的 WebView2 profile（把 `EBWebView` 改名）**也没用** ⇒ 不是 profile 数据
+
+⇒ 是环境，不是代码。下一步只能重启机器（WebView2 运行时状态需要干净重启）。
 
 **要让它自己关**（关窗口 → `RunEvent::Exit` → `kill_all()`）。
 **修复办法**：重启机器，或清 `%LOCALAPPDATA%\com.tan18.toolbox\EBWebView`
