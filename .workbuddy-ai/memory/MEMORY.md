@@ -318,6 +318,36 @@ iframe**：独立 document，`:root` 真的是根，真样式表原样生效。�
 
 这套已写进 skill `tauri-headless-verification` 的 Step 7。
 
+## 前端重载会遗留宿主侧会话（已修，2026-09-21）
+
+**症状**：应用内自检从 15/15 掉到 13/15，且此后每次都 13/15 ——
+`t10: session __host__/selftest-pty is already open` / `t11: session leaked`。
+
+**根因**（boot 日志里两次 boot 相隔 1.8 秒，然后才跑自检）：HMR 整页重载替换了前端
+JS 上下文，但**宿主进程还活着**，于是上一次 boot 开的会话留在注册表里 ——
+而它**握着真实的 OS 进程**。所以这是泄漏不是条目过期：重载十次攒十个孤儿，
+自检也开始报**假失败**。
+
+`RunEvent::Exit` 和 Ctrl+C 处理器都 `kill_all()`，但**重载两条路都不经过**。
+修法：新增 `plugin_reap_orphans`，`boot()` 在任何东西开会话**之前**调用；
+**只允许主窗口**（命令内检查 `window.label() == "main"`）—— 应用命令不走 ACL，
+标签检查就是闸门。真启动时是 no-op。
+
+## ⚠️ 绝对不要硬杀 Tauri 应用（我把开发环境弄坏了）
+
+反复 `Stop-Process -Force` 硬杀 → **累积 26 个孤儿 msedgewebview2 进程**，
+并把 WebView2 profile 搞成坏状态：**应用能起窗口但窗口全白**，页面根本不加载
+（因此没有 boot 日志、CDP 也不起来）。
+
+**判据**：同一份代码在浏览器里渲染正常 + `cargo check` 与测试都过 ⇒ 是环境不是代码。
+
+**要让它自己关**（关窗口 → `RunEvent::Exit` → `kill_all()`）。
+**修复办法**：重启机器，或清 `%LOCALAPPDATA%\com.tan18.toolbox\EBWebView`
+（webview 缓存/profile，会丢 localStorage 里的主题与设置，不碰 `%APPDATA%` 的插件数据）。
+
+排查这类"窗口全白"的顺序：① 进程有没有窗口句柄（`MainWindowHandle`）
+② 前端在浏览器里能不能渲染（排除代码）③ 才去怀疑环境。
+
 ## Tailwind v4：裸 `border` 的颜色是 currentColor（踩过，2026-09-21）
 
 **v4 的 preflight 把 `border-color` 默认成 `currentColor`**（v3 是主题边框色）。
