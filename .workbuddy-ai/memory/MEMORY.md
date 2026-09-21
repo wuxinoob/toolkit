@@ -318,6 +318,28 @@ iframe**：独立 document，`:root` 真的是根，真样式表原样生效。�
 
 这套已写进 skill `tauri-headless-verification` 的 Step 7。
 
+## procman 已按用户裁定重构（2026-09-21）
+
+用户的裁定是**同一件事的三面 —— 一个 profile 拥有一个进程**：
+
+- **列**：`250px 1fr 270px` → **`340px 1fr`**。终端 ~560px → ~824px。
+  右列那 270px 是常驻只读信息，而中间区本来就是"当前会话"的语境。
+- **表单**：快速表单（4 字段，且它自己的字段是 profile 表单的**严格子集**、
+  还自带 "save as profile" → 两个入口都能建 profile）与 profile 表单（16 字段）
+  **合并成一个**，搬进 **Dialog**（560px 宽，不再挤在 250px 左列）。
+- **取消多开**：`launchProfile` 发现该 profile 已有进程时**聚焦它**而不是再起一个。
+  restart 不受影响 —— 退出的进程不计入 `runningFor`。
+
+**连带效果**：独立的 Sessions 列表可以**取消** —— 状态并入 profile 行，
+详情并入左列底部。因为"选中会话的详情"现在就是"选中 profile 的详情"。
+新增 `sessionOf(profileId)` 返回该 profile 的会话（不论状态）。
+
+1287 → 1211 行；`innerHTML =` 0 处；`pm-sessions`/`pm-form` 引用 0 处。
+
+**Dialog 在工厂里的用法**：`el('dialog', { defaultOpen: true, 'onUpdate:open': (o) => { if (!o) close() } }, ...)`。
+整个树每次状态变化都重建（不是 patch），所以"打开"是渲染的属性 ——
+`defaultOpen` 就够了，不需要受控状态。
+
 ## 组件词汇表：上游 66 个组件全部拉入（376 个 tag）
 
 第一轮只拉了 23 个（插件真会伸手的那一小撮），现已补齐全部 66 个。
