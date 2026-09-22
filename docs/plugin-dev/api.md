@@ -59,20 +59,66 @@ ctx.bus.once('my.topic', (env) => {});
 
 ---
 
-## 我要接收一个热键
+## 我要用一个热键
+
+### 声明式（推荐，**不需要权限**）
 
 ```json
-// plugin.json —— 这个声明本身就是权限
+// plugin.json
 "hotkeys": [{ "key": "ctrl+alt+m", "action": "toggle" }]
 ```
 
 ```js
-ctx.onHotkey('toggle', () => { /* … */ });
+ctx.onHotkey('toggle', (env) => {
+  // env.p 是 { key: 'ctrl+alt+m' }
+});
 ```
 
-宿主在**你 `activate()` 之前**就注册好了，所以可以放心依赖。
-热键以 `evt` 信封投递到 `hotkey:<action>`，且**带着 owner** ——
-别的插件碰巧用了同名 action 时你收不到（宿主帮你过滤）。
+**宿主在你 `activate()` 之前就注册好了**，所以可以放心依赖。
+**为什么不要权限**：注册是**宿主以 `__host__` 身份代办的**，只把 `owner: <你的 id>`
+带过去 —— 你没有触达 OS 的快捷键 API，只是声明了「我要这个键」。
+
+**`key` 的语法**是 Tauri 的 `Shortcut`：修饰键 `+` 键名。
+`ctrl` / `control` / `alt` / `shift` / `super` / `cmdorctrl`，
+键名可以是单字符（`p`、`k`）或具名键（`F1`、`Space`、`Enter`、`Escape`、`ArrowUp`…）。
+
+### 事件是怎么送到你的
+
+```
+OS 按下  →  Rust handler  →  app.emit(evt, topic = "hotkey:<action>")
+         →  JS listen(BROADCAST_EVENT)  →  按 topic 分发  →  ctx.onHotkey
+```
+
+**信封里带着 owner**（`env.svc`）—— 所以**别的插件碰巧用了同名 action 时你收不到**。
+宿主替你过滤了，你不用自己判。
+
+### 命令式（运行时增删，**需要 `rpc:hotkey`**）
+
+```js
+await ctx.rpc('hotkey', 'register',   { key: 'ctrl+alt+n', action: 'next' });
+await ctx.rpc('hotkey', 'unregister', { key: 'ctrl+alt+n' });
+await ctx.rpc('hotkey', 'unregister_all', {});
+const { keys } = await ctx.rpc('hotkey', 'list', {});
+```
+
+四个动作：`register` / `unregister` / `unregister_all` / `list`。
+
+**什么时候用命令式**：热键由用户配置决定，事先不知道。
+否则用声明式 —— 它不需要权限，而且会出现在 `plugin.json` 里，别人看得见。
+
+### 注册失败不会抛，所以你要主动查
+
+**一个快捷键被别的程序占用是常见的，不该阻止插件激活** —— 所以失败只写一条
+`ctx.log.warn`，不抛错。代价是**你默认不知道成没成**。
+
+**要确认就查**（`probe` 插件就是这么做的）：
+
+```js
+const { keys } = await ctx.rpc('hotkey', 'list', {});
+if (!keys.includes('ctrl+alt+m')) ctx.log.warn('hotkey not registered — 可能被占用');
+```
+
+或者启动时用 `ctx.ui.notify` 告诉用户「热键 X 没注册上」，让他自己改。
 
 ---
 
