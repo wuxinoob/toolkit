@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { toast as sonner } from 'vue-sonner';
 
 import { store, setToastSink } from './host/store.js';
+import { resolveIcon } from './host/icons.js';
 import ViewHost from './components/ViewHost.vue';
 import SettingsView from './views/SettingsView.vue';
 import { Button } from '@/components/ui/button';
@@ -53,6 +54,23 @@ const grouped = computed(() => {
 const SLOT_LABEL = { tool: 'Tools', panel: 'Panels', system: 'System' };
 const label = (slot) => SLOT_LABEL[slot] ?? slot;
 
+/** The shell's own icons, resolved the same way a plugin's are. */
+const shellIcon = (name) => resolveIcon(`lucide:${name}`);
+
+/**
+ * viewId → resolved icon component, or null meaning "render the raw glyph".
+ *
+ * Resolved once per render rather than inside the template: `resolveIcon` warns
+ * on an unknown name, and calling it twice per row would warn twice. A plugin
+ * may write `"lucide:terminal"` or keep using an emoji — both work, and an
+ * unknown name falls back to a generic icon rather than leaving a hole.
+ */
+const viewIcons = computed(() => {
+  const m = new Map();
+  for (const v of store.views) m.set(v.viewId, resolveIcon(v.icon));
+  return m;
+});
+
 /**
  * A nav row. `ghost` for the resting state and a tinted variant when active —
  * expressed with token utilities rather than a bespoke class, so it follows the
@@ -97,7 +115,10 @@ const navClass = (active) =>
                     :aria-current="store.activeViewId === v.viewId"
                     @click="store.activeViewId = v.viewId"
                   >
-                    <span class="w-[18px] shrink-0 text-center" aria-hidden="true">{{ v.icon }}</span>
+                    <span class="flex size-[18px] shrink-0 items-center justify-center" aria-hidden="true">
+                      <component :is="viewIcons.get(v.viewId)" v-if="viewIcons.get(v.viewId)" class="size-4" />
+                      <span v-else>{{ v.icon }}</span>
+                    </span>
                     <span class="truncate">{{ v.title }}</span>
                   </Button>
                 </TooltipTrigger>
@@ -119,7 +140,9 @@ const navClass = (active) =>
             :aria-current="store.activeViewId === '__settings'"
             @click="store.activeViewId = '__settings'"
           >
-            <span class="w-[18px] shrink-0 text-center" aria-hidden="true">⚙</span>
+            <span class="flex size-[18px] shrink-0 items-center justify-center" aria-hidden="true">
+              <component :is="shellIcon('settings')" class="size-4" />
+            </span>
             <span class="truncate">Settings</span>
           </Button>
         </nav>
@@ -148,12 +171,12 @@ const navClass = (active) =>
           so this is on screen for the whole of `boot()`.
         -->
         <div v-else-if="!store.booted" class="flex h-full flex-col items-center justify-center gap-1.5 text-muted-foreground">
-          <div class="text-[22px] opacity-50">⏳</div>
+          <component :is="shellIcon('timer')" class="size-6 opacity-50" />
           <div class="text-sm">Starting up…</div>
           <div class="text-xs">Loading plugins.</div>
         </div>
         <div v-else class="flex h-full flex-col items-center justify-center gap-1.5 text-muted-foreground">
-          <div class="text-[22px] opacity-50">🧩</div>
+          <component :is="shellIcon('puzzle')" class="size-6 opacity-50" />
           <div class="text-sm">No plugin views yet</div>
           <div class="text-xs">Drop a plugin folder into the plugins directory and press Rescan.</div>
         </div>

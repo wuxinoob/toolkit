@@ -45,7 +45,7 @@
 
 ```json
 "views": [
-  { "id": "main", "slot": "tool", "title": "My Plugin", "icon": "🧩" }
+  { "id": "main", "slot": "tool", "title": "My Plugin", "icon": "lucide:puzzle" }
 ]
 ```
 
@@ -54,7 +54,24 @@
 | `id` | 视图 id，**`ctx.registerView(id, …)` 必须用它** |
 | `slot` | 侧栏分组：`tool`（默认）/ `panel` / `system` |
 | `title` | 侧栏里显示的文字 |
-| `icon` | 侧栏里的图标（一个字符，emoji 即可） |
+| `icon` | 侧栏里的图标。见下 |
+
+**`icon` 支持三种写法**：
+
+```json
+"icon": "lucide:terminal"   // ← 推荐。宿主渲染真图标，跟随主题
+"icon": "lucide:puzzle"                 // ← emoji，一直可用，但跨平台渲染不一致
+"icon": "lucide:tpyo"       // ← 拼错：回退到通用图标，并在控制台警告
+```
+
+- **`lucide:<name>`** —— 宿主从一份**固定的词汇表**里取图标渲染成 SVG。
+  `ctx.schema()` 之外，可用名字在 `src/host/icons.js` 的 `ICON_NAMES` 里
+  （50 个：`terminal` / `folder` / `chart-line` / `settings` / `database` / `shield` …）
+- **为什么不是「任意 lucide 图标」** —— `@lucide/vue` 导出 **6330** 个图标（源码 16MB）。
+  按名字全量查表会让打包器无法摇树，包体翻倍（现在 1.6MB）—— 只为侧栏一个小图标。
+  词汇表是刻意的；**加一个图标很便宜**（一行 import + 一行映射）
+- **拼错不会留白** —— 回退到通用图标并在控制台说明。**不会**把
+  `lucide:tpyo` 这个字符串直接显示出来
 
 **关键契约：`ctx.registerView(id, render)` 会校验 `id` 是否已在 `views` 里声明**，
 没声明会直接抛错：
@@ -139,7 +156,7 @@ Rust 侧 `host/registry.rs`（权威，fail-closed，未注册即拒绝）。
   "entry": "main.js",
   "description": "示例",
   "contributes": {
-    "views": [{ "id": "main", "slot": "tool", "title": "My Plugin", "icon": "🧩" }],
+    "views": [{ "id": "main", "slot": "tool", "title": "My Plugin", "icon": "lucide:puzzle" }],
     "hotkeys": [{ "key": "ctrl+alt+m", "action": "toggle" }]
   },
   "permissions": ["rpc:storage"]

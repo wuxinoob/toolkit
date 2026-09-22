@@ -49,7 +49,7 @@ export default {
   "version": "0.1.0",
   "api": 2,
   "entry": "main.js",
-  "contributes": { "views": [{ "slot": "tool", "id": "main", "title": "My Plugin", "icon": "🧩" }] }
+  "contributes": { "views": [{ "slot": "tool", "id": "main", "title": "My Plugin", "icon": "lucide:puzzle" }] }
 }
 ```
 

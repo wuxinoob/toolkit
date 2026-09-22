@@ -211,6 +211,32 @@ const BUTTON_PATCH = {
   },
 };
 
+/**
+ * The scroll-area thumb is drawn by reka-ui, not by the browser, so the app's
+ * own `::-webkit-scrollbar-thumb` rule (which uses `--color-line-strong`) does
+ * not reach it. Upstream gives it `bg-border` — the DIVIDER token — which is
+ * fine when dividers are mid-grey, but this app deliberately made `--border`
+ * recede as far as it can while still reading as a boundary. On a card that
+ * left the sidebar's scrollbar nearly invisible, while every other scrollbar in
+ * the app stayed clearly visible.
+ *
+ * A scrollbar thumb is a control affordance, not a divider: it has to be
+ * findable. Same token as the native scrollbars, so the two agree.
+ */
+const SCROLLBAR_PATCH = {
+  'scroll-area/ScrollBar.vue': {
+    why: 'the thumb used the divider token, making the sidebar scrollbar nearly invisible',
+    apply: (src) => {
+      const from = 'class="bg-border relative flex-1 rounded-full"';
+      const to = 'class="bg-line-strong relative flex-1 rounded-full"';
+      if (!src.includes(from)) {
+        throw new Error('scroll-area thumb class changed upstream — re-check the patch');
+      }
+      return src.replace(from, to);
+    },
+  },
+};
+
 const LOCAL_PATCHES = {
   ...Object.fromEntries(
     PORTAL_CONTENTS.map(([file, portalTag, propsType]) => [
@@ -222,6 +248,7 @@ const LOCAL_PATCHES = {
     ]),
   ),
   ...BUTTON_PATCH,
+  ...SCROLLBAR_PATCH,
 };
 
 /**
