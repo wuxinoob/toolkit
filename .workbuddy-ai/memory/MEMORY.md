@@ -422,6 +422,31 @@ capability 里 `core:window:allow-show` 本来就有。
 10–25ms（notepad 26 / eyecare 9 / procman 19 / streamlab 6 / floatwin 11）。
 所以瓶颈在 `bootPlugins` 里插件的**激活**本身。
 
+## 插件开发手册在 docs/plugin-dev/（2026-09-22）
+
+面向**写插件的人**，七个文件：README（上手 + 五层总览）、architecture（分层与边界）、
+manifest（plugin.json 参考）、api（ctx 按任务组织）、ui（.tb-* + 令牌 + 组件工厂）、
+**debugging（归因手册：症状 → 查什么）**、recipes（最小实现 + 指向现成代码）。
+
+协议/内部实现**不重复**，只引用 `docs/PROTOCOL.md` / `INTERFACES.md` / `UI.md` /
+`MESSAGE-FRAMEWORK.md`。**加插件相关文档时先看这里，别另起一套。**
+
+写的时候核对源码查出来的、容易记错的几点：
+
+- **`ctx.registerView(id)` 会校验 id 是否在 `contributes.views` 里声明**，没声明直接抛错 ——
+  视图的 slot/title/icon 来自声明，不来自代码
+- **`contributes.hotkeys` 的声明本身就是权限**，不需要额外声明 `rpc:hotkey`
+- **窗口的 size/position/alwaysOnTop 归创建它的窗口**，不在插件窗口自己的权限里
+- **`ctx.events` 是窗口本地的（in-process），`ctx.bus` 才跨窗口** —— 两者都是异步形状
+
+## 启动耗时归因：日志里有 `plugin load (ms):`（2026-09-22）
+
+`bootPlugins` **串行 await** —— 一个插件的 `activate()` 慢，**后面所有插件**的视图都要等它。
+实测九个内置插件共 **1662ms**（`builtins` 那一段），这就是"启动后侧栏空几秒"的原因。
+日志里现在有两行：`boot timing (ms):`（分阶段）+ `plugin load (ms):`（**分插件**）。
+
+已排除：Vite 转换插件模块慢（每个模块首次转换只要 10–25ms）。
+
 ## Tailwind v4：裸 `border` 的颜色是 currentColor（踩过，2026-09-21）
 
 **v4 的 preflight 把 `border-color` 默认成 `currentColor`**（v3 是主题边框色）。
