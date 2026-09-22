@@ -149,11 +149,35 @@ export async function loadUiKit() {
   // call: Node has no such macro, so a static import here would break every test
   // that touches ctx.js. This function is only ever called from the app.
   const { componentModules } = await import('./uiComponents.js');
-  for (const [path, load] of Object.entries(componentModules)) {
-    const mod = await load();
-    for (const [name, value] of Object.entries(mod)) {
+
+  // Loaded in PARALLEL, not one at a time.
+  //
+  // This used to be `for (… ) await load()`, which made the browser fetch 376
+  // modules strictly sequentially — a 376-deep waterfall. Measured at ~2.1s in
+  // dev, and it lands on whichever plugin activates FIRST (`bootPlugins` awaits
+  // each plugin in turn), so it looked like that plugin was slow.
+  //
+  // In parallel the browser pipelines the requests; the same work is bound by
+  // the slowest module rather than by their sum.
+  //
+  // Failures are collected rather than thrown: one component that fails to load
+  // must not take the whole vocabulary down, and a missing tag surfaces as
+  // `el('tag')` throwing a clear "unknown tag" at the call site anyway.
+  const entries = Object.entries(componentModules);
+  const loaded = await Promise.allSettled(entries.map(([, load]) => load()));
+
+  const failed = [];
+  loaded.forEach((result, i) => {
+    if (result.status === 'rejected') {
+      failed.push(`${entries[i][0]}: ${result.reason?.message ?? result.reason}`);
+      return;
+    }
+    for (const [name, value] of Object.entries(result.value)) {
       if (looksLikeComponent(name, value)) components.set(kebab(name), value);
     }
+  });
+  if (failed.length) {
+    console.warn(`[ui] ${failed.length}/${entries.length} component module(s) failed to load://n  ${failed.join('\n  ')}`);
   }
   return components;
 }

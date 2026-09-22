@@ -10,6 +10,7 @@ import { installDebug } from './debug.js';
 import { logger } from '../core/logger.js';
 import { runSelftest } from '../core/selftest.js';
 import { hub } from '../protocol/hub.js';
+import { loadUiKit } from './ui.js';
 
 /** Global hotkey that summons (shows + focuses) the main window. */
 export async function applySummonShortcut() {
@@ -86,6 +87,16 @@ export async function boot() {
     // Before anything opens a session of its own.
     await reapOrphanSessions();
     mark('reap');
+
+    // The component factory loads all 376 components. `activate()` awaits it too,
+    // but whoever gets there FIRST pays for it — which used to be whichever
+    // plugin happened to be first, making the per-plugin timings a lie
+    // (`builtin.notepad 2163ms` was really the UI kit, not notepad).
+    //
+    // Loading it here gives it its own mark, so `plugin load (ms)` means what it
+    // says.
+    await loadUiKit();
+    mark('uikit');
 
     // The scheme table is a static contract; snapshot it for the diagnostics view.
     store.schemes = hub.schemes();
