@@ -447,6 +447,34 @@ manifest（plugin.json 参考）、api（ctx 按任务组织）、ui（.tb-* + �
 
 已排除：Vite 转换插件模块慢（每个模块首次转换只要 10–25ms）。
 
+## 侧栏图标支持 `lucide:<name>`（2026-09-22）
+
+`contributes.views[].icon` 现在三种写法：`"lucide:terminal"`（推荐，宿主渲染 SVG）/
+`"🧩"`（emoji 仍可用）/ 拼错 → **回退通用图标 + 控制台警告**。
+
+**为什么是固定词汇表（50 个）而不是「任意 lucide 图标」**：`@lucide/vue` 导出
+**6330** 个（源码 16MB）。按名字全量查表会让打包器无法摇树，包体翻倍（1595KB）。
+实测加 50 个图标只 +13KB（→1608KB）。加图标很便宜：一行 import + 一行映射。
+
+**踩过的坑**：第一版对拼错的名字回退成 `null`（= 渲染原始字符串），
+侧栏里就出现了字面量 `lucide:file-txt` —— 看起来像插件坏了。
+**回退必须是「某个图标」，不是「渲染原文」**。测试里钉了这条。
+
+外壳自己的图标（Settings / 空状态）也换成 lucide 了。
+
+## 令牌用错的一类 bug：分隔线 vs 控件（2026-09-22）
+
+`ScrollArea` 的滑块由 reka-ui 画（**不是浏览器画的**），所以
+`::-webkit-scrollbar-thumb` 规则**到不了它**。上游给它 `bg-border` ——
+**分隔线令牌** —— 而本项目把 `--border` 调到极轻，于是侧栏滚动条几乎消失，
+而其他地方（走原生滚动条，用 `--line-strong`）一直很清楚。
+已改成 `--line-strong`，补丁进 LOCAL_PATCHES。
+
+**可推广的规则**：`--border` 是**区域分隔线**（要退场），
+`--input` / `--line-strong` 是**控件**（要看得见）。
+**滚动条滑块、拖拽把手这类「要能找得到」的东西，不能用分隔线令牌。**
+同类还没改的：`ResizableHandle.vue`、`NavigationMenuIndicator.vue`。
+
 ## Tailwind v4：裸 `border` 的颜色是 currentColor（踩过，2026-09-21）
 
 **v4 的 preflight 把 `border-color` 默认成 `currentColor`**（v3 是主题边框色）。
