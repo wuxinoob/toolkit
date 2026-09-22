@@ -54,7 +54,7 @@ test('windows.create: the app\'s own entry page is allowed', async () => {
   // not what this test is about, so the assertion is only that the failure is
   // not a validation one.
   for (const url of ['index.html?mode=floatwin', 'index.html?mode=pluginwin&plugin=x', 'index.html']) {
-    const msg = await reason(ctx.windows.create('probe-a', { url, width: 200, height: 200 }));
+    const msg = await reason(ctx.windows.create('plugin-probe-a', { url, width: 200, height: 200 }));
     assert.ok(
       msg === null || !msg.includes('must be the app'),
       `"${url}" should pass validation, got: ${msg}`,
@@ -64,7 +64,7 @@ test('windows.create: the app\'s own entry page is allowed', async () => {
 
 test('windows.create: an arbitrary URL is rejected', async () => {
   for (const url of ['https://example.com', 'http://127.0.0.1/x', 'file:///etc/passwd', 'index.htmlx']) {
-    const msg = await reason(ctx.windows.create('probe-b', { url }));
+    const msg = await reason(ctx.windows.create('plugin-probe-b', { url }));
     assert.ok(
       msg && msg.includes('must be the app'),
       `"${url}" should have been rejected, got: ${msg}`,
@@ -75,7 +75,7 @@ test('windows.create: an arbitrary URL is rejected', async () => {
 test('windows.create: an unknown option is rejected', async () => {
   // `url` is the dangerous one, but the rule is an allow-list: anything not
   // named is refused rather than forwarded and hoped about.
-  const msg = await reason(ctx.windows.create('probe-c', { someFutureOption: true }));
+  const msg = await reason(ctx.windows.create('plugin-probe-c', { someFutureOption: true }));
   assert.ok(msg && msg.includes('not allowed'), `expected a rejection, got: ${msg}`);
   assert.ok(msg.includes('someFutureOption'), 'the message should name the offending option');
 });
@@ -103,7 +103,7 @@ test('windows.create: the documented options still pass', async () => {
     focus: true,
     visible: true,
   };
-  const msg = await reason(ctx.windows.create('probe-d', ok));
+  const msg = await reason(ctx.windows.create('plugin-probe-d', ok));
   assert.ok(msg === null || !msg.includes('not allowed'), `a documented option was refused: ${msg}`);
 });
 
@@ -170,4 +170,30 @@ test('startup: the hidden-window handshake is intact on all three sides', () => 
     cap.permissions.includes('core:window:allow-show'),
     'the main-window capability must allow `show`',
   );
+});
+
+test('windows.create: a label the ACL cannot match is refused', async () => {
+  // Tauri matches capabilities by window LABEL. Only `plugin-*` and `floatwin`
+  // are granted anything, so any other label yields a window with NO
+  // permissions — undraggable, and its close button fails with an ACL denial.
+  // Reported by a plugin author who lost an afternoon to exactly that.
+  const bad = ['my-win', 'moment-notes-main', 'calc', 'widget', 'plugin', ''];
+  for (const label of bad) {
+    const msg = await reason(ctx.windows.create(label, { url: 'index.html' }));
+    assert.ok(msg, `label "${label}" should have been refused`);
+    assert.ok(
+      /matches no capability|non-empty label/.test(msg),
+      `unexpected message for "${label}": ${msg}`,
+    );
+  }
+});
+
+test('windows.create: the two labels the ACL does match are accepted', async () => {
+  for (const label of ['plugin-anything', 'plugin-my.plugin-main', 'floatwin']) {
+    const msg = await reason(ctx.windows.create(label, { url: 'index.html' }));
+    assert.ok(
+      msg === null || !/matches no capability/.test(msg),
+      `"${label}" should pass the label check, got: ${msg}`,
+    );
+  }
 });

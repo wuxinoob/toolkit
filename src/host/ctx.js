@@ -44,6 +44,12 @@ export function buildCtx(plugin, disposer) {
    * grant three permissions each; so no option could escalate. What it could do
    * is surprise.
    */
+  const PREFIX_NEEDS_LABEL = 'windows.create needs a non-empty label';
+  const PREFIX_LABEL_DENIED =
+    'window label "%L" matches no capability, so the window would have no ' +
+    'permissions (it could not be dragged, and its close button would fail ' +
+    'with an ACL denial). Use "%S" instead.';
+
   const WINDOW_OPTIONS = new Set([
     'url',
     'title',
@@ -76,6 +82,34 @@ export function buildCtx(plugin, disposer) {
    * it is an undeclared capability that breaks the one contract the window host
    * has.
    */
+  /**
+   * A window label must be one the native ACL can match.
+   *
+   * Tauri matches capabilities by window LABEL, and the only files that grant a
+   * plugin window anything are:
+   *
+   *   pluginwin.json  ->  ["plugin-*"]   drag + close + core:default
+   *   floatwin.json   ->  ["floatwin"]   drag + close + core:default
+   *
+   * A label like `my-win` matches NEITHER, so the window comes up with no
+   * permissions at all — it cannot be dragged and its close button silently
+   * fails with an ACL denial. That is a confusing way to fail, and it is
+   * entirely predictable from the label, so it is refused here instead.
+   *
+   * `builtin.floatwin` is the one plugin that owns a bespoke capability file;
+   * everything else uses the shared `plugin-*` one.
+   */
+  function assertWindowLabel(label) {
+    if (typeof label !== 'string' || !label) {
+      throw new Error(PREFIX_NEEDS_LABEL);
+    }
+    if (label.startsWith('plugin-') || label === 'floatwin') return label;
+    const suggestion = 'plugin-' + label.replace(/[^a-zA-Z0-9_-]/g, '-');
+    throw new Error(
+      PREFIX_LABEL_DENIED.replace('%L', label).replace('%S', suggestion),
+    );
+  }
+
   function sanitizeWindowOptions(options) {
     const unknown = Object.keys(options).filter((k) => !WINDOW_OPTIONS.has(k));
     if (unknown.length) {
@@ -250,6 +284,7 @@ export function buildCtx(plugin, disposer) {
         gatedWin(async () => {
           // Validated before the lookup, so a bad option fails the same way
           // whether or not a window with that label already exists.
+          assertWindowLabel(label);
           const clean = sanitizeWindowOptions(options);
           const existing = await WebviewWindow.getByLabel(label);
           if (existing) {

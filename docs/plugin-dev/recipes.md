@@ -138,8 +138,8 @@ async activate(ctx) {
       el('button', {
         class: 'tb-btn tb-btn-primary',
         onClick: async () => {
-          const how = await ctx.windows.create('my-win', {
-            url: `index.html?mode=pluginwin&plugin=${encodeURIComponent(ctx.id)}&label=my-win`,
+          const how = await ctx.windows.create('plugin-my-win', {
+            url: `index.html?mode=pluginwin&plugin=${encodeURIComponent(ctx.id)}&label=plugin-my-win`,
             title: 'My Window', width: 320, height: 420, center: true,
           });
           ctx.log.info('window', how);   // 'created' | 'exists'
@@ -159,7 +159,7 @@ async activate(ctx) {
 ## 开一个自绘标题栏的窗口
 
 ```js
-const win = await ctx.windows.create('widget', {
+const win = await ctx.windows.create('plugin-widget', {
   url: 'index.html?mode=floatwin',   // 或你自己的 mode
   width: 260, height: 120,
   transparent: true,

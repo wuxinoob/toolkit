@@ -195,6 +195,18 @@ export async function mountPluginWindow() {
         /* window is going away regardless */
       }
     });
+    // `index.html` ships a `<div id="app">` for the MAIN window, and `app.css`
+    // gives it `height: 100%`. In a plugin window nothing uses it — but it still
+    // occupies the full viewport, so a plugin that appends its own container to
+    // `document.body` lands BELOW the fold and the window looks blank (the DOM
+    // is all there, just off-screen).
+    //
+    // Reported by a plugin author who spent hours on it. Removing the unused
+    // node fixes every plugin at once, and needs nothing from them — which is
+    // the point: a pitfall that the host can make impossible should not be a
+    // line in a manual.
+    document.getElementById('app')?.remove();
+
     const bridge = makeBridge(pluginId, label, item.manifest);
     window.__pluginBridge = bridge;
     await mod.mountWindow(bridge);

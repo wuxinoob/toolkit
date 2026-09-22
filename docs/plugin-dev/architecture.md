@@ -57,8 +57,8 @@ ctx.registerView(viewId, (root) => { /* 往 root 里渲染 */ });
 ### 窗口（独立窗口）
 
 ```js
-await ctx.windows.create('my-win', {
-  url: 'index.html?mode=pluginwin&plugin=my.plugin&label=my-win',
+await ctx.windows.create('plugin-my-win', {
+  url: 'index.html?mode=pluginwin&plugin=my.plugin&label=plugin-my-win',
   title: 'My Window', width: 400, height: 300,
 });
 ```

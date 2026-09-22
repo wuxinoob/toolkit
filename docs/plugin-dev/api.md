@@ -29,8 +29,14 @@ await ctx.storage.keys()              // → string[]
 await ctx.bus.publish('my.topic', { n: 1 });     // 权限 rpc:bus
 
 // 订阅（不要权限）
-const off = ctx.bus.subscribe('my.topic', (env) => { console.log(env.p); });
+const off = ctx.bus.subscribe('my.topic', (env) => {
+  // ⚠️ 回调收到的是**完整信封**，你的 payload 在 `env.p` —— 不是回调参数本身
+  console.log(env.p);
+});
 off();   // 取消
+
+// 想写得宽容一点（跨版本更稳）：
+const payload = env?.p ?? env?.payload ?? env;
 
 // 只收一次
 ctx.bus.once('my.topic', (env) => {});
@@ -184,11 +190,66 @@ ctx.windows.onCloseRequested(async () => { /* 清理 */ });
 
 **权限**：`win:manage`。
 
-**两个约束**：
+**三个约束，前两个宿主会直接拒绝，第三个要你自己注意**：
 
-1. **`url` 必须是应用自己的入口页**（`index.html?...`）。传外部 URL 会被拒绝 ——
+1. **`label` 必须以 `plugin-` 开头**（或正好是 `floatwin`）。
+   **这是最容易踩的坑。** Tauri 按 **window label** 匹配 capability，而给插件窗口授权的
+   只有两个文件：`pluginwin.json` 的 `["plugin-*"]` 和 `floatwin.json` 的 `["floatwin"]`。
+   **别的 label 匹配不到任何 capability → 那个窗口没有任何权限** ——
+   拖不动，关闭按钮静默失败（ACL denial）。宿主现在会**直接拒绝**并给你建议的 label：
+
+   ```js
+   await ctx.windows.create('my-win', …)
+   // ❌ Error: window label "my-win" matches no capability, so the window would have no
+   //    permissions (it could not be dragged, and its close button would fail with an
+   //    ACL denial). Use "plugin-my-win" instead.
+   ```
+
+   推荐写法：`` `plugin-${ctx.id.replace(/[^a-zA-Z0-9_-]/g, '-')}-main` ``
+
+2. **`url` 必须是应用自己的入口页**（`index.html?...`）。传外部 URL 会被拒绝 ——
    那会替换掉宿主页、跳过 `pluginwin-host.js`（把 `bridge` 交给你的加载器）
-2. **窗口选项走白名单**。不在名单上的会被拒绝**并告诉你名字**，不会静默忽略
+
+3. **窗口选项走白名单**。不在名单上的会被拒绝**并告诉你名字**，不会静默忽略
+
+### `transparent: true` 只在真的需要异形窗口时用
+
+综合管理窗口**不要**开透明 —— 纯色原生渲染更稳、更省 GPU。
+如果确实要（悬浮挂件、圆角卡片），**必须**给根容器一个兜底背景色，否则在 Windows
+WebView2 下会呈现**彻底穿透的空洞**：
+
+```css
+.my-window-root {
+  background-color: var(--color-canvas);
+  border-radius: 12px;
+  border: 1px solid var(--color-line);
+}
+```
+
+### 关闭窗口：为什么不能只调 `bridge.close()`
+
+`bridge.close()` 是异步的，**权限不足时它会 reject**。不 catch 就静默失败 ——
+按钮点了没反应。而且**独立窗口自己没有 `win:manage`**，所以它无法调用
+`windows.control` 自救。
+
+**可靠的做法是让主窗口兜底**（主窗口有 `win:manage`）：
+
+```js
+// 主窗口 activate(ctx) 里：代关
+ctx.bus.subscribe('my.plugin:close-window', async (env) => {
+  const label = env?.p?.label;
+  if (label) await ctx.windows.control(label, 'close').catch(() => {});
+});
+
+// 独立窗口里：三层兜底
+async function closeMe() {
+  try { await bridge.close(); return; } catch {}
+  try { await bridge.bus.publish('my.plugin:close-window', { label: bridge.label }); return; } catch {}
+  window.close();
+}
+```
+
+**注意 label 已经是 `plugin-*` 了**，所以第一层正常就该成功 —— 兜底是防万一。
 
 **窗口操作的分工**：`size` / `position` / `alwaysOnTop` / `clickThrough` 等
 **归创建它的窗口**（主窗口），不在插件窗口自己的权限里 ——
@@ -197,6 +258,34 @@ ctx.windows.onCloseRequested(async () => { /* 清理 */ });
 自绘标题栏时，插件窗口的 capability 恰好给两个权限：
 `core:window:allow-start-dragging` + `allow-close`。
 用 `bridge.drag()` 拖。参考 `builtin.floatwin`。
+
+### `bridge`（独立窗口）≠ `ctx`（主窗口）
+
+**它们不是同一个对象，能力也不对等。** 独立窗口里只有 `bridge`：
+
+| 能力 | 主窗口 `ctx` | 独立窗口 `bridge` |
+|---|---|---|
+| `storage` | ✅ | ✅ |
+| `bus`（订阅 / 发布 / once） | ✅ | ✅ |
+| `onHotkey` | ✅ | ✅ |
+| `windows.create` / `windows.control` | ✅ | ❌ **没有** |
+| `registerView` | ✅ | ❌ **没有** |
+| `drag()` / `close()` | ❌ 不需要 | ✅ **独有** |
+
+**所以独立窗口想再开一个窗口，要请主窗口代劳** ——
+`bridge.bus.publish('my.plugin:open-window', {...})`，主窗口订阅后 `ctx.windows.create(...)`。
+**窗口的创建与尺寸控制权专属创建方**，这是刻意的。
+
+### 自绘标题栏：拖拽区会吃掉点击
+
+`-webkit-app-region: drag` 的区域里，**所有点击都被系统当成窗口移动指令** ——
+按钮点不动、输入框拿不到焦点。**区域内的可交互控件必须显式取消拖拽**：
+
+```css
+.my-titlebar { -webkit-app-region: drag; user-select: none; }
+.my-titlebar button,
+.my-titlebar input { -webkit-app-region: no-drag; }
+```
 
 ---
 
