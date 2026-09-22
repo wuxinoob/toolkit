@@ -19,6 +19,7 @@
     "core:window:allow-close",
     "core:window:allow-destroy",
     "opener:default",
+    "autostart:default",
     "pty:default",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",

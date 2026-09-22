@@ -153,13 +153,60 @@ mod console_exit {
 /// so the label check is the gate.
 #[tauri::command]
 fn plugin_reap_orphans(window: tauri::WebviewWindow) -> Result<usize, String> {
-    if window.label() != "main" {
-        return Err(format!(
-            "plugin_reap_orphans is main-window only (called from \"{}\")",
-            window.label()
-        ));
-    }
+    require_main(&window)?;
     Ok(crate::services::session::kill_all())
+}
+
+/// Read the OS autostart state.
+///
+/// Not stored in our own settings: the registry is the source of truth, and a
+/// user can turn the entry off from Task Manager without telling us. Asking the
+/// OS every time is the only answer that cannot go stale.
+///
+/// Main window only — see `plugin_reap_orphans` for why app commands need a
+/// label check.
+#[tauri::command]
+fn host_autostart_get(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<bool, String> {
+    require_main(&window)?;
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|e| format!("autostart query: {e}"))
+}
+
+/// Turn autostart on or off, and report the state the OS ended up in.
+///
+/// Returns the re-read state rather than the requested one: enabling can fail
+/// silently on some Windows policies, and the UI should show what actually
+/// happened, not what was asked for.
+#[tauri::command]
+fn host_autostart_set(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<bool, String> {
+    require_main(&window)?;
+    use tauri_plugin_autostart::ManagerExt;
+    let mgr = app.autolaunch();
+    if enabled {
+        mgr.enable().map_err(|e| format!("autostart enable: {e}"))?;
+    } else {
+        mgr.disable().map_err(|e| format!("autostart disable: {e}"))?;
+    }
+    mgr.is_enabled()
+        .map_err(|e| format!("autostart query after set: {e}"))
+}
+
+/// App commands are not ACL-gated, so the window label is the gate.
+fn require_main(window: &tauri::WebviewWindow) -> Result<(), String> {
+    if window.label() == "main" {
+        Ok(())
+    } else {
+        Err(format!(
+            "this command is main-window only (called from \"{}\")",
+            window.label()
+        ))
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -170,6 +217,13 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // LaunchAgent is the macOS mechanism; on Windows the plugin writes the
+        // HKCU Run entry. No extra args: we want the app started plainly, and
+        // the main window is what the user asked to see.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_pty::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
@@ -179,6 +233,8 @@ pub fn run() {
             plugin_stream_open_raw,
             plugin_stream_close,
             plugin_reap_orphans,
+            host_autostart_get,
+            host_autostart_set,
             services::external::plugin_scan,
             services::external::plugin_read_entry,
             services::external::plugin_open_dir

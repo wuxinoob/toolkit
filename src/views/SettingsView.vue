@@ -12,6 +12,7 @@ import { hub } from '../protocol/hub.js';
 import { getResolvedTheme, getThemePref, onThemeChange, setTheme } from '../host/theme.js';
 
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -175,6 +176,50 @@ onMounted(() => {
 watch(() => store.plugins.length, loadForms);
 </script>
 
+/**
+ * Autostart lives in the OS, not in our settings.
+ *
+ * The registry is the source of truth — a user can turn the entry off from Task
+ * Manager without telling us — so this is read back rather than remembered.
+ * `null` means "not asked yet", which is different from `false`.
+ */
+const autostart = ref(null);
+const autostartBusy = ref(false);
+
+async function loadAutostart() {
+  try {
+    const state = await invoke('host_autostart_get');
+    // Anything that is not a real boolean is a failed read, not a "false".
+    // In a plain browser (no host) invoke resolves with undefined, and showing
+    // "does not start with the system" for that would be a confident lie.
+    autostart.value = typeof state === 'boolean' ? state : null;
+  } catch (e) {
+    // A dev run without the plugin, or a policy that blocks the query. Not
+    // worth a toast; the row just says it could not be read.
+    console.warn('[settings] autostart query failed', e);
+    autostart.value = null;
+  }
+}
+
+async function setAutostart(enabled) {
+  autostartBusy.value = true;
+  try {
+    // The command re-reads the OS state and returns THAT, because enabling can
+    // fail silently under some Windows policies. Showing the requested value
+    // would be a lie the user only discovers at the next reboot.
+    const state = await invoke('host_autostart_set', { enabled });
+    autostart.value = typeof state === 'boolean' ? state : null;
+    toast(autostart.value ? 'Toolbox will start with the system' : 'Autostart off');
+  } catch (e) {
+    toast(`Autostart failed: ${e?.message ?? e}`, 'error');
+    await loadAutostart();
+  } finally {
+    autostartBusy.value = false;
+  }
+}
+
+onMounted(loadAutostart);
+
 <template>
   <div class="mx-auto flex max-w-[900px] flex-col gap-4">
     <header class="flex items-end gap-3">
@@ -183,6 +228,29 @@ watch(() => store.plugins.length, loadForms);
         {{ store.plugins.length }} plugin(s) installed
       </span>
     </header>
+
+    <Card>
+      <CardHeader>
+        <CardTitle>Startup</CardTitle>
+        <CardDescription>
+          Whether Toolbox launches with the system. This is an OS setting, not an app setting — it is
+          read back from the system each time, so turning it off elsewhere shows up here too.
+        </CardDescription>
+      </CardHeader>
+      <CardContent class="flex flex-wrap items-center gap-3">
+        <Switch
+          :model-value="autostart === true"
+          :disabled="autostart === null || autostartBusy"
+          aria-label="Start Toolbox with the system"
+          @update:model-value="setAutostart"
+        />
+        <span class="text-sm">
+          <template v-if="autostart === null">Could not read the autostart state</template>
+          <template v-else-if="autostart">Starts with the system</template>
+          <template v-else>Does not start with the system</template>
+        </span>
+      </CardContent>
+    </Card>
 
     <Card>
       <CardHeader>
