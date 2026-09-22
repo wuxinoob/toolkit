@@ -12,6 +12,7 @@
 | [manifest.md](manifest.md) | `plugin.json` 完整参考 |
 | [api.md](api.md) | `ctx` 全表面，按**任务**组织 |
 | [ui.md](ui.md) | 界面怎么做：组件工厂 + 令牌 |
+| [storage.md](storage.md) | 本地读写：能写什么、落在哪、为什么不用 fs/sql/store |
 | [debugging.md](debugging.md) | 出问题时按什么顺序查（**归因手册**） |
 | [recipes.md](recipes.md) | 常见功能的完整最小实现 |
 
