@@ -93,7 +93,7 @@ export async function boot() {
     mark('schemes');
 
     // First enabled plugin's first view becomes the initial screen.
-    await bootPlugins(builtinSources());
+    const pluginTimings = await bootPlugins(builtinSources());
     mark('builtins');
 
     await scanExternalPlugins(); // drop-in plugins from {appData}/plugins/*
@@ -106,6 +106,11 @@ export async function boot() {
     // diagnostics, and their cost must not be attributed to the plugin list
     // the user is waiting for.
     await report(`boot timing (ms): ${marks.join(' | ')}`);
+    await report(
+      `  plugin load (ms): ${pluginTimings
+        .map((t) => `${t.id} ${t.ms}${t.failed ? ' FAILED' : ''}`)
+        .join(' | ')}`,
+    );
 
     store.booted = true;
     const line = `boot ok: ${store.plugins.length} plugins, ${store.views.length} views, active=${store.activeViewId}`;

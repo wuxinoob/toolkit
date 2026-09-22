@@ -1,0 +1,144 @@
+# 架构：五层与它们的边界
+
+本页回答一个问题：**「我这个功能属于哪一层，边界在哪，宿主替我做了什么」。**
+
+---
+
+## ① 清单层 — `plugin.json`
+
+**权威来源。** 代码里导出的 `manifest` 只**补缺**，`plugin.json` 覆盖它
+（`mergeManifest`：`{...fromCode, ...fromJson}`，`contributes` 逐键合并）。
+
+两者必须一致 —— 有审计测试盯着。**不一致时以 `plugin.json` 为准**，
+所以改权限/贡献点改 JSON 就够了，不用动代码。
+
+细节见 [manifest.md](manifest.md)。
+
+**这一层决定你能做什么。** 权限是**闭集**，声明式能力（视图/热键/主题）
+由宿主在 `activate()` **之前**代注册 —— 所以插件可以在自己的 `activate()` 里
+就依赖自己的热键已经生效，不用和它赛跑。
+
+---
+
+## ② 契约层 — `ctx`
+
+宿主注入给你的对象。**这是你的全部能力边界**：`ctx` 上没有的东西就是拿不到，
+没有后门、没有全局变量可绕。
+
+两个独立的变化轴，别混淆：
+
+| 轴 | 是什么 | 版本号 |
+|---|---|---|
+| **HOST API** | `ctx` 的**形状**（有哪些方法、同步还是异步） | `manifest.api`（当前 **2**） |
+| **线协议** | `ctx` 背后发出去的**信封**长什么样 | 信封里的 `v` |
+
+**声明 `api` 很重要**：宿主拿它和你实际的行为比对，不一致时在插件行上写一条说明，
+而不是让你在运行期收到一句莫名其妙的 `off is not a function`。
+
+`ctx` 全表面见 [api.md](api.md)。
+
+---
+
+## ③ 视图层 / 窗口层 — 你画什么
+
+**两条路，选一条或都用：**
+
+### 视图（主窗口里的一块）
+
+```js
+ctx.registerView(viewId, (root) => { /* 往 root 里渲染 */ });
+```
+
+- `viewId` 要和你 `contributes.views[].id` 对得上（拼成 `pluginId/viewId`）
+- `render` 是**同步**的 —— `ctx.ui.el()` 能同步用，因为组件工厂在**任何插件激活之前**
+  就加载完了
+- 宿主负责：挂载、卸载（切走时清空容器）、给你一层带 `data-plugin` 的作用域
+
+### 窗口（独立窗口）
+
+```js
+await ctx.windows.create('my-win', {
+  url: 'index.html?mode=pluginwin&plugin=my.plugin&label=my-win',
+  title: 'My Window', width: 400, height: 300,
+});
+```
+
+- **`url` 必须是应用自己的入口页**（`index.html?...`）。宿主会校验；
+  传外部 URL 会被拒绝 —— 那会替换掉宿主页、跳过 `pluginwin-host.js`
+  （那个把 `bridge` 交给你的加载器）
+- 窗口选项走**白名单**，不在名单上的会被拒绝并告诉你名字
+- 自绘标题栏：传 `decorations: false`，然后自己画一条，用 `bridge.drag()` 拖。
+  参考 `builtin.floatwin`
+- 窗口的尺寸/位置/置顶/透传**归创建它的窗口**（主窗口），不在插件窗口自己的权限里 ——
+  「能改自己尺寸」和「能被拖动」不是一回事
+
+---
+
+## ④ 数据层 — 数据怎么走
+
+**两个正交的轴**，方案 = 两者的组合：
+
+| 轴 | 取值 |
+|---|---|
+| **transport** | `invoke` · `channel` · `event` · `stdio` · `pty` · `in-process` |
+| **codec** | `json-envelope` · `line-json` · `raw-binary` · `object` |
+
+八个方案登记在 `src/protocol/registry.js`。**你通常不直接选它们** ——
+你调 `ctx.rpc` / `ctx.stream` / `ctx.pty` / `ctx.sidecar` / `ctx.bus`，
+每个方法背后是一个固定组合，且**形状一致**（方案差异只体现在默认值上）：
+
+```js
+ctx.rpc('storage', 'get', { key: 'k' })      // 请求/响应
+ctx.stream('ticker', 'ch1', { onFrame })     // 宿主 → 你，推送
+ctx.uplink('ch2', { sink: 'proc' })          // 你 → 宿主，批量
+ctx.sidecar('ch3', { exe: 'helper' })        // 跑你自带的二进制
+ctx.pty('ch4', { program: 'node' })          // 跑一个终端程序
+ctx.bus.publish('topic', payload)            // 广播给所有窗口
+```
+
+**同步还是异步是统一的**：`subscribe` / `once` / `publish` 在所有方案上都是异步。
+`ctx.events` 与 `ctx.bus` 只差**默认方案**，不是一个同步一个异步。
+
+**上行流的载体是批量 invoke**，不是 Channel —— Tauri 的 `Channel` 是单向的，
+JS 侧只有接收回调、**没有 `send`**。所以别去找「从 JS 推给 Rust」的 Channel。
+
+---
+
+## ⑤ 表现层 — 长什么样
+
+**样式靠 `.tb-*` 普通 CSS 类，不是组件库。** 原因见 `docs/UI.md` 开篇：
+外部插件是 Blob URL 单文件 ESM，**import 不到任何东西** ——
+所以 JS 组件库（shadcn / HeroUI）永远到不了你手上，Tailwind 工具类也只生成
+「构建时扫描到的」类，而你的源码在项目之外。
+
+**所以：**
+- 用 `.tb-*` 类（`.tb-pane` / `.tb-card` / `.tb-btn` / `.tb-list` …）—— 永远输出，人人可用
+- 布局用内联 `style`（不依赖构建扫描）
+- 颜色一律走**令牌**（`var(--color-brand)` 等），这样自动跟随主题
+
+**组件工厂 `ctx.ui.el(...)` 是首选**：它返回真 DOM，且发出的类基于令牌 →
+自动跟随主题，**也自动带上你自己在 `contributes.theme` 里定义的主色**。
+
+细节见 [ui.md](ui.md)。
+
+---
+
+## 边界速查
+
+| 你想要的 | 走哪一层 | 要权限吗 |
+|---|---|---|
+| 存一点数据 | ④ `ctx.storage` | `rpc:storage` |
+| 读宿主信息 / 会话列表 | ④ `ctx.rpc('host', ...)` | `rpc:host` |
+| 开一个推送流 | ④ `ctx.stream` | `rpc:stream` |
+| 跑自带的二进制 | ④ `ctx.sidecar` | `rpc:proc` |
+| 开一个终端程序 | ④ `ctx.pty` | `rpc:stream` |
+| 广播给所有窗口 | ④ `ctx.bus.publish` | `rpc:bus` |
+| **订阅**别人的广播 | ④ `ctx.subscribe` | **不要** |
+| **读自己**的热键 | ③ `ctx.onHotkey` | **不要** |
+| **关闭自己开的**流 | ④ `ctx.closeStream` | **不要**（关比开弱） |
+| 注册一个视图 | ③ `ctx.registerView` | **不要** |
+| 开/控制窗口 | ③ `ctx.windows` | `win:manage` |
+| 注册全局热键 | ① `contributes.hotkeys` | `rpc:hotkey` |
+
+> 这张表就是 `docs/INTERFACES.md` 的「一个能力一个权限」原则在你这一侧的体现。
+> 拿不准时问自己：**这是「观察」还是「能力」？** 观察不用权限。

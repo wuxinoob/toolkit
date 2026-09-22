@@ -303,18 +303,33 @@ export function adoptNewPlugin(id) {
   return true;
 }
 
+/**
+ * Load and activate every built-in plugin, in order.
+ *
+ * Returns one timing per plugin. The boot log's `builtins` mark says the phase
+ * costs ~1.7s; this says WHICH plugin, which is the difference between a number
+ * and a lead. It is also the first thing to read when a plugin author reports
+ * "my plugin makes startup slow" — activation is sequential and awaited, so one
+ * slow `activate()` delays every plugin after it.
+ */
 export async function bootPlugins(builtinPlugins) {
   const enabled = enabledIds(builtinPlugins.map((p) => p.manifest?.id ?? p.id));
+  const timings = [];
   for (const src of builtinPlugins) {
+    const id = src.manifest?.id ?? src.id;
+    const t0 = performance.now();
     try {
       const plugin = await loadPlugin(src);
       if (enabled.has(plugin.manifest.id)) {
         await activate(plugin, { silent: true });
       }
+      timings.push({ id, ms: Math.round(performance.now() - t0) });
     } catch (e) {
+      timings.push({ id, ms: Math.round(performance.now() - t0), failed: true });
       console.error('[lifecycle] failed to load builtin plugin', e);
     }
   }
   if (!store.activeViewId && store.views.length) store.activeViewId = store.views[0].viewId;
   events.emit('host:booted');
+  return timings;
 }
