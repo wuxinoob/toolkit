@@ -9,7 +9,7 @@ import { scanExternalPlugins } from './external.js';
 import { installDebug } from './debug.js';
 import { logger } from '../core/logger.js';
 import { runSelftest } from '../core/selftest.js';
-import { hub } from '../protocol/hub.js';
+import { hub, setTraceSink } from '../protocol/hub.js';
 import { events } from './events.js';
 import { loadUiKit } from './ui.js';
 
@@ -117,6 +117,13 @@ export async function boot() {
   try {
     installDebug(); // window.__toolbox before plugins attach their own handles
     mark('debug');
+
+    // Trace lines belong in the debug log, not just the console — the whole
+    // point is that they survive the webview and can be read after the fact.
+    // Installed before anything else can call the gateway.
+    setTraceSink((line) => {
+      void report(`  ${line}`);
+    });
 
     // Before anything opens a session of its own.
     await reapOrphanSessions();

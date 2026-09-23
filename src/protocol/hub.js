@@ -21,6 +21,51 @@ import { Capability, assertSupports, describeSchemes, descriptor } from './regis
 import { ProtocolError } from './errors.js';
 import { transport, transportIds } from './transports/index.js';
 
+/**
+ * Communication tracing — off by default, one switch to turn on.
+ *
+ * Why it exists: without it, "did my `ctx.rpc` go out, and what came back?" has
+ * no answer. The debug log only carried lines a plugin wrote itself, so the
+ * gateway layer — where permission and identity problems actually live — was
+ * invisible. That is a large part of why the identity hole in
+ * `docs/COMMS-AUDIT-2026-09-23.md` went unnoticed.
+ *
+ * Turn it on with either:
+ *
+ *   localStorage.setItem('toolbox.traceRpc', '1')   // then reload
+ *   window.__toolbox.hub.setTrace(true)             // this session only
+ *
+ * **The identity printed is the one the CALLER CLAIMED.** Deliberate: a
+ * `__host__` showing up in a plugin's call is the exact shape of the forgery
+ * described in that audit, and printing it is what would make it obvious.
+ */
+let TRACE = false;
+try {
+  TRACE = globalThis.localStorage?.getItem('toolbox.traceRpc') === '1';
+} catch {
+  /* no localStorage (node --test) — tracing stays off */
+}
+
+/**
+ * Where trace lines go.
+ *
+ * A sink, not a direct call: `hub` is the bottom of the stack and must not
+ * import the boot path (that would be circular, and it would put a webview-side
+ * concern inside the protocol layer). `boot.js` installs a sink that writes to
+ * the debug log — the same shape as `setToastSink` in `store.js`: the lower
+ * layer owns *when*, the shell owns *how*.
+ */
+let traceSink = (line) => console.info('[trace]', line);
+
+export function setTraceSink(fn) {
+  const previous = traceSink;
+  traceSink = typeof fn === 'function' ? fn : (line) => console.info('[trace]', line);
+  return previous;
+}
+
+/** Avoid a feedback loop: the sink writes through the gateway. */
+const TRACE_EXEMPT = (svc, act) => svc === 'host' && act === 'write_debug_log';
+
 export class MessageHub {
   constructor() {
     /** `${pluginId}/${ch}` -> live stream handle, so a leak is visible. */
@@ -37,7 +82,52 @@ export class MessageHub {
    * cancel the host, which is why the timeout lives here and not in the envelope.
    */
   request(pluginId, svc, act, params = null, opts = {}) {
-    return transport('rpc').request({ pluginId, svc, act, params, ...opts });
+    const p = transport('rpc').request({ pluginId, svc, act, params, ...opts });
+    if (!TRACE || TRACE_EXEMPT(svc, act)) return p;
+
+    const t0 = performance.now();
+    return p.then(
+      (res) => {
+        traceSink(`rpc -> ${pluginId} ${svc}/${act} ${Math.round(performance.now() - t0)}ms ok`);
+        return res;
+      },
+      (err) => {
+        // A denial arrives as a REJECTED promise carrying the service's own
+        // message, so the outcome is the interesting half of the line.
+        traceSink(
+          `rpc -> ${pluginId} ${svc}/${act} ${Math.round(performance.now() - t0)}ms ` +
+            `err: ${err?.message ?? err}`,
+        );
+        throw err;
+      },
+    );
+  }
+
+  /**
+   * Point the trace somewhere else.
+   *
+   * Exposed as a METHOD (not just the module function) so it can be reached
+   * from `window.__toolbox.hub` — otherwise verifying the trace means importing
+   * the module a second time, which under Vite yields a DIFFERENT instance and
+   * silently observes nothing. That cost an hour once; it will not again.
+   */
+  setTraceSink(fn) {
+    return setTraceSink(fn);
+  }
+
+  /** Turn tracing on/off for this session. See `TRACE` above. */
+  setTrace(on) {
+    TRACE = !!on;
+    try {
+      globalThis.localStorage?.setItem('toolbox.traceRpc', TRACE ? '1' : '0');
+    } catch {
+      /* node --test */
+    }
+    return TRACE;
+  }
+
+  get tracing() {
+    return TRACE;
   }
 
   // ------------------------------- data plane --------------------------------
