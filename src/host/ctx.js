@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi';
@@ -44,6 +45,9 @@ export function buildCtx(plugin, disposer) {
    * grant three permissions each; so no option could escalate. What it could do
    * is surprise.
    */
+  /** The window-local topic the host publishes OS file drops on. */
+  const DROP_TOPIC = 'host:drop';
+
   const PREFIX_NEEDS_LABEL = 'windows.create needs a non-empty label';
   const PREFIX_LABEL_DENIED =
     'window label "%L" matches no capability, so the window would have no ' +
@@ -257,6 +261,92 @@ export function buildCtx(plugin, disposer) {
         if (env.svc && env.svc !== id) return;
         fn(env);
       }),
+
+    /**
+     * Native dialogs, opened by the HOST on your behalf.
+     *
+     * You cannot import `@tauri-apps/plugin-dialog` (a Blob-URL plugin imports
+     * nothing), so the host opens it for you. **Permission: `rpc:dialog`.**
+     *
+     * Why a raw command and not a gateway action: the gateway is synchronous,
+     * so it runs on the main thread, and a native modal dialog would deadlock
+     * there. See `plugin_dialog` in `lib.rs`.
+     *
+     * **What you get back is a path the USER picked, in a dialog they could see
+     * and cancel.** That is the point: the grant is the user's action, not your
+     * declaration. There is no `ctx.fs` — read the file with your own sidecar
+     * (`ctx.sidecar`), which is a capability you do declare.
+     */
+    files: {
+      /** Pick file(s). Resolves `[]` when the user cancels — not an error. */
+      pick: (options = {}) =>
+        gated(
+          () =>
+            invoke('plugin_dialog', {
+              pluginId: id,
+              action: 'open',
+              params: {
+                title: options.title ?? null,
+                multiple: !!options.multiple,
+                folder: !!options.folder,
+                directory: options.directory ?? null,
+                filters: options.filters ?? null,
+              },
+            }),
+          'rpc:dialog',
+        ).then((r) => r?.paths ?? []),
+
+      /** Ask where to save. Resolves `null` when the user cancels. */
+      save: (options = {}) =>
+        gated(
+          () =>
+            invoke('plugin_dialog', {
+              pluginId: id,
+              action: 'save',
+              params: {
+                title: options.title ?? null,
+                defaultPath: options.defaultPath ?? null,
+              },
+            }),
+          'rpc:dialog',
+        ).then((r) => r?.path ?? null),
+
+      /** A native message box. */
+      message: (message, options = {}) =>
+        gated(
+          () =>
+            invoke('plugin_dialog', {
+              pluginId: id,
+              action: 'message',
+              params: { message, title: options.title ?? null },
+            }),
+          'rpc:dialog',
+        ),
+    },
+
+    /**
+     * Files dropped onto the window, while one of YOUR views is showing.
+     *
+     * `fn(paths, info)` — `info` is `{ viewId }`.
+     *
+     * **Routed to the ACTIVE view only.** A drop lands on what the user is
+     * looking at, so delivering it to every plugin would let one silently
+     * harvest paths meant for another. That routing is also why there is no
+     * drop permission: you only ever see drops the user aimed at your view.
+     *
+     * Window-local (the `in-process` scheme) — plugin views live in the main
+     * window, so a drop needs no IPC. The host listens once; see `watchDrops`
+     * in `boot.js`.
+     */
+    onDrop: (fn) => {
+      const mine = new Set(
+        store.views.filter((v) => v.pluginId === id).map((v) => v.viewId),
+      );
+      return subscribeWith('in-process', DROP_TOPIC, (payload) => {
+        if (!payload || !mine.has(payload.viewId)) return;
+        fn(payload.paths ?? [], { viewId: payload.viewId });
+      });
+    },
 
     ui: {
       notify: (message, type = 'info') => toast(`${manifest.name}: ${message}`, type),

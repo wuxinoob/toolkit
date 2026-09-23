@@ -157,6 +157,119 @@ fn plugin_reap_orphans(window: tauri::WebviewWindow) -> Result<usize, String> {
     Ok(crate::services::session::kill_all())
 }
 
+/// Native file picker / save dialog / message box, on a plugin's behalf.
+///
+/// **Why this is NOT a gateway action.** `plugin_rpc` is a *synchronous*
+/// command, so it runs on the main thread — and `blocking_pick_file()` there
+/// would deadlock: the dialog needs the main thread's message loop to pump
+/// while we sit on it waiting. The plugin's own commands are `async fn` for
+/// exactly this reason (they run on the runtime's thread pool).
+///
+/// So this is a raw command, like `plugin_stream_open`, and it gates itself
+/// with the same registry check the gateway would have used.
+///
+/// Nothing is granted to the plugin for free: the paths returned are the ones
+/// the USER picked in a dialog they could see and cancel. That is why there is
+/// no `ctx.fs` here — the user's action is the grant, and the plugin gets back
+/// only what was handed over.
+#[tauri::command]
+async fn plugin_dialog(
+    app: tauri::AppHandle,
+    plugin_id: String,
+    action: String,
+    params: Option<Value>,
+) -> Result<Value, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    // Same fail-closed gate as every other plugin entry point.
+    host::registry::is_allowed(&plugin_id, "rpc:dialog")?;
+
+    let params = params.unwrap_or(Value::Null);
+    let str_param = |key: &str| -> Option<String> {
+        params.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+    };
+
+    match action.as_str() {
+        "open" => {
+            let multiple = params.get("multiple").and_then(|v| v.as_bool()).unwrap_or(false);
+            let folder = params.get("folder").and_then(|v| v.as_bool()).unwrap_or(false);
+
+            let mut builder = app.dialog().file();
+            if let Some(t) = str_param("title") {
+                builder = builder.set_title(t);
+            }
+            if let Some(d) = str_param("directory") {
+                builder = builder.set_directory(d);
+            }
+            if let Some(filters) = params.get("filters").and_then(|v| v.as_array()) {
+                for f in filters {
+                    let name = f.get("name").and_then(|v| v.as_str()).unwrap_or("files");
+                    let exts: Vec<&str> = f
+                        .get("extensions")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().filter_map(|e| e.as_str()).collect())
+                        .unwrap_or_default();
+                    let exts: Vec<&str> = exts;
+                    builder = builder.add_filter(name, &exts);
+                }
+            }
+
+            // `blocking_*` is safe HERE and only here: this is an async command,
+            // so it is running on the runtime's pool, not the main thread.
+            let picked: Vec<String> = if folder {
+                let v = if multiple {
+                    builder.blocking_pick_folders()
+                } else {
+                    builder.blocking_pick_folder().map(|p| vec![p])
+                };
+                v.unwrap_or_default()
+                    .into_iter()
+                    .map(|p| p.to_string())
+                    .collect()
+            } else {
+                let v = if multiple {
+                    builder.blocking_pick_files()
+                } else {
+                    builder.blocking_pick_file().map(|p| vec![p])
+                };
+                v.unwrap_or_default()
+                    .into_iter()
+                    .map(|p| p.to_string())
+                    .collect()
+            };
+
+            // An empty list means "cancelled" — not an error. The caller decides
+            // whether that is worth mentioning.
+            Ok(json!({ "paths": picked, "cancelled": picked.is_empty() }))
+        }
+
+        "save" => {
+            let mut builder = app.dialog().file();
+            if let Some(t) = str_param("title") {
+                builder = builder.set_title(t);
+            }
+            if let Some(name) = str_param("defaultPath") {
+                builder = builder.set_file_name(name);
+            }
+            let path = builder.blocking_save_file().map(|p| p.to_string());
+            Ok(json!({ "path": path, "cancelled": path.is_none() }))
+        }
+
+        "message" => {
+            let message = str_param("message")
+                .ok_or_else(|| "dialog/message needs a `message`".to_string())?;
+            let mut builder = app.dialog().message(message);
+            if let Some(t) = str_param("title") {
+                builder = builder.title(t);
+            }
+            builder.blocking_show();
+            Ok(json!({ "shown": true }))
+        }
+
+        other => Err(format!("unknown dialog action `{other}`")),
+    }
+}
+
 /// Read the OS autostart state.
 ///
 /// Not stored in our own settings: the registry is the source of truth, and a
@@ -217,6 +330,11 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // Registered for its RUST API only. The plugin's own JS commands are
+        // deliberately left un-permissioned in the capability files: a plugin
+        // cannot import `@tauri-apps/plugin-dialog`, so the only way to a dialog
+        // is through `plugin_dialog`, which gates on `rpc:dialog`.
+        .plugin(tauri_plugin_dialog::init())
         // LaunchAgent is the macOS mechanism; on Windows the plugin writes the
         // HKCU Run entry. No extra args: we want the app started plainly, and
         // the main window is what the user asked to see.
@@ -235,6 +353,7 @@ pub fn run() {
             plugin_reap_orphans,
             host_autostart_get,
             host_autostart_set,
+            plugin_dialog,
             services::external::plugin_scan,
             services::external::plugin_read_entry,
             services::external::plugin_open_dir

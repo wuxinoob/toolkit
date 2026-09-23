@@ -10,6 +10,7 @@ import { installDebug } from './debug.js';
 import { logger } from '../core/logger.js';
 import { runSelftest } from '../core/selftest.js';
 import { hub } from '../protocol/hub.js';
+import { events } from './events.js';
 import { loadUiKit } from './ui.js';
 
 /** Global hotkey that summons (shows + focuses) the main window. */
@@ -68,6 +69,39 @@ async function reapOrphanSessions() {
   }
 }
 
+/**
+ * Route OS file drops to the plugin view the user dropped them on.
+ *
+ * `onDragDropEvent` is CORE (`@tauri-apps/api/webview`) — no plugin needed. The
+ * host listens ONCE and republishes on the window-local bus, so a plugin does
+ * not have to touch a Tauri API (it cannot import one) and does not have to
+ * care which window it is in.
+ *
+ * **Only the ACTIVE view receives it.** A drop lands on what the user is
+ * looking at; broadcasting to every plugin would let one silently harvest paths
+ * meant for another. That routing is what lets `ctx.onDrop` need no permission.
+ *
+ * Deliberately not awaited by `boot()`: a window that cannot report drops is
+ * still a usable window, and this must never be the reason startup fails.
+ */
+async function watchDrops() {
+  try {
+    const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+    await getCurrentWebview().onDragDropEvent((event) => {
+      const payload = event?.payload;
+      if (payload?.type !== 'drop') return;
+      const viewId = store.activeViewId;
+      if (!viewId) return;
+      // `host:drop` — the topic `ctx.onDrop` subscribes to. See ctx.js.
+      events.emit('host:drop', { paths: payload.paths ?? [], viewId });
+    });
+    await report('file drops: watching');
+  } catch (e) {
+    // No host (browser, node --test) or a platform without the event. Not fatal.
+    logger.warn('boot', `file drop watch unavailable: ${e}`);
+  }
+}
+
 export async function boot() {
   // A startup budget. Without one, "startup feels slow" is unanswerable — the
   // window now appears as soon as the shell has painted (see main.js), so every
@@ -112,6 +146,9 @@ export async function boot() {
 
     await applySummonShortcut();
     mark('hotkey');
+
+    // Not awaited: see watchDrops.
+    watchDrops();
 
     // Reported BEFORE the per-plugin lines and the selftest: those are
     // diagnostics, and their cost must not be attributed to the plugin list

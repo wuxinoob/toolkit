@@ -194,6 +194,118 @@ await ctx.schema()                   // = rpc('host','schema')
 
 ---
 
+## 我要让用户给我一个文件
+
+**两个入口，都只给你路径，都需要用户做一个动作。** 没有 `ctx.fs` —— 见
+[FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md)（fs 读写仍在待裁定）。
+
+### 原生选择器 —— `ctx.files`（权限 `rpc:dialog`）
+
+```js
+const paths = await ctx.files.pick({ title: '选个文件', multiple: true });
+if (!paths.length) return;                     // 用户取消了 —— 不是错误
+
+const target = await ctx.files.save({ defaultPath: 'notes.md' });   // → string | null
+await ctx.files.message('完成了', { title: '提示' });
+```
+
+| 方法 | 参数 | 返回 |
+|---|---|---|
+| `pick` | `{ title?, multiple?, folder?, directory?, filters? }` | `string[]`（取消 = `[]`） |
+| `save` | `{ title?, defaultPath? }` | `string \| null` |
+| `message` | `(message, { title? })` | — |
+
+`filters` 形如 `[{ name: '文本', extensions: ['txt', 'md'] }]`。
+
+**为什么 `pick` 取消返回 `[]` 而不是 `null`**：每个调用方都要为 `null` 加一层判断，
+而「没有文件」本来就该是空数组。
+
+### 拖拽 drop-in —— `ctx.onDrop`（**不需要权限**）
+
+```js
+const off = ctx.onDrop((paths, info) => {
+  console.log(paths);        // 用户拖进来的路径数组
+  console.log(info.viewId);  // 落在哪个视图上
+});
+off.then((un) => un());      // 取消订阅
+```
+
+**⚠️ 不要写 HTML5 的 `ondrop`** —— Tauri 的 `dragDropEnabled` **默认开启**，
+会**静默压制**浏览器的拖放事件。你会「什么都没发生，也不报错」。
+（见 [debugging.md](debugging.md#拖拽文件没反应--ondrop-从来不触发)）
+
+**只送给「当时正在显示的那个视图」。** 用户把文件拖到他看着的界面上，
+所以宿主只通知那个视图的插件 —— 这也是它**不需要权限**的原因：
+你只会看到用户**对着你的视图**做的动作，收不到别人的。
+
+### 拿到路径之后怎么读？
+
+**自己起一个 sidecar 进程读**（`ctx.sidecar`，权限 `rpc:proc`）：
+
+```js
+const s = await ctx.sidecar('read', { exe: 'my-reader.exe', args: paths });
+```
+
+**这是刻意的**：宿主不提供「读任意路径」的 API，因为那会绕过整个权限体系
+（插件共享主窗口，没有 per-plugin 的文件权限）。而**用户挑出来的路径** +
+**你自己声明的 `rpc:proc`**，两者合起来是一个说得清的授权链。
+
+## 我要让用户给我一个文件
+
+**两个入口，都只给你路径，都需要用户做一个动作。** 没有 `ctx.fs` —— 见
+[FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md)（fs 读写仍在待裁定）。
+
+### 原生选择器 —— `ctx.files`（权限 `rpc:dialog`）
+
+```js
+const paths = await ctx.files.pick({ title: '选个文件', multiple: true });
+if (!paths.length) return;                     // 用户取消了 —— 不是错误
+
+const target = await ctx.files.save({ defaultPath: 'notes.md' });   // → string | null
+await ctx.files.message('完成了', { title: '提示' });
+```
+
+| 方法 | 参数 | 返回 |
+|---|---|---|
+| `pick` | `{ title?, multiple?, folder?, directory?, filters? }` | `string[]`（取消 = `[]`） |
+| `save` | `{ title?, defaultPath? }` | `string \| null` |
+| `message` | `(message, { title? })` | — |
+
+`filters` 形如 `[{ name: '文本', extensions: ['txt', 'md'] }]`。
+
+**为什么 `pick` 取消返回 `[]` 而不是 `null`**：每个调用方都要为 `null` 加一层判断，
+而「没有文件」本来就该是空数组。
+
+### 拖拽 drop-in —— `ctx.onDrop`（**不需要权限**）
+
+```js
+const off = ctx.onDrop((paths, info) => {
+  console.log(paths);        // 用户拖进来的路径数组
+  console.log(info.viewId);  // 落在哪个视图上
+});
+off.then((un) => un());      // 取消订阅
+```
+
+**⚠️ 不要写 HTML5 的 `ondrop`** —— Tauri 的 `dragDropEnabled` **默认开启**，
+会**静默压制**浏览器的拖放事件。你会「什么都没发生，也不报错」。
+（见 [debugging.md](debugging.md#拖拽文件没反应--ondrop-从来不触发)）
+
+**只送给「当时正在显示的那个视图」。** 用户把文件拖到他看着的界面上，
+所以宿主只通知那个视图的插件 —— 这也是它**不需要权限**的原因：
+你只会看到用户**对着你的视图**做的动作，收不到别人的。
+
+### 拿到路径之后怎么读？
+
+**自己起一个 sidecar 进程读**（`ctx.sidecar`，权限 `rpc:proc`）：
+
+```js
+const s = await ctx.sidecar('read', { exe: 'my-reader.exe', args: paths });
+```
+
+**这是刻意的**：宿主不提供「读任意路径」的 API，因为那会绕过整个权限体系
+（插件共享主窗口，没有 per-plugin 的文件权限）。而**用户挑出来的路径** +
+**你自己声明的 `rpc:proc`**，两者合起来是一个说得清的授权链。
+
 ## 我要画界面
 
 ```js
