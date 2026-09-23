@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 
 import { buildCtx } from './ctx.js';
-import { store, toast } from './store.js';
+import { store, saveSettings, toast } from './store.js';
 import { events } from './events.js';
 import { hub } from '../protocol/hub.js';
 import { HOST_API } from '../protocol/contract.js';
@@ -91,23 +91,109 @@ export async function registerWithHost(manifest) {
  * permission is needed. A conflict is reported, never fatal — one taken
  * shortcut must not stop a plugin from activating.
  */
+/**
+ * Record a plugin's hotkey requests, and register only the ones the user enabled.
+ *
+ * **The declaration is a request, not a registration.** `contributes.hotkeys`
+ * says "this action would like a shortcut"; the user decides in Settings
+ * whether it gets one. A plugin that could take a global shortcut just by
+ * shipping is a plugin that can shadow a shortcut the user relies on, in every
+ * other application, without them ever agreeing to it.
+ *
+ * On first sight the declared key is stored as the user's binding but left
+ * DISABLED. Storing it means the Settings page has something to show and the
+ * user has something to switch on; leaving it off means the default is inert.
+ */
 async function registerHotkeys(plugin, ctx) {
   const declared = plugin.manifest.contributes?.hotkeys ?? [];
-  let ok = 0;
+  const { hotkeys } = store.settings;
+  let registered = 0;
+  let dirty = false;
+
   for (const hk of declared) {
     if (!hk || !hk.key || !hk.action) continue;
+    const composite = `${plugin.manifest.id}:${hk.action}`;
+
+    // Seed on first sight. `enabled` is deliberately absent from the seed so
+    // the default is "off" without also overwriting a later user choice.
+    if (!hotkeys[composite]) {
+      hotkeys[composite] = { key: hk.key, enabled: false };
+      dirty = true;
+    }
+
+    const entry = hotkeys[composite];
+    if (!entry.enabled) {
+      ctx.log.info(`hotkey "${entry.key}" for ${hk.action} is declared but OFF — enable it in Settings`);
+      continue;
+    }
+
     try {
       await hub.request(HOST_ID, 'hotkey', 'register', {
-        key: hk.key,
+        key: entry.key,
         action: hk.action,
         owner: plugin.manifest.id,
       });
-      ok += 1;
+      registered += 1;
     } catch (e) {
-      ctx.log.warn('hotkey "' + hk.key + '" not registered: ' + (e?.message ?? e));
+      ctx.log.warn('hotkey "' + entry.key + '" not registered: ' + (e?.message ?? e));
     }
   }
-  return ok;
+
+  if (dirty) saveSettings();
+  return registered;
+}
+
+/**
+ * Turn one declared hotkey on or off, or rebind it.
+ *
+ * `key === null` keeps the current binding. Rebinding while enabled is
+ * unregister-then-register, because the OS key is the identity — there is no
+ * "change" call.
+ *
+ * Returns the state the entry ended in, so the caller can show what actually
+ * happened rather than what was asked for (registering can fail: the key may be
+ * taken by another application).
+ */
+export async function setHotkey(pluginId, action, { key = null, enabled = null } = {}) {
+  const composite = `${pluginId}:${action}`;
+  const entry = store.settings.hotkeys[composite];
+  if (!entry) throw new Error(`no hotkey declared as ${composite}`);
+
+  const wasEnabled = entry.enabled;
+  const oldKey = entry.key;
+  if (key !== null) entry.key = key;
+  if (enabled !== null) entry.enabled = enabled;
+
+  const release = async () => {
+    await hub
+      .request(HOST_ID, 'hotkey', 'unregister', { key: oldKey })
+      .catch(() => {});
+  };
+
+  try {
+    if (entry.enabled) {
+      // Always release first: a rebind has a different OS key, and re-enabling
+      // something already registered would be rejected as a conflict.
+      await release();
+      await hub.request(HOST_ID, 'hotkey', 'register', {
+        key: entry.key,
+        action,
+        owner: pluginId,
+      });
+    } else if (wasEnabled) {
+      await release();
+    }
+  } catch (e) {
+    // Leave the entry as the user set it but report the failure — the OS may
+    // refuse the key, and silently showing "enabled" would be a lie.
+    entry.error = String(e?.message ?? e);
+    saveSettings();
+    throw e;
+  }
+
+  delete entry.error;
+  saveSettings();
+  return { ...entry };
 }
 
 async function releaseHotkeys(plugin) {

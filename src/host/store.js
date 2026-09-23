@@ -19,13 +19,29 @@ export const store = reactive({
   schemes: [],
   settings: {
     summonShortcut: 'Ctrl+Alt+T',
+    /**
+     * Per-hotkey user state, keyed `<pluginId>:<action>`.
+     *
+     * A plugin's `contributes.hotkeys` entry is a REQUEST, not a registration:
+     * it says "this action would like a shortcut" and nothing more. Nothing
+     * reaches the OS until the user turns it on here — a plugin must not be able
+     * to take a global shortcut just by shipping.
+     *
+     *   { 'builtin.eyecare:pause': { key: 'ctrl+alt+p', enabled: false } }
+     *
+     * `key` is the user's binding, seeded from the plugin's declared default
+     * the first time the action is seen. So a rebind survives a plugin update
+     * that changes its default, and a plugin's default never silently becomes
+     * active.
+     */
+    hotkeys: {},
     ...JSON.parse(localStorage.getItem('toolbox.settings') || '{}'),
   },
 });
 
 export function saveSettings() {
-  const { summonShortcut } = store.settings;
-  localStorage.setItem('toolbox.settings', JSON.stringify({ summonShortcut }));
+  const { summonShortcut, hotkeys } = store.settings;
+  localStorage.setItem('toolbox.settings', JSON.stringify({ summonShortcut, hotkeys }));
 }
 
 let toastSeq = 0;

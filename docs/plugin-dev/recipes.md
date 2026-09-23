@@ -104,6 +104,25 @@ const s = await ctx.sidecar('helper', {
 
 ---
 
+## 加一个热键
+
+```json
+// plugin.json —— 声明即可，不需要权限
+"hotkeys": [{ "key": "ctrl+alt+m", "action": "toggle" }]
+```
+
+```js
+ctx.onHotkey('toggle', () => { /* … */ });
+```
+
+**装上去它默认是关的** —— 用户要在 **Settings → Hotkeys** 里打开，键才真的被占用。
+这是刻意的：插件不该装上就占全局快捷键。所以**别假设它是活的**，
+需要确认就查 `hotkey/list`。
+
+**用户改键不用改你的代码** —— `onHotkey` 按 `action` 订阅，不认 key。
+
+参考 `examples/plugins/probe/`（它用 `hotkey/list` 验证注册结果）。
+
 ## 定时 + 自启 + 崩溃重启
 
 ```js

@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 
 import { store, saveSettings, toast } from '../host/store.js';
+import { setHotkey } from '../host/lifecycle.js';
 import { applySummonShortcut } from '../host/boot.js';
 import { activate, deactivate, saveEnabled } from '../host/lifecycle.js';
 import { resolveBuiltin } from '../host/registry.js';
@@ -174,7 +175,65 @@ onMounted(() => {
   refreshSessions();
 });
 watch(() => store.plugins.length, loadForms);
-</script>
+
+/**
+ * Every hotkey any plugin has DECLARED, with the user's state for it.
+ *
+ * A plugin's `contributes.hotkeys` entry is a request, not a registration —
+ * nothing reaches the OS until the switch below is on. That is why this list is
+ * built from the MANIFESTS rather than from what is registered: an action that
+ * is declared-but-off must still be visible, or the user could never turn it on.
+ */
+const declaredHotkeys = computed(() => {
+  const rows = [];
+  for (const p of store.plugins) {
+    for (const hk of p.manifest?.contributes?.hotkeys ?? []) {
+      if (!hk?.action) continue;
+      const composite = `${p.manifest.id}:${hk.action}`;
+      const entry = store.settings.hotkeys[composite] ?? { key: hk.key, enabled: false };
+      rows.push({
+        composite,
+        pluginId: p.manifest.id,
+        pluginName: p.manifest.name ?? p.manifest.id,
+        action: hk.action,
+        key: entry.key ?? hk.key ?? '',
+        enabled: !!entry.enabled,
+        error: entry.error ?? null,
+      });
+    }
+  }
+  return rows;
+});
+
+/** Per-row busy flag, so one slow registration does not disable every row. */
+const hotkeyBusy = ref('');
+
+/**
+ * Apply a change and show what ACTUALLY happened.
+ *
+ * `setHotkey` can fail — the OS refuses a key another application already owns.
+ * The entry keeps the user's choice either way and reports the failure, because
+ * silently showing "on" for a shortcut that never registered is the worst of
+ * both worlds: the user waits for a hotkey that will never fire.
+ */
+async function applyHotkey(row, { key = null, enabled = null }) {
+  hotkeyBusy.value = row.composite;
+  try {
+    await setHotkey(row.pluginId, row.action, { key, enabled });
+    toast(key !== null ? `Bound ${row.action} to ${key}` : `${row.action} ${enabled ? 'on' : 'off'}`);
+  } catch (e) {
+    toast(`Hotkey failed: ${e?.message ?? e}`, 'error');
+  } finally {
+    hotkeyBusy.value = '';
+  }
+}
+
+/** Commit a typed key on blur or Enter — not on every keystroke. */
+function commitKey(row, event) {
+  const next = String(event.target.value ?? '').trim();
+  if (!next || next === row.key) return;
+  applyHotkey(row, { key: next });
+}
 
 /**
  * Autostart lives in the OS, not in our settings.
@@ -219,6 +278,7 @@ async function setAutostart(enabled) {
 }
 
 onMounted(loadAutostart);
+</script>
 
 <template>
   <div class="mx-auto flex max-w-[900px] flex-col gap-4">
@@ -249,6 +309,51 @@ onMounted(loadAutostart);
           <template v-else-if="autostart">Starts with the system</template>
           <template v-else>Does not start with the system</template>
         </span>
+      </CardContent>
+    </Card>
+
+    <Card>
+      <CardHeader>
+        <CardTitle>Hotkeys</CardTitle>
+        <CardDescription>
+          What each plugin has asked for. A declaration is only a request — nothing is bound to the
+          system until you switch it on here, so a plugin cannot take a global shortcut just by being
+          installed. Edit a key and press Enter to rebind it.
+        </CardDescription>
+      </CardHeader>
+      <CardContent class="flex flex-col gap-2">
+        <div
+          v-if="!declaredHotkeys.length"
+          class="text-xs text-muted-foreground"
+        >
+          No plugin has declared a hotkey.
+        </div>
+        <div
+          v-for="row in declaredHotkeys"
+          :key="row.composite"
+          class="flex flex-wrap items-center gap-3 rounded-md border p-2"
+        >
+          <Switch
+            :model-value="row.enabled"
+            :disabled="hotkeyBusy === row.composite"
+            :aria-label="`Enable ${row.action} for ${row.pluginName}`"
+            @update:model-value="(v) => applyHotkey(row, { enabled: v })"
+          />
+          <div class="min-w-0 flex-1">
+            <div class="truncate text-sm">{{ row.action }}</div>
+            <div class="truncate text-xs text-muted-foreground">{{ row.pluginName }}</div>
+          </div>
+          <input
+            class="tb-input tb-mono w-[190px] text-xs"
+            :value="row.key"
+            :disabled="hotkeyBusy === row.composite"
+            spellcheck="false"
+            placeholder="ctrl+alt+k"
+            @blur="commitKey(row, $event)"
+            @keydown.enter="commitKey(row, $event)"
+          />
+          <span v-if="row.error" class="w-full text-xs text-destructive">Not registered: {{ row.error }}</span>
+        </div>
       </CardContent>
     </Card>
 

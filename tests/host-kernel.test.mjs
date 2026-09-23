@@ -53,6 +53,7 @@ const {
   saveEnabled,
   registerWithHost,
   adoptNewPlugin,
+  setHotkey,
   Disposer,
 } = await import('../src/host/lifecycle.js');
 const { store } = await import('../src/host/store.js');
@@ -333,11 +334,26 @@ test('lifecycle: declared hotkeys are registered by the host on the plugin\'s be
   });
   await activate(plugin, { silent: true });
 
+  // A declaration is a REQUEST, not a registration. It must be recorded (so
+  // Settings has something to list) and must NOT reach the OS: a plugin able to
+  // take a global shortcut just by shipping could shadow a shortcut the user
+  // relies on in every other application, without them ever agreeing to it.
   const reg = invokeCalls.find((c) => c.args?.msg?.svc === 'hotkey' && c.args.msg.act === 'register');
-  assert.ok(reg, 'the declared hotkey was never registered');
+  assert.equal(reg, undefined, 'a declared hotkey must NOT be registered until enabled');
+
+  const entry = store.settings.hotkeys['hk.plugin:go'];
+  assert.ok(entry, 'the declaration must be recorded so Settings can list it');
+  assert.equal(entry.key, 'ctrl+alt+shift+k', 'seeded with the declared default');
+  assert.equal(entry.enabled, false, 'and off by default');
+
+  // Only when the user turns it on does it reach the OS.
+  invokeCalls.length = 0;
+  await setHotkey('hk.plugin', 'go', { enabled: true });
+  const reg2 = invokeCalls.find((c) => c.args?.msg?.svc === 'hotkey' && c.args.msg.act === 'register');
+  assert.ok(reg2, 'an enabled hotkey must be registered');
   // the host acts for the plugin, and says so explicitly
-  assert.equal(reg.args.pluginId, '__host__');
-  assert.deepEqual(reg.args.msg.p, { key: 'ctrl+alt+shift+k', action: 'go', owner: 'hk.plugin' });
+  assert.equal(reg2.args.pluginId, '__host__');
+  assert.deepEqual(reg2.args.msg.p, { key: 'ctrl+alt+shift+k', action: 'go', owner: 'hk.plugin' });
 
   invokeCalls.length = 0;
   await deactivate(plugin, { silent: true });
@@ -346,16 +362,49 @@ test('lifecycle: declared hotkeys are registered by the host on the plugin\'s be
   assert.deepEqual(rel.args.msg.p, { owner: 'hk.plugin' });
 });
 
-test('lifecycle: declared hotkeys go live BEFORE activate runs', async () => {
-  // A plugin must be able to rely on its own hotkeys during activation, so the
-  // host has to register them first. This was a real bug: registering after
-  // activate() meant a plugin that checked its own hotkey saw none.
+test('lifecycle: turning a hotkey off releases it at the OS', async () => {
   ls.clear();
   resetEvents();
   store.plugins.length = 0;
   store.views.length = 0;
   invokeCalls.length = 0;
   invokeImpl = async (cmd, { msg }) => ({ v: 1, kind: 'res', id: msg?.id ?? 1, p: true });
+
+  const plugin = await loadPlugin({
+    manifest: {
+      id: 'hk.off',
+      name: 'Toggle',
+      permissions: [],
+      contributes: { views: [{ id: 'v', title: 'V' }], hotkeys: [{ key: 'ctrl+alt+k', action: 'go' }] },
+    },
+    activate: (ctx) => ctx.registerView('v', () => {}),
+  });
+  await activate(plugin, { silent: true });
+  await setHotkey('hk.off', 'go', { enabled: true });
+
+  invokeCalls.length = 0;
+  await setHotkey('hk.off', 'go', { enabled: false });
+  const rel = invokeCalls.find((c) => c.args?.msg?.svc === 'hotkey' && c.args.msg.act === 'unregister');
+  assert.ok(rel, 'disabling must unregister, or the key stays taken');
+  assert.equal(rel.args.msg.p.key, 'ctrl+alt+k');
+  assert.equal(store.settings.hotkeys['hk.off:go'].enabled, false);
+});
+
+test('lifecycle: an ENABLED hotkey goes live BEFORE activate runs', async () => {
+  // A plugin must be able to rely on its own hotkeys during activation, so the
+  // host has to register them first. This was a real bug: registering after
+  // activate() meant a plugin that checked its own hotkey saw none.
+  //
+  // Only an ENABLED one now — a bare declaration is inert.
+  ls.clear();
+  resetEvents();
+  store.plugins.length = 0;
+  store.views.length = 0;
+  invokeCalls.length = 0;
+  invokeImpl = async (cmd, { msg }) => ({ v: 1, kind: 'res', id: msg?.id ?? 1, p: true });
+
+  // Pre-seed the user's choice: this hotkey is ON.
+  store.settings.hotkeys['hk.order:go'] = { key: 'ctrl+alt+shift+o', enabled: true };
 
   const plugin = await loadPlugin({
     manifest: {
@@ -393,6 +442,10 @@ test('lifecycle: a failing hotkey registration does not fail the activation', as
     }
     return { v: 1, kind: 'res', id: msg?.id ?? 1, p: true };
   };
+
+  // Enabled, so the host actually tries — the point is that a failure there is
+  // contained, not that it is skipped.
+  store.settings.hotkeys['hk.conflict:go'] = { key: 'ctrl+alt+shift+c', enabled: true };
 
   const plugin = await loadPlugin({
     manifest: {
