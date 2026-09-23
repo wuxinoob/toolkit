@@ -13,8 +13,10 @@
 | [api.md](api.md) | `ctx` 全表面，按**任务**组织 |
 | [ui.md](ui.md) | 界面怎么做：组件工厂 + 令牌 |
 | [storage.md](storage.md) | 本地读写：能写什么、落在哪、为什么不用 fs/sql/store |
+| [FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md) | **待裁定**：文件访问（拖拽 / 选择 / 读取）的可行性与三条路线 |
 | [debugging.md](debugging.md) | 出问题时按什么顺序查（**归因手册**） |
 | [recipes.md](recipes.md) | 常见功能的完整最小实现 |
+| [SUPPLEMENT.md](SUPPLEMENT.md) | **补充说明与避坑指南**（多窗口 ACL、DOM 碰撞、bridge 差异） |
 
 ---
 

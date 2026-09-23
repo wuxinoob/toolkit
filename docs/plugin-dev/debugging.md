@@ -215,6 +215,29 @@ boot timing (ms): debug 42 | reap 58 | schemes 60 | builtins 1722 | external 189
 是**控件**。**滚动条滑块、拖拽把手这类「要能找得到」的东西，不能用分隔线令牌。**
 本项目已把滑块改成 `--line-strong`，和原生滚动条一致。
 
+## 拖拽文件没反应 / `ondrop` 从来不触发
+
+**症状**：按 Web 习惯写了 `ondragover` / `ondrop`，**什么都没发生，也不报错**。
+
+**原因**：Tauri 的窗口配置里 `dragDropEnabled` **默认是 `true`** ——
+它会**接管整个 webview 的原生拖放**，于是 HTML5 的拖放事件被**静默压制**。
+要读拖进来的文件，得用 Tauri 自己的事件：
+
+```js
+const unlisten = await getCurrentWebview().onDragDropEvent((e) => {
+  if (e.payload.type === 'drop') console.log(e.payload.paths);   // 路径数组
+});
+```
+
+`onDragDropEvent` 是**核心 API**（`@tauri-apps/api/webview`），**不需要插件**。
+payload 是判别联合：`{type:'over', position}` / `{type:'drop', paths}` / `{type:'leave'}`。
+
+**反过来**：要**用 HTML5 拖放**，就得把 `dragDropEnabled` 设成 `false` ——
+两者只能选一个。
+
+**注意它只给路径，不给内容。** 读内容还需要文件系统访问（见
+[FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md)）。
+
 ## 浏览器里测不出来
 
 **headless 浏览器打 dev server 只能看到「页面」，看不到「app」** ——
