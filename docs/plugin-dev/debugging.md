@@ -238,6 +238,94 @@ payload 是判别联合：`{type:'over', position}` / `{type:'drop', paths}` / `
 **注意它只给路径，不给内容。** 读内容还需要文件系统访问（见
 [FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md)）。
 
+## 想知道「我的调用到底发出去了吗」——打开通信 trace
+
+**默认关闭**，两种打开方式：
+
+```js
+window.__toolbox.hub.setTrace(true)                       // 本会话
+localStorage.setItem('toolbox.traceRpc', '1')             // 持久（下次重载生效）
+```
+
+然后 `debug.log` 里会出现**网关层的每一笔往来**：
+
+```
+rpc -> my.plugin host/info 3ms ok
+rpc -> my.plugin proc/spawn 1ms err: plugin `my.plugin` lacks permission `rpc:proc`
+```
+
+**这是 `debug.log` 里唯一能看到「你没写的那些调用」的地方** ——
+各插件自己 `ctx.log` 的行只反映它**想**写什么，
+而 trace 反映**实际发生**了什么，包括权限拒绝。
+
+**读法**：
+
+| 看到 | 意思 |
+|---|---|
+| `ok` | 网关放行，服务正常返回 |
+| `err: … lacks permission …` | **权限闸拒绝了** —— 你的 `plugin.json` 少了这条 |
+| `err: … is not registered …` | 插件没注册成功，宿主 fail-closed 拦下了 |
+| **第一列是 `__host__`** | ⚠️ 看 [COMMS-AUDIT](../../COMMS-AUDIT-2026-09-23.md) —— 正常插件不该以宿主身份调用 |
+
+**第一列是「调用方自称的身份」**，不是宿主核实的身份。这个区别很重要，
+所以 trace 刻意把它印在最前面。
+
+**`host/write_debug_log` 不记** —— trace 自己就是靠它写日志的，记它会无限递归。
+
+## 现场验证插件：`examples/plugins/fileprobe/`
+
+自检跑在 webview 里、没有用户，所以**原生对话框**和**系统拖放**它覆盖不到。
+`fileprobe` 就是那另一半：装上去点几个按钮、拖一个文件，
+结果同时写视图和 `debug.log`。
+
+**它的模式值得抄**：接口存在性检查放在 `activate()` 里，
+**任何一项失败 → 插件行是 `error` 而不是 `active`** ——
+启动日志直接告诉你，不用点任何东西。
+
+## 想知道「我的调用到底发出去了吗」——打开通信 trace
+
+**默认关闭**，两种打开方式：
+
+```js
+window.__toolbox.hub.setTrace(true)                       // 本会话
+localStorage.setItem('toolbox.traceRpc', '1')             // 持久（下次重载生效）
+```
+
+然后 `debug.log` 里会出现**网关层的每一笔往来**：
+
+```
+rpc -> my.plugin host/info 3ms ok
+rpc -> my.plugin proc/spawn 1ms err: plugin `my.plugin` lacks permission `rpc:proc`
+```
+
+**这是 `debug.log` 里唯一能看到「你没写的那些调用」的地方** ——
+各插件自己 `ctx.log` 的行只反映它**想**写什么，
+而 trace 反映**实际发生**了什么，包括权限拒绝。
+
+**读法**：
+
+| 看到 | 意思 |
+|---|---|
+| `ok` | 网关放行，服务正常返回 |
+| `err: … lacks permission …` | **权限闸拒绝了** —— 你的 `plugin.json` 少了这条 |
+| `err: … is not registered …` | 插件没注册成功，宿主 fail-closed 拦下了 |
+| **第一列是 `__host__`** | ⚠️ 看 [COMMS-AUDIT](../../COMMS-AUDIT-2026-09-23.md) —— 正常插件不该以宿主身份调用 |
+
+**第一列是「调用方自称的身份」**，不是宿主核实的身份。这个区别很重要，
+所以 trace 刻意把它印在最前面。
+
+**`host/write_debug_log` 不记** —— trace 自己就是靠它写日志的，记它会无限递归。
+
+## 现场验证插件：`examples/plugins/fileprobe/`
+
+自检跑在 webview 里、没有用户，所以**原生对话框**和**系统拖放**它覆盖不到。
+`fileprobe` 就是那另一半：装上去点几个按钮、拖一个文件，
+结果同时写视图和 `debug.log`。
+
+**它的模式值得抄**：接口存在性检查放在 `activate()` 里，
+**任何一项失败 → 插件行是 `error` 而不是 `active`** ——
+启动日志直接告诉你，不用点任何东西。
+
 ## 浏览器里测不出来
 
 **headless 浏览器打 dev server 只能看到「页面」，看不到「app」** ——

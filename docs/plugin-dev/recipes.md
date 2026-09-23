@@ -7,6 +7,7 @@
 | 最小插件（一个视图） | `examples/plugins/hello/` |
 | 一次跑完所有接口（活的集成检查） | `examples/plugins/probe/` |
 | 组件词汇表大全（376 个 tag） | `examples/plugins/gallery/` |
+| 文件访问（选择器 / 拖放）的现场验证 | `examples/plugins/fileprobe/` |
 | 内嵌终端 | `src/plugins/streamlab.js` |
 | 管进程 + 定时 + 重启 | `src/plugins/procman.js` |
 | 自绘标题栏的独立窗口 | `src/plugins/floatwin.js` + `floatwin-widget.js` |
