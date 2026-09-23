@@ -22,22 +22,50 @@ import { ProtocolError } from './errors.js';
 import { transport, transportIds } from './transports/index.js';
 
 /**
- * Communication tracing — off by default, one switch to turn on.
+ * Communication tracing — every message kind, not just RPC.
  *
- * Why it exists: without it, "did my `ctx.rpc` go out, and what came back?" has
- * no answer. The debug log only carried lines a plugin wrote itself, so the
- * gateway layer — where permission and identity problems actually live — was
- * invisible. That is a large part of why the identity hole in
- * `docs/COMMS-AUDIT-2026-09-23.md` went unnoticed.
+ * ## Why it lives here and not in `request`
  *
- * Turn it on with either:
+ * The first version wrapped `request` only, so it showed `rpc` and nothing else.
+ * That is a small fraction of what actually moves: streams push frames
+ * continuously, events go out on two different schemes, and a `pty` or a
+ * `sidecar` is a conversation, not a call. Debugging plugin communication with
+ * an rpc-only trace is like reading one side of a phone call.
  *
- *   localStorage.setItem('toolbox.traceRpc', '1')   // then reload
- *   window.__toolbox.hub.setTrace(true)             // this session only
+ * Everything funnels through FOUR methods on this class, so wrapping those four
+ * covers the whole message plane:
  *
- * **The identity printed is the one the CALLER CLAIMED.** Deliberate: a
- * `__host__` showing up in a plugin's call is the exact shape of the forgery
- * described in that audit, and printing it is what would make it obvious.
+ *   request()    -> rpc      request / response, with the outcome
+ *   publish()    -> pub      outgoing event (either scheme)
+ *   subscribe()  -> sub      subscription, plus every event ARRIVING
+ *   stream()     -> open     stream open/close AND every frame
+ *
+ * `sidecar` / `pty` / `uplink` / `streamRaw` all call `stream()`, so they need
+ * no separate wrapping — which is the payoff of the funnel.
+ *
+ * ## Line shape
+ *
+ *   rpc   -> my.plugin storage/get 3ms ok
+ *   pub   -> my.plugin event-bus "my.topic" {…}
+ *   sub   <- my.plugin event-bus "my.topic"
+ *   evt   <- my.plugin in-process "my.topic" {…}
+ *   open  -> my.plugin pty-stream ch=term provider=pty
+ *   frame <- my.plugin pty-stream ch=term 48B
+ *   end   <- my.plugin pty-stream ch=term
+ *
+ * `->` is the plugin sending, `<-` is it receiving.
+ *
+ * **The first name is the identity the CALLER CLAIMED**, not one the host
+ * verified. That distinction is a known problem — see
+ * `docs/COMMS-AUDIT-2026-09-23.md` — and printing the claimed name is exactly
+ * what makes a forgery visible.
+ *
+ * ## Payloads
+ *
+ * Truncated to `PREVIEW` characters. A debug trace without content is useless
+ * for "what did it actually send", but an unbounded one is a log flood (and a
+ * place for a token to end up in a file). 80 characters answers "is this the
+ * message I think it is" without either problem.
  */
 let TRACE = false;
 try {
@@ -66,6 +94,52 @@ export function setTraceSink(fn) {
 /** Avoid a feedback loop: the sink writes through the gateway. */
 const TRACE_EXEMPT = (svc, act) => svc === 'host' && act === 'write_debug_log';
 
+/** How much of a payload to show. Enough to recognise, not enough to flood. */
+const PREVIEW = 80;
+
+/** A short, safe rendering of any payload. Never throws on a circular value. */
+function preview(value) {
+  if (value === undefined || value === null) return '';
+  let text;
+  try {
+    text = typeof value === 'string' ? value : JSON.stringify(value);
+  } catch {
+    text = '<unserialisable>';
+  }
+  if (text === undefined) return '';
+  return text.length > PREVIEW ? `${text.slice(0, PREVIEW)}…` : text;
+}
+
+/**
+ * One line, consistently shaped. `dir` is '->' (sending) or '<-' (receiving).
+ *
+ * **Never throws.** Tracing is an observer: a sink that fails (a full disk, a
+ * plugin that swapped it for something broken) must not take down the call it
+ * was observing. This bit was real — an unguarded `traceSink(...)` in
+ * `subscribe` propagated out of `hub.subscribe`, so a bad sink broke
+ * subscription itself.
+ */
+function trace(kind, dir, pluginId, detail, extra) {
+  try {
+    const tail = extra ? ` ${extra}` : '';
+    traceSink(`${kind.padEnd(5)} ${dir} ${pluginId} ${detail}${tail}`.trimEnd());
+  } catch {
+    /* an observer must not become a participant */
+  }
+}
+
+/** Wrap a receive callback so arriving frames/events are traced. */
+function tracedCallback(fn, describe) {
+  return (...args) => {
+    try {
+      traceSink(describe(...args));
+    } catch {
+      /* tracing must never break delivery */
+    }
+    return fn?.(...args);
+  };
+}
+
 export class MessageHub {
   constructor() {
     /** `${pluginId}/${ch}` -> live stream handle, so a leak is visible. */
@@ -88,15 +162,18 @@ export class MessageHub {
     const t0 = performance.now();
     return p.then(
       (res) => {
-        traceSink(`rpc -> ${pluginId} ${svc}/${act} ${Math.round(performance.now() - t0)}ms ok`);
+        trace('rpc', '->', pluginId, `${svc}/${act}`, `${Math.round(performance.now() - t0)}ms ok`);
         return res;
       },
       (err) => {
         // A denial arrives as a REJECTED promise carrying the service's own
         // message, so the outcome is the interesting half of the line.
-        traceSink(
-          `rpc -> ${pluginId} ${svc}/${act} ${Math.round(performance.now() - t0)}ms ` +
-            `err: ${err?.message ?? err}`,
+        trace(
+          'rpc',
+          '->',
+          pluginId,
+          `${svc}/${act}`,
+          `${Math.round(performance.now() - t0)}ms err: ${err?.message ?? err}`,
         );
         throw err;
       },
@@ -144,6 +221,17 @@ export class MessageHub {
     assertSupports(schemeId, requires);
     if (!ch) throw ProtocolError.protocol('stream requires a channel id');
 
+    // Frames are the bulk of what moves in this app, and the rpc-only trace
+    // showed none of them. Wrapping `onFrame` here catches every stream kind at
+    // once, because sidecar / pty / uplink / streamRaw all come through here.
+    const frameIn = TRACE
+      ? tracedCallback(onFrame, (frame) => {
+          const bytes = frame?.p?.byteLength ?? frame?.p?.length ?? 0;
+          trace('frame', '<-', pluginId, `${schemeId} ch=${ch}`, bytes ? `${bytes}B` : '');
+        })
+      : onFrame;
+    if (TRACE) trace('open', '->', pluginId, `${schemeId} ch=${ch}`, `provider=${provider}`);
+
     const key = `${pluginId}/${ch}`;
     if (this.streams.has(key)) {
       throw ProtocolError.protocol(`stream \`${key}\` is already open`);
@@ -157,9 +245,10 @@ export class MessageHub {
     const finish = (env) => {
       settled = true;
       this.streams.delete(key);
+      if (TRACE) trace('end', '<-', pluginId, `${schemeId} ch=${ch}`);
       onEnd?.(env);
     };
-    const handle = await t.open({ pluginId, provider, ch, params, onFrame, onEnd: finish });
+    const handle = await t.open({ pluginId, provider, ch, params, onFrame: frameIn, onEnd: finish });
     if (!settled) this.streams.set(key, handle);
     return handle;
   }
@@ -226,6 +315,7 @@ export class MessageHub {
    * 'in-process' when the message genuinely cannot leave this window.
    */
   publish(pluginId, topic, payload = null, { scheme = 'event-bus' } = {}) {
+    if (TRACE) trace('pub', '->', pluginId, `${scheme} "${topic}"`, preview(payload));
     return transport(scheme).publish({ pluginId, topic, payload });
   }
 
@@ -235,7 +325,23 @@ export class MessageHub {
    */
   async subscribe(pluginId, topic, onEvent, { scheme = 'event-bus' } = {}) {
     assertSupports(scheme, Capability.PUSH);
-    const sub = await transport(scheme).subscribe({ pluginId, topic, onEvent });
+
+    // The arrival side. Wrapping the callback here is the only place that sees
+    // EVERY delivery on EVERY scheme; the alternative is one trace point per
+    // transport, which is exactly the duplication the funnel avoids.
+    //
+    // `in-process` hands the raw payload while `event-bus` hands the whole
+    // envelope (a known inconsistency — see the audit). The preview tolerates
+    // both: `delivered?.p ?? delivered` reads correctly either way.
+    const wrapped = TRACE
+      ? tracedCallback(onEvent, (delivered) =>
+          trace('evt', '<-', pluginId, `${scheme} "${topic}"`, preview(delivered?.p ?? delivered)),
+        )
+      : onEvent;
+
+    const sub = await transport(scheme).subscribe({ pluginId, topic, onEvent: wrapped });
+    if (TRACE) trace('sub', '<-', pluginId, `${scheme} "${topic}"`);
+
     if (!this.subscriptions.has(pluginId)) this.subscriptions.set(pluginId, []);
     this.subscriptions.get(pluginId).push(sub.unsubscribe);
     return sub.unsubscribe;

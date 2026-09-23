@@ -5,10 +5,14 @@
 
 | 源 | 是什么 | 怎么产生 |
 |---|---|---|
-| `[trace]` | **网关层的每一笔往来** | `hub.setTrace(true)` —— 本插件开 |
+| `[trace]` | **每一种消息**：rpc / pub / sub / evt / open / frame / end | `hub.setTrace(true)` —— 本插件开 |
 | `[event]` | 窗口内事件（`in-process`，零 IPC） | `ctx.events.emit` |
 | `[bus]` | 跨窗口广播（`event-bus`） | `ctx.bus.publish` |
 | — | 会话表 | `ctx.sessions()` |
+
+**`[trace]` 不只 rpc** —— 它包在 hub 的四个入口上（`request` / `publish` /
+`subscribe` / `stream`），所以流里的**每一帧**、**到达的每个事件**都在里面。
+`sidecar` / `pty` / `uplink` / `streamRaw` 都走同一个 `stream()`，因此一个点全覆盖。
 
 ## 装
 

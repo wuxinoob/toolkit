@@ -247,25 +247,54 @@ window.__toolbox.hub.setTrace(true)                       // 本会话
 localStorage.setItem('toolbox.traceRpc', '1')             // 持久（下次重载生效）
 ```
 
-然后 `debug.log` 里会出现**网关层的每一笔往来**：
+然后 `debug.log` 里会出现**每一种消息**，不只是 RPC：
 
 ```
-rpc -> my.plugin host/info 3ms ok
-rpc -> my.plugin proc/spawn 1ms err: plugin `my.plugin` lacks permission `rpc:proc`
+rpc   -> my.plugin storage/get 3ms ok
+pub   -> my.plugin event-bus "my.topic" {"n":1}
+sub   <- my.plugin event-bus "my.topic"
+evt   <- my.plugin in-process "my.topic" {"at":1727…}
+open  -> my.plugin pty-stream ch=term provider=pty
+frame <- my.plugin pty-stream ch=term 48B
+end   <- my.plugin pty-stream ch=term
 ```
 
-**这是 `debug.log` 里唯一能看到「你没写的那些调用」的地方** ——
+**`->` 是插件在发，`<-` 是插件在收。**
+
+**这是 `debug.log` 里唯一能看到「你没写的那些消息」的地方** ——
 各插件自己 `ctx.log` 的行只反映它**想**写什么，
-而 trace 反映**实际发生**了什么，包括权限拒绝。
+而 trace 反映**实际发生**了什么，包括权限拒绝和**到达的每一帧**。
 
 **读法**：
+
+| 种类 | 是什么 | 什么时候看它 |
+|---|---|---|
+| `rpc` | 一次请求/响应 | 「我的调用到了吗、宿主回什么」 |
+| `pub` / `sub` | 发/订阅事件 | 「广播发出去了吗、我订上了吗」 |
+| `evt` | **到达的事件** | 「我订阅了但没反应」→ 看有没有这一行 |
+| `open` / `frame` / `end` | 流：开、**每一帧**、结束 | 「终端没输出」「sidecar 没回话」 |
+| `frame` 后面的 `48B` | 帧大小 | 有帧但是 0B → 对端发了空 |
+
+**`evt` 和 `sub` 的区别是关键**：`sub` 只说明你订阅成功了，
+**`evt` 才说明消息真的到了**。「订上了但收不到」和「根本没订上」是两类完全不同的 bug，
+没有 trace 时它们看起来一模一样。
+
+**rpc 的 outcome**：
 
 | 看到 | 意思 |
 |---|---|
 | `ok` | 网关放行，服务正常返回 |
 | `err: … lacks permission …` | **权限闸拒绝了** —— 你的 `plugin.json` 少了这条 |
 | `err: … is not registered …` | 插件没注册成功，宿主 fail-closed 拦下了 |
-| **第一列是 `__host__`** | ⚠️ 看 [COMMS-AUDIT](../../COMMS-AUDIT-2026-09-23.md) —— 正常插件不该以宿主身份调用 |
+
+**第一列是「调用方自称的身份」，不是宿主核实的身份。** 一个 `__host__` 出现在插件的
+调用里就是伪造的形状 —— 见 [COMMS-AUDIT](../../COMMS-AUDIT-2026-09-23.md)。
+
+**payload 会被截断到 80 字符** —— 够你认出「是不是我以为的那条消息」，
+又不会把日志刷爆（也不至于让一个 token 落进文件）。
+
+**观测者不会变成参与者**：trace 自身抛错（sink 坏了）会被吞掉，
+不会连累它正在观测的那次调用。
 
 **第一列是「调用方自称的身份」**，不是宿主核实的身份。这个区别很重要，
 所以 trace 刻意把它印在最前面。
@@ -291,25 +320,54 @@ window.__toolbox.hub.setTrace(true)                       // 本会话
 localStorage.setItem('toolbox.traceRpc', '1')             // 持久（下次重载生效）
 ```
 
-然后 `debug.log` 里会出现**网关层的每一笔往来**：
+然后 `debug.log` 里会出现**每一种消息**，不只是 RPC：
 
 ```
-rpc -> my.plugin host/info 3ms ok
-rpc -> my.plugin proc/spawn 1ms err: plugin `my.plugin` lacks permission `rpc:proc`
+rpc   -> my.plugin storage/get 3ms ok
+pub   -> my.plugin event-bus "my.topic" {"n":1}
+sub   <- my.plugin event-bus "my.topic"
+evt   <- my.plugin in-process "my.topic" {"at":1727…}
+open  -> my.plugin pty-stream ch=term provider=pty
+frame <- my.plugin pty-stream ch=term 48B
+end   <- my.plugin pty-stream ch=term
 ```
 
-**这是 `debug.log` 里唯一能看到「你没写的那些调用」的地方** ——
+**`->` 是插件在发，`<-` 是插件在收。**
+
+**这是 `debug.log` 里唯一能看到「你没写的那些消息」的地方** ——
 各插件自己 `ctx.log` 的行只反映它**想**写什么，
-而 trace 反映**实际发生**了什么，包括权限拒绝。
+而 trace 反映**实际发生**了什么，包括权限拒绝和**到达的每一帧**。
 
 **读法**：
+
+| 种类 | 是什么 | 什么时候看它 |
+|---|---|---|
+| `rpc` | 一次请求/响应 | 「我的调用到了吗、宿主回什么」 |
+| `pub` / `sub` | 发/订阅事件 | 「广播发出去了吗、我订上了吗」 |
+| `evt` | **到达的事件** | 「我订阅了但没反应」→ 看有没有这一行 |
+| `open` / `frame` / `end` | 流：开、**每一帧**、结束 | 「终端没输出」「sidecar 没回话」 |
+| `frame` 后面的 `48B` | 帧大小 | 有帧但是 0B → 对端发了空 |
+
+**`evt` 和 `sub` 的区别是关键**：`sub` 只说明你订阅成功了，
+**`evt` 才说明消息真的到了**。「订上了但收不到」和「根本没订上」是两类完全不同的 bug，
+没有 trace 时它们看起来一模一样。
+
+**rpc 的 outcome**：
 
 | 看到 | 意思 |
 |---|---|
 | `ok` | 网关放行，服务正常返回 |
 | `err: … lacks permission …` | **权限闸拒绝了** —— 你的 `plugin.json` 少了这条 |
 | `err: … is not registered …` | 插件没注册成功，宿主 fail-closed 拦下了 |
-| **第一列是 `__host__`** | ⚠️ 看 [COMMS-AUDIT](../../COMMS-AUDIT-2026-09-23.md) —— 正常插件不该以宿主身份调用 |
+
+**第一列是「调用方自称的身份」，不是宿主核实的身份。** 一个 `__host__` 出现在插件的
+调用里就是伪造的形状 —— 见 [COMMS-AUDIT](../../COMMS-AUDIT-2026-09-23.md)。
+
+**payload 会被截断到 80 字符** —— 够你认出「是不是我以为的那条消息」，
+又不会把日志刷爆（也不至于让一个 token 落进文件）。
+
+**观测者不会变成参与者**：trace 自身抛错（sink 坏了）会被吞掉，
+不会连累它正在观测的那次调用。
 
 **第一列是「调用方自称的身份」**，不是宿主核实的身份。这个区别很重要，
 所以 trace 刻意把它印在最前面。
