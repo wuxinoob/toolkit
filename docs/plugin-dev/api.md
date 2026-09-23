@@ -112,6 +112,102 @@ OS 按下  →  Rust handler  →  app.emit(evt, topic = "hotkey:<action>")
 **信封里带着 owner**（`env.svc`）—— 所以**别的插件碰巧用了同名 action 时你收不到**。
 宿主替你过滤了，你不用自己判。
 
+### 热键能做什么？—— **`ctx` 能做的全部**
+
+热键**不是一个动作清单**，它只是一个**触发器**。处理函数是任意 JS：
+
+```js
+ctx.onHotkey('a', () => ctx.focusView('main'));            // 切视图
+ctx.onHotkey('b', () => ctx.windows.control(LABEL, 'raise', true));  // 呼出窗口
+ctx.onHotkey('c', () => launchProfile('dev'));              // 跑一个进程
+ctx.onHotkey('d', () => ctx.bus.publish('my:toggle'));      // 广播
+ctx.onHotkey('e', () => ctx.ui.notifyOS('跑完了'));          // 系统通知
+```
+
+**所以「拓展快捷键的调用功能」这件事没有可做的** —— 动作词汇表就是 `ctx`，
+而它已经在那儿了。要拓展的是 `ctx`（一个独立的话题），不是热键。
+
+**唯一的限制**：payload 只有 `{ key }`，**没有参数**。
+但你不需要参数 —— 一个 action 对应一个行为，需要区分就多声明几个 action。
+
+### 底层是统一的：热键**就是**事件总线上的一个保留 topic
+
+```
+OS 按下 → Rust handler → app.emit(BROADCAST_EVENT, topic="hotkey:<action>")
+        → 每个窗口的 listen(BROADCAST_EVENT)
+        → 按 topic 分发 → ctx.onHotkey
+```
+
+**`ctx.onHotkey(action, fn)` 是 `ctx.bus.subscribe('hotkey:' + action, fn)` 的薄包装**，
+只多了一层 owner 过滤（`env.svc` 带着谁注册的，忽略别人的同名 action）。
+
+**所以「呼出窗口」这件事不是热键专属的。** `ctx.windows.control(LABEL, 'raise')`
+是一个普通的 `ctx` 方法 —— **按钮点击、bus 消息、定时器、流的一帧，任何代码路径都能调它**。
+
+| 触发源 | 走哪条路 | 能呼出窗口吗 |
+|---|---|---|
+| 热键 | OS → `app.emit` → `hotkey:<action>` | ✅ |
+| 按钮 | 普通 DOM 事件 | ✅ |
+| bus 广播 | 网关 → `app.emit` | ✅ |
+| 定时器 | 普通 JS | ✅ |
+| 窗口内事件 | `in-process` Map（零 IPC） | ✅ |
+
+**热键和 bus 共用同一个载体**（`app.emit` + `listen(BROADCAST_EVENT)`），
+区别只在 topic 前缀和包装。
+
+> ⚠️ **一处不对称**：`ctx.onHotkey` 会按 owner 过滤，**但直接
+> `ctx.bus.subscribe('hotkey:x')` 不会** —— 所以一个插件如果猜到别人的 action 名，
+> 能收到那个热键事件。action 名不该被当作秘密，但也不该依赖它来隔离。
+> 见 [COMMS-AUDIT](../../COMMS-AUDIT-2026-09-23.md)。
+
+### 热键能做什么？—— **`ctx` 能做的全部**
+
+热键**不是一个动作清单**，它只是一个**触发器**。处理函数是任意 JS：
+
+```js
+ctx.onHotkey('a', () => ctx.focusView('main'));            // 切视图
+ctx.onHotkey('b', () => ctx.windows.control(LABEL, 'raise', true));  // 呼出窗口
+ctx.onHotkey('c', () => launchProfile('dev'));              // 跑一个进程
+ctx.onHotkey('d', () => ctx.bus.publish('my:toggle'));      // 广播
+ctx.onHotkey('e', () => ctx.ui.notifyOS('跑完了'));          // 系统通知
+```
+
+**所以「拓展快捷键的调用功能」这件事没有可做的** —— 动作词汇表就是 `ctx`，
+而它已经在那儿了。要拓展的是 `ctx`（一个独立的话题），不是热键。
+
+**唯一的限制**：payload 只有 `{ key }`，**没有参数**。
+但你不需要参数 —— 一个 action 对应一个行为，需要区分就多声明几个 action。
+
+### 底层是统一的：热键**就是**事件总线上的一个保留 topic
+
+```
+OS 按下 → Rust handler → app.emit(BROADCAST_EVENT, topic="hotkey:<action>")
+        → 每个窗口的 listen(BROADCAST_EVENT)
+        → 按 topic 分发 → ctx.onHotkey
+```
+
+**`ctx.onHotkey(action, fn)` 是 `ctx.bus.subscribe('hotkey:' + action, fn)` 的薄包装**，
+只多了一层 owner 过滤（`env.svc` 带着谁注册的，忽略别人的同名 action）。
+
+**所以「呼出窗口」这件事不是热键专属的。** `ctx.windows.control(LABEL, 'raise')`
+是一个普通的 `ctx` 方法 —— **按钮点击、bus 消息、定时器、流的一帧，任何代码路径都能调它**。
+
+| 触发源 | 走哪条路 | 能呼出窗口吗 |
+|---|---|---|
+| 热键 | OS → `app.emit` → `hotkey:<action>` | ✅ |
+| 按钮 | 普通 DOM 事件 | ✅ |
+| bus 广播 | 网关 → `app.emit` | ✅ |
+| 定时器 | 普通 JS | ✅ |
+| 窗口内事件 | `in-process` Map（零 IPC） | ✅ |
+
+**热键和 bus 共用同一个载体**（`app.emit` + `listen(BROADCAST_EVENT)`），
+区别只在 topic 前缀和包装。
+
+> ⚠️ **一处不对称**：`ctx.onHotkey` 会按 owner 过滤，**但直接
+> `ctx.bus.subscribe('hotkey:x')` 不会** —— 所以一个插件如果猜到别人的 action 名，
+> 能收到那个热键事件。action 名不该被当作秘密，但也不该依赖它来隔离。
+> 见 [COMMS-AUDIT](../../COMMS-AUDIT-2026-09-23.md)。
+
 ### 命令式（运行时增删，**需要 `rpc:hotkey`**）
 
 ```js

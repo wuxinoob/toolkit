@@ -12,6 +12,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 globalThis.localStorage = {
   _m: new Map(),
@@ -212,4 +213,57 @@ test('trace: tracing never breaks delivery', async () => {
     setTraceSink(restore);
   }
   assert.equal(seen.length, 1, 'the subscriber still ran despite the sink throwing');
+});
+
+/* ---------------------------------------------------------------------------
+ * The host's own summon hotkey, and the two bugs it carried.
+ * ------------------------------------------------------------------------- */
+
+test('the summon hotkey goes through the hotkey SERVICE, not the JS plugin', () => {
+  // It used to use @tauri-apps/plugin-global-shortcut directly, and its
+  // unregisterAll() did mem::take on the shortcut manager — the same manager
+  // hotkey/register puts plugin shortcuts in. boot() registers plugins FIRST
+  // and called this after, so every plugin hotkey was registered and then
+  // immediately erased. One registration path, one release path.
+  const boot = readFileSync(new URL('../src/host/boot.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(
+    boot,
+    /from '@tauri-apps\/plugin-global-shortcut'/,
+    'the JS shortcut plugin must not be imported any more',
+  );
+  assert.match(boot, /hub\.request\(HOST_ID, 'hotkey', 'register'/, 'registration goes through the service');
+  assert.match(
+    boot,
+    /'hotkey', 'unregister_all', \{ owner: HOST_ID \}/,
+    'and release is OWNER-scoped, so plugin hotkeys survive',
+  );
+});
+
+test('the summon handler restores a minimised window', () => {
+  // show() + setFocus() on a minimised window does nothing on Windows — the
+  // same silent failure the 'raise' op exists to fix for plugins. A summon key that
+  // cannot summon fails exactly when it is needed.
+  const boot = readFileSync(new URL('../src/host/boot.js', import.meta.url), 'utf8');
+  const start = boot.indexOf('function subscribeSummon');
+  assert.ok(start > 0, 'no subscribeSummon found');
+  const body = boot.slice(start, start + 500);
+
+  const un = body.indexOf('unminimize');
+  const show = body.indexOf('win.show()');
+  const focus = body.indexOf('setFocus');
+  assert.ok(un >= 0 && show >= 0 && focus >= 0, 'all three calls must be present');
+  assert.ok(un < show && show < focus, 'and in the order unminimize, show, focus');
+});
+
+test('the capability no longer grants raw global-shortcut access', () => {
+  // Those four permissions existed for the JS path. They were also a hole:
+  // `global-shortcut:allow-unregister-all` let ANY plugin call
+  // `plugin:global-shortcut|unregister_all` through __TAURI_INTERNALS__ and
+  // wipe every hotkey in the app. The Rust service path is not ACL-gated, so
+  // removing them costs nothing.
+  const cap = JSON.parse(
+    readFileSync(new URL('../src-tauri/capabilities/default.json', import.meta.url), 'utf8'),
+  );
+  const leftover = cap.permissions.filter((p) => String(p).startsWith('global-shortcut:'));
+  assert.deepEqual(leftover, [], 'no global-shortcut permissions should remain');
 });

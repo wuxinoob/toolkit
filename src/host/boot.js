@@ -1,6 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { register, unregisterAll, isRegistered } from '@tauri-apps/plugin-global-shortcut';
 
 import { store, saveSettings, toast } from './store.js';
 import { bootPlugins } from './lifecycle.js';
@@ -14,23 +13,70 @@ import { events } from './events.js';
 import { loadUiKit } from './ui.js';
 
 /** Global hotkey that summons (shows + focuses) the main window. */
+/** Host identity: the only caller allowed to revoke a plugin registration. */
+const HOST_ID = '__host__';
+
+/**
+ * The host's own summon hotkey, registered through the SAME service plugins use.
+ *
+ * It used to go through `@tauri-apps/plugin-global-shortcut` directly, and that
+ * was broken in two ways:
+ *
+ * 1. **It wiped every plugin hotkey.** That JS `unregisterAll()` calls the
+ *    plugin's `unregister_all`, which does `mem::take` on the shortcut manager —
+ *    and `hotkey/register` puts plugin shortcuts in that same manager. `boot()`
+ *    registers plugins first and then called this, so on every launch every
+ *    plugin hotkey was registered and immediately erased. The feature had never
+ *    worked. The service's `unregister_all` is scoped by OWNER, so going through
+ *    it releases only the host's own binding.
+ *
+ * 2. **It could not restore a minimised window.** `show()` + `setFocus()` on a
+ *    minimised window does nothing on Windows — the same silent failure the
+ *    `raise` op exists to fix for plugins. A summon key that cannot summon is
+ *    the one case where the failure is guaranteed to be noticed, and only at the
+ *    moment the user needed it.
+ *
+ * So: one registration path, one release path, and the same three calls in the
+ * same order as `ctx.windows.control(label, 'raise')`.
+ */
 export async function applySummonShortcut() {
   const shortcut = store.settings.summonShortcut;
+
+  // Owner-scoped, so plugin hotkeys survive. Best-effort: nothing registered
+  // yet is the normal case on the first call.
+  await hub
+    .request(HOST_ID, 'hotkey', 'unregister_all', { owner: HOST_ID })
+    .catch(() => {});
+
+  if (!shortcut) return;
+
   try {
-    await unregisterAll();
-    if (shortcut) {
-      if (await isRegistered(shortcut)) return;
-      await register(shortcut, (event) => {
-        if (event.state !== 'Pressed') return;
-        const win = getCurrentWindow();
-        win.show();
-        win.setFocus();
-      });
-    }
+    await hub.request(HOST_ID, 'hotkey', 'register', {
+      key: shortcut,
+      action: 'summon',
+      owner: HOST_ID,
+    });
   } catch (e) {
     toast(`Hotkey "${shortcut}" failed: ${e}`, 'error');
     console.error('[boot] summon shortcut failed', e);
   }
+}
+
+/**
+ * Run the summon when the host's own hotkey fires. Subscribed once.
+ *
+ * The handler mirrors `raise`: unminimize, show, focus — in that order, because
+ * the first two are what make the third visible.
+ */
+function subscribeSummon() {
+  hub
+    .subscribe(HOST_ID, 'hotkey:summon', () => {
+      const win = getCurrentWindow();
+      win.unminimize().catch(() => {});
+      win.show().catch(() => {});
+      win.setFocus().catch(() => {});
+    })
+    .catch((e) => console.error('[boot] summon subscription failed', e));
 }
 
 /**
@@ -151,6 +197,7 @@ export async function boot() {
     await scanExternalPlugins(); // drop-in plugins from {appData}/plugins/*
     mark('external');
 
+    subscribeSummon();
     await applySummonShortcut();
     mark('hotkey');
 
