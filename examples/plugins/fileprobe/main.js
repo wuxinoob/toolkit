@@ -23,7 +23,15 @@ export const manifest = {
   description: 'Live check of ctx.files and ctx.onDrop.',
   contributes: {
     views: [{ slot: 'tool', id: 'fileprobe', title: 'File Probe', icon: 'lucide:folder' }],
+    // The theme override is declared here AND in plugin.json — the two must
+    // agree (there is an audit test). plugin.json is authoritative; this copy
+    // exists so the module is honest about what it needs on its own.
+    theme: {
+      dark: { '--color-brand': '#4fb286', '--color-brand-hover': '#5fc79a' },
+      light: { '--color-brand': '#2f7d5c', '--color-brand-hover': '#256a4d' },
+    },
   },
+  permissions: ['rpc:dialog', 'rpc:notify', 'rpc:host'],
 };
 
 /** Everything the plugin needs to remember between renders. */
@@ -294,3 +302,5 @@ async function message() {
 function rerender() {
   if (state.root) render(state.root);
 }
+
+export default { manifest, activate, deactivate };

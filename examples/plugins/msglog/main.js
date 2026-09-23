@@ -34,6 +34,8 @@ export const manifest = {
   contributes: {
     views: [{ slot: 'tool', id: 'msglog', title: 'Message Log', icon: 'lucide:activity' }],
   },
+  // Mirrors plugin.json — the two must agree (there is an audit test).
+  permissions: ['rpc:notify', 'rpc:host', 'rpc:bus', 'rpc:storage'],
 };
 
 /** Cap on retained lines. A trace can be chatty; the view is not a log file. */
@@ -257,3 +259,5 @@ async function refreshSessions() {
     push('trace', 'bad', `sessions failed: ${e?.message ?? e}`);
   }
 }
+
+export default { manifest, activate, deactivate };

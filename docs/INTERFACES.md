@@ -96,7 +96,7 @@
 | streamlab（内置） | `rpc:host` · `channel-json` · `channel-raw` · `event-bus` · `in-process` · 方案表 |
 | floatwin（内置） | `rpc:storage` · `event-bus` · `win:manage` |
 | floatwin-widget（窗口页） | `rpc:storage` · `event-bus` |
-| hello.demo（外部） | `rpc:storage` · `event-bus` · `channel-json` · `channel-raw` · `rpc:host` |
+| fileprobe.demo（外部） | `rpc:dialog` · `rpc:notify` · `rpc:host` |
 | calc.demo（外部） | `stdio-line`(经 `ctx.sidecar`) · `rpc:host` · `win:manage` |
 | probe.demo（外部） | 上述全部（除 pty / stdio） |
 | 宿主内核（lifecycle/external） | `plugin_register` · `plugin_scan` · `plugin_read_entry` |

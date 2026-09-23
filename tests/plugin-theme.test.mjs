@@ -250,7 +250,7 @@ test('theme: every shipped theme contribution is valid and complete', () => {
       label: `src/plugins/${n}.js`,
       manifest: extractManifest(read(`src/plugins/${n}.js`), n),
     })),
-    ...['examples/plugins/hello', 'examples/calc-plugin', 'examples/plugins/probe'].map((dir) => ({
+    ...['examples/plugins/fileprobe', 'examples/plugins/msglog', 'examples/calc-plugin', 'examples/plugins/probe'].map((dir) => ({
       label: `${dir}/plugin.json`,
       manifest: JSON.parse(read(`${dir}/plugin.json`)),
     })),

@@ -277,7 +277,7 @@ The host (`src/host/pluginTheme.js`) turns that into one scoped rule per theme:
 :root[data-theme='light'] [data-plugin='x'] { --color-brand: #6d3fc4; }
 ```
 
-`examples/plugins/hello` uses it — that plugin is violet, and its `main.js` has no
+`examples/plugins/fileprobe` uses it — that plugin is green, and its `main.js` has no
 CSS in it at all. Five properties make this worth having rather than just letting
 a plugin ship a stylesheet:
 

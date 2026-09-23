@@ -41,7 +41,7 @@
     ├── __host__\data.json           ← 宿主自己的
     ├── builtin.notepad\data.json
     ├── builtin.floatwin\data.json
-    └── hello.demo\data.json
+    └── msglog.demo\data.json
 ```
 
 **还有第三个位置**（不在 appData，是缓存不是数据）：

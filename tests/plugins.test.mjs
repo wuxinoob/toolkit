@@ -23,25 +23,67 @@ import { readFileSync } from 'node:fs';
 import { register } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { readdirSync } from 'node:fs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 
 const BUILTIN = ['notepad', 'eyecare', 'procman', 'streamlab', 'floatwin'];
 const EXAMPLES = [
-  { id: 'hello.demo', dir: 'examples/plugins/hello' },
+  // The two live-check plugins. They are here because they exercise the parts
+  // of the surface nothing else does — native dialogs, OS drops, OS
+  // notifications, and the communication trace.
+  { id: 'fileprobe.demo', dir: 'examples/plugins/fileprobe' },
+  { id: 'msglog.demo', dir: 'examples/plugins/msglog' },
   { id: 'calc.demo', dir: 'examples/calc-plugin' },
   { id: 'probe.demo', dir: 'examples/plugins/probe' },
   { id: 'gallery.demo', dir: 'examples/plugins/gallery' },
+  // The widest example: five of its own windows, a shipped sidecar, and a
+  // main-window view — so it is the one most worth auditing statically.
+  { id: 'eyecare.demo', dir: 'examples/plugins/eyecare' },
 ];
 
 /** The permission vocabulary the host understands. */
+/**
+ * The permission vocabulary, DERIVED from the services rather than listed.
+ *
+ * It was a hand-written set, and it went stale the moment two services were
+ * added: `rpc:dialog` and `rpc:notify` were refused as "unknown permission",
+ * which is a confusing way to learn that the TEST is out of date. A list that
+ * mirrors another file will drift; read the other file.
+ *
+ * The authoritative source is each service's own `fn name()`, which is also
+ * what the gateway uses to build `rpc:<svc>`.
+ */
+function serviceNames() {
+  const dir = path.join(root, 'src-tauri/src/services');
+  const names = [];
+  for (const file of readdirSync(dir)) {
+    if (!file.endsWith('.rs')) continue;
+    const src = readFileSync(path.join(dir, file), 'utf8');
+    // Only a SERVICE has `actions()` — the stream providers (ticker, blob) also
+    // have a `name()` and would otherwise be mistaken for services, quietly
+    // widening the vocabulary and weakening this check.
+    if (!/fn\s+actions\(&self\)/.test(src)) continue;
+    // `fn name(&self) -> &'static str { "storage" }`
+    for (const m of src.matchAll(/fn\s+name\(&self\)\s*->\s*&'static str\s*\{\s*"([a-z_]+)"/g)) {
+      names.push(m[1]);
+    }
+  }
+  return names;
+}
+
 const KNOWN_PERMISSIONS = new Set([
-  'rpc:storage',
-  'rpc:host',
-  'rpc:proc',
-  'rpc:stream',
-  'rpc:bus',
-  'rpc:hotkey',
+  ...serviceNames().map((n) => `rpc:${n}`),
+
+  // Not service-backed, and cannot be derived — listed with the reason:
+  //
+  // `rpc:dialog` is a RAW command, not a gateway action. The gateway is
+  // synchronous (main thread) and a native modal dialog would deadlock there,
+  // so `plugin_dialog` is `async` and gates itself with the same
+  // `host::registry::is_allowed` call. See `plugin_dialog` in lib.rs.
+  'rpc:dialog',
+
+  // Window control is its own capability rather than a service.
   'win:manage',
 ]);
 

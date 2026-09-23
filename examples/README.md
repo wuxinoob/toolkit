@@ -12,18 +12,6 @@ a living integration check: every step runs inside `activate()`, so if any
 interface is broken the plugin shows up as `error` in the boot trace instead of
 `active` — no clicking needed.
 
-## `plugins/hello` — the minimal drop-in
-
-Storage, a settings form, a cross-window broadcast, and both stream codecs
-(`channel-json` and `channel-raw`) from one panel.
-
-Install: copy the folder to the app's plugins directory, then **Rescan plugins**
-in Settings.
-
-```
-%APPDATA%\com.tan18.toolbox\plugins\hello.demo\
-```
-
 ## `calc-plugin` — a native sidecar backend
 
 A window frontend plus a `calc.exe` backend that speaks the **same envelope** as
