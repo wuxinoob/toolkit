@@ -199,3 +199,35 @@ test('the docs do not claim focusView can summon a window', () => {
   assert.match(recipes, /窗口型/, 'recipes.md must cover the window-based shape');
   assert.match(recipes, /raise/, 'and name the op that works for it');
 });
+
+test('the docs do not show a label the host would reject', () => {
+  // The window section's example used `'my-win'`, which the host now refuses
+  // outright — so the doc was teaching a pattern that throws. The one remaining
+  // occurrence is inside a block that SHOWS the rejection, which is the point
+  // of that block, so the check is on the url form a reader would copy.
+  const api = readFileSync(new URL('../docs/plugin-dev/api.md', import.meta.url), 'utf8');
+  assert.doesNotMatch(
+    api,
+    /label=my-win/,
+    'a copyable url must not carry a label the host rejects',
+  );
+  // And the op that makes a window actually come forward has to be documented.
+  assert.match(api, /raise/, 'api.md must document the raise op');
+  assert.match(api, /创建后能改的/, 'and list the runtime ops');
+});
+
+test('the docs do not show a label the host would reject', () => {
+  // The window section's example used `'my-win'`, which the host now refuses
+  // outright — so the doc was teaching a pattern that throws. The one remaining
+  // occurrence is inside a block that SHOWS the rejection, which is the point
+  // of that block, so the check is on the url form a reader would copy.
+  const api = readFileSync(new URL('../docs/plugin-dev/api.md', import.meta.url), 'utf8');
+  assert.doesNotMatch(
+    api,
+    /label=my-win/,
+    'a copyable url must not carry a label the host rejects',
+  );
+  // And the op that makes a window actually come forward has to be documented.
+  assert.match(api, /raise/, 'api.md must document the raise op');
+  assert.match(api, /创建后能改的/, 'and list the runtime ops');
+});

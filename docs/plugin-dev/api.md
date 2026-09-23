@@ -575,21 +575,69 @@ ctx.registerView('main', (root) => {
 ## 我要开一个窗口
 
 ```js
-const how = await ctx.windows.create('my-win', {
-  url: 'index.html?mode=pluginwin&plugin=my.plugin&label=my-win',
+// label 必须以 plugin- 开头 —— 见下面的约束 1
+const LABEL = `plugin-${ctx.id.replace(/[^a-zA-Z0-9_-]/g, '-')}-main`;
+
+const how = await ctx.windows.create(LABEL, {
+  url: `index.html?mode=pluginwin&plugin=${encodeURIComponent(ctx.id)}&label=${LABEL}`,
   title: 'My Window', width: 400, height: 300,
   decorations: false,        // 自绘标题栏
   transparent: true, alwaysOnTop: true, skipTaskbar: true,
 });
 // → 'created' | 'exists'
 
-await ctx.windows.control('my-win', 'size', { width: 500, height: 400 });
-await ctx.windows.control('my-win', 'alwaysOnTop', true);
-await ctx.windows.exists('my-win');
+await ctx.windows.control(LABEL, 'size', { width: 500, height: 400 });
+await ctx.windows.control(LABEL, 'alwaysOnTop', true);
+await ctx.windows.control(LABEL, 'raise', true);      // 呼出：unminimize → show → focus
+await ctx.windows.exists(LABEL);
 ctx.windows.onCloseRequested(async () => { /* 清理 */ });
 ```
 
 **权限**：`win:manage`。
+
+### 能操纵哪些属性 —— 两张表
+
+**创建时能设的（18 个，白名单，传别的会被拒绝并报名字）：**
+
+| | | |
+|---|---|---|
+| `url` | `title` | `width` / `height` |
+| `x` / `y` | `center` | `transparent` |
+| `decorations` | `shadow` | `alwaysOnTop` |
+| `skipTaskbar` | `resizable` | `maximizable` |
+| `minimizable` | `closable` | `focus` |
+| `visible` | | |
+
+**创建后能改的（`control(label, op, value)`，12 个）：**
+
+| op | value | 说明 |
+|---|---|---|
+| `size` | `{width, height}` | |
+| `position` | `{x, y}` | |
+| `clickThrough` | `bool` | 鼠标穿透 |
+| `alwaysOnTop` | `bool` | |
+| `skipTaskbar` | `bool` | |
+| `show` / `hide` | — | |
+| `focus` | — | **只聚焦，不还原最小化** |
+| `unminimize` | — | |
+| `isMinimized` | — | 返回 bool |
+| **`raise`** | — | **`unminimize → show → focus`**，呼出用这个 |
+| `close` | — | |
+
+> **`raise` 而不是 `focus`。** Windows 上对**最小化**的窗口 `setFocus` **不还原它** ——
+> 热键按下去什么都没发生，而每个调用都返回 Ok。**静默失败**，所以宿主把它做成一个 op。
+
+**改不了的**（只在创建时有效）：`title`、`decorations`、`transparent`、`shadow`、
+`resizable`、`maximizable`、`minimizable`、`closable`、`center`、`url`。
+**改标题请重开窗口**，或者把标题画在自绘标题栏里（`decorations: false` 时本来就得自己画）。
+
+### 插件窗口**不能操纵自己**
+
+`control` 需要 `win:manage`，而那个权限只在**主窗口**的 capability 里。
+插件窗口（`plugin-*`）的 `bridge` 只有 `drag()` 和 `close()`。
+
+**所以窗口属性的一切操作都要从主窗口那一侧做**（也就是 `activate(ctx)` 里拿到的 `ctx`）。
+窗口里想改自己的大小？**通过 `bridge.bus.publish` 请主窗口代劳。**
 
 **三个约束，前两个宿主会直接拒绝，第三个要你自己注意**：
 
