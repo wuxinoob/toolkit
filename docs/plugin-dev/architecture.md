@@ -123,6 +123,91 @@ JS 侧只有接收回调、**没有 `send`**。所以别去找「从 JS 推给 R
 
 ---
 
+---
+
+## 观测层：出问题时你能看到什么
+
+前面五层是**功能**。这一层是**可见性** —— 它不属于任何一层，
+但少了它，前面五层出问题时你只能读代码猜。
+
+**四个观测点，按「从外到内」排**：
+
+| | 看什么 | 在哪 |
+|---|---|---|
+| **① 启动日志** | 每个插件的状态、分阶段与**分插件**耗时 | `%APPDATA%\com.tan18.toolbox\debug.log` |
+| **② 通信 trace** | 网关层的每一笔往来，**含权限拒绝** | 同一个文件，`hub.setTrace(true)` 打开 |
+| **③ 调试句柄** | 运行时的 store / 事件 / 会话 / 流 | `window.__toolbox`（DevTools 控制台） |
+| **④ 自检** | 15 项底层契约 | `await window.__toolbox.selftest()` |
+
+### ① 启动日志
+
+```
+boot timing (ms): debug 42 | reap 58 | schemes 60 | builtins 1722 | external 1891 | hotkey 1899
+  plugin load (ms): builtin.notepad 2163 | builtin.eyecare 34 | …
+boot ok: 9 plugins, 9 views, active=builtin.notepad/notepad
+  plugin my.plugin: error — [plugin:my.plugin] view "main" not declared in manifest.contributes.views
+```
+
+**`error — <原因>` 就是答案**，不用猜。而 `plugin load` 那一行是分插件的 ——
+**`bootPlugins` 是串行 await**，所以一个插件慢会拖住后面所有插件的视图。
+
+### ② 通信 trace
+
+```js
+window.__toolbox.hub.setTrace(true)                 // 本会话
+localStorage.setItem('toolbox.traceRpc', '1')       // 持久
+```
+
+```
+rpc -> my.plugin host/info 3ms ok
+rpc -> my.plugin proc/spawn 1ms err: plugin `my.plugin` lacks permission `rpc:proc`
+```
+
+**这是唯一能看到「你没写的那些调用」的地方。** 各插件自己 `ctx.log` 的行只反映它
+**想**写什么；trace 反映**实际发生**了什么。
+
+> ⚠️ **第一列是「调用方自称的身份」，不是宿主核实的身份。**
+> 这个区别本身是个已知问题 —— 见 [COMMS-AUDIT](../../COMMS-AUDIT-2026-09-23.md)。
+> trace 刻意把它印在最前面，因为**一个 `__host__` 出现在插件的调用里就是那个形状**。
+
+### ③ 调试句柄
+
+```js
+window.__toolbox.store       // 插件表、视图表、booted
+window.__toolbox.events      // 窗口内事件
+window.__toolbox.sessions()  // 活会话
+window.__toolbox.openStreams()
+window.__toolbox.hub         // ⚠️ 见下
+```
+
+**`__toolbox.hub` 是特权入口** —— 它能以任何身份调网关。
+开发时它是最好用的东西；但**它同时是当前权限模型的一个漏洞**
+（见上面的审计），所以别把依赖它的东西写进插件。
+
+### ④ 自检
+
+`await window.__toolbox.selftest()` —— 15 项，覆盖信封契约、编解码、权限闸、
+存储、流、pty、会话表、视图注册、sidecar。**改动底层后先跑它**，
+它比你的功能测试更早知道哪里断了。
+
+**它覆盖不到什么**：需要**真人**的东西 —— 原生对话框、系统拖放、OS 通知。
+那部分用 [`examples/plugins/fileprobe/`](../../examples/plugins/fileprobe/)。
+
+### 把检查放进 `activate()`，让它自己报错
+
+**最值得抄的一个模式**：接口检查放 `activate()` 里，失败就抛。
+启动日志里那个插件会是 `error` 而不是 `active` —— **不用点任何东西**。
+
+```js
+export async function activate(ctx) {
+  if (typeof ctx.files?.pick !== 'function') throw new Error('ctx.files missing');
+  // …
+}
+```
+
+`examples/plugins/probe/` 就是这么做的：一次跑完 11 项接口检查。
+**插件最容易坏的地方是「宿主接口悄悄变了」，而它只在插件真被打开时才暴露。**
+
 ## 边界速查
 
 | 你想要的 | 走哪一层 | 要权限吗 |

@@ -18,6 +18,7 @@
 pub mod bus;
 pub mod external;
 pub mod hotkey;
+pub mod notify;
 pub mod proc;
 pub mod session;
 pub mod storage;
@@ -133,6 +134,7 @@ pub fn table() -> &'static [Box<dyn Service>] {
             Box::new(stream::StreamService),
             Box::new(bus::BusService),
             Box::new(hotkey::HotkeyService),
+            Box::new(notify::NotifyService),
         ]
     })
 }

@@ -16,6 +16,7 @@
     ]
   },
   "permissions": [
-    "rpc:dialog"
+    "rpc:dialog",
+    "rpc:notify"
   ]
 }

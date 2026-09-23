@@ -335,6 +335,11 @@ pub fn run() {
         // cannot import `@tauri-apps/plugin-dialog`, so the only way to a dialog
         // is through `plugin_dialog`, which gates on `rpc:dialog`.
         .plugin(tauri_plugin_dialog::init())
+        // Rust API only, like the dialog plugin: a plugin cannot import the JS
+        // package, so `notify` is reachable solely through the gateway service,
+        // which gates on `rpc:notify`. Its own JS commands stay un-permissioned
+        // in the capability files, so the direct path is ACL-denied.
+        .plugin(tauri_plugin_notification::init())
         // LaunchAgent is the macOS mechanism; on Windows the plugin writes the
         // HKCU Run entry. No extra args: we want the app started plainly, and
         // the main window is what the user asked to see.

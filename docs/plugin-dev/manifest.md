@@ -134,6 +134,7 @@
 | `rpc:hotkey` | 注册**非声明式**的热键 | 动态热键 |
 | `win:manage` | 开 / 控制窗口 | 独立窗口、悬浮窗 |
 | `rpc:dialog` | 开原生选择器 / 保存框 / 消息框 | `ctx.files.pick` |
+| `rpc:notify` | 发**系统级**通知（Windows 操作中心） | `ctx.ui.notifyOS` |
 
 **不需要权限的**（「观察」侧）：
 

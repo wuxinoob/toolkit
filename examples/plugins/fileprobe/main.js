@@ -66,6 +66,7 @@ export async function activate(ctx) {
     'ctx.files.save': typeof ctx.files?.save === 'function',
     'ctx.files.message': typeof ctx.files?.message === 'function',
     'ctx.onDrop': typeof ctx.onDrop === 'function',
+    'ctx.ui.notifyOS': typeof ctx.ui?.notifyOS === 'function',
   };
   for (const [name, ok] of Object.entries(surface)) {
     note(ok ? 'ok' : 'bad', `${name} ${ok ? 'present' : 'MISSING'}`);
@@ -138,6 +139,7 @@ function render(root) {
         button(el, 'Pick a folder', () => pick({ folder: true })),
         button(el, 'Save as…', save),
         button(el, 'Message box', message),
+        button(el, 'OS notification', notifyOS),
       ),
 
       el(
@@ -243,6 +245,27 @@ async function save() {
     note(path ? 'ok' : 'warn', path ? `save returned ${path}` : 'save cancelled (null)');
   } catch (e) {
     note('bad', `save threw: ${e?.message ?? e}`);
+  }
+  rerender();
+}
+
+/**
+ * The out-of-band one: a Windows action-centre toast, which shows even when the
+ * app is behind something else — the case `ctx.ui.notify` (the in-app toast)
+ * cannot serve at all, because a toast only exists inside a window.
+ *
+ * `ctx.ui.notifyOS` resolves `false` rather than throwing when the OS refuses,
+ * so a missing notification never breaks the caller.
+ */
+async function notifyOS() {
+  note('info', 'ctx.ui.notifyOS(…) …');
+  try {
+    const sent = await state.ctx.ui.notifyOS('If you can see this in the Windows action centre, it works.', {
+      title: 'File Probe',
+    });
+    note(sent ? 'ok' : 'warn', sent ? 'OS notification sent' : 'OS notification refused (permission?)');
+  } catch (e) {
+    note('bad', `notifyOS threw: ${e?.message ?? e}`);
   }
   rerender();
 }

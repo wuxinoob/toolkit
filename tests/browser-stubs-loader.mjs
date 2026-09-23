@@ -28,6 +28,17 @@
  *
  * Registered from a test via `register('./browser-stubs-loader.mjs', import.meta.url)`
  * before anything is dynamically imported.
+ *
+ * ## Why `@tauri-apps/api/core` is NOT stubbed here
+ *
+ * It was, briefly, and it broke the boot test. The reason is worth keeping:
+ * `boot.test.mjs` installs `window.__TAURI_INTERNALS__.invoke` and records the
+ * calls, which works precisely BECAUSE the real `@tauri-apps/api/core` is still
+ * in play — it is a thin wrapper over that global. Stubbing the module replaces
+ * the wrapper and quietly disconnects the recorder.
+ *
+ * So to control host calls, shim `window.__TAURI_INTERNALS__` in the test, not
+ * this module. Same trick, and it keeps the layer under test real.
  */
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';

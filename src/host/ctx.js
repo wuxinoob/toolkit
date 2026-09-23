@@ -349,7 +349,44 @@ export function buildCtx(plugin, disposer) {
     },
 
     ui: {
+      /**
+       * The in-app toast. Right for "saved" — the user is looking at the app.
+       *
+       * For anything they might need while the window is behind something else,
+       * use `notifyOS` instead (or as well). A toast only exists inside a
+       * window; an OS notification does not.
+       */
       notify: (message, type = 'info') => toast(`${manifest.name}: ${message}`, type),
+
+      /**
+       * An OS notification — the Windows action centre, macOS Notification
+       * Center, a Linux daemon. **Permission: `rpc:notify`.**
+       *
+       * ```js
+       * await ctx.ui.notifyOS('Build finished', { title: 'procman' });
+       * ```
+       *
+       * Goes through `ctx.rpc`, so it is validated, permission-gated and shows
+       * up in the communication trace like every other call.
+       *
+       * `title` defaults to the plugin's name: an OS notification is
+       * out-of-band, and the user has no other way to tell which plugin raised
+       * it.
+       *
+       * Resolves `false` when it could not be sent (permission off, OS
+       * notifications disabled) instead of throwing — a missing notification
+       * must not break whatever the plugin was doing.
+       */
+      notifyOS: (body, options = {}) =>
+        ctx
+          .rpc('notify', 'send', { title: options.title ?? manifest.name, body })
+          .then((res) => !!res?.sent)
+          .catch((e) => {
+            // Not fatal, but never silent: a notification that quietly does
+            // nothing is the kind of bug nobody reports.
+            console.warn(prefix, 'OS notification failed:', e?.message ?? e);
+            return false;
+          }),
       mountOverlay: (el) => {
         if (!store.overlayEl) {
           console.warn(prefix, 'overlay not ready');
