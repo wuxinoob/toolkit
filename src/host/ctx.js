@@ -527,6 +527,30 @@ export function buildCtx(plugin, disposer) {
             case 'show': return win.show();
             case 'hide': return win.hide();
             case 'focus': return win.setFocus();
+            case 'unminimize': return win.unminimize();
+            case 'isMinimized': return win.isMinimized();
+
+            /**
+             * Bring a window to the front — the three calls a "summon" needs,
+             * in the order that actually works.
+             *
+             * `focus` alone is not enough, and the failure is silent: on Windows
+             * `setFocus` on a MINIMISED window does not restore it, so a hotkey
+             * meant to summon the window does nothing visible, and the plugin
+             * looks broken while every call returned Ok. `unminimize` first, then
+             * `show`, then `focus`.
+             *
+             * Worth having as ONE op rather than three the caller sequences:
+             * getting the order wrong is easy, and the symptom is "nothing
+             * happens" rather than an error.
+             */
+            case 'raise': {
+              // Best-effort: a window that is not minimised rejects this on some
+              // platforms, and that is not a failure worth propagating.
+              await win.unminimize().catch(() => {});
+              await win.show().catch(() => {});
+              return win.setFocus();
+            }
             case 'close': return win.close();
             default: throw new Error(`${prefix} unknown window op "${op}"`);
           }

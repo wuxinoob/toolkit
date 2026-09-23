@@ -146,3 +146,56 @@ test('the dialog command is async, because the gateway is sync', () => {
   );
   assert.match(lib, /host::registry::is_allowed\(&plugin_id, "rpc:dialog"\)\?/);
 });
+
+/* ---------------------------------------------------------------------------
+ * Bringing a plugin's own WINDOW to the front.
+ *
+ * Reported by the author of a plugin whose real UI lives in a separate window:
+ * a hotkey bound to `ctx.focusView` switched a main-window view and left the
+ * window where it was. `focusView` is about VIEWS; windows need `raise`.
+ * ------------------------------------------------------------------------- */
+
+test('windows.control: raise does unminimize -> show -> focus, in that order', () => {
+  // Order is the whole point. On Windows, setFocus on a MINIMISED window does
+  // not restore it, so a summon that only focuses does nothing visible while
+  // every call returns Ok — a silent failure, which is why this is one op
+  // instead of three the caller sequences.
+  const src = readFileSync(new URL('../src/host/ctx.js', import.meta.url), 'utf8');
+  // Fixed-length slice, not up to the first '}': the body contains arrow
+  // function bodies () whose braces close long before the case does.
+  const start = src.indexOf("case 'raise':");
+  assert.ok(start > 0, 'no raise op found');
+  const body = src.slice(start, start + 400);
+
+  const un = body.indexOf('unminimize');
+  const show = body.indexOf('win.show()');
+  const focus = body.indexOf('setFocus');
+  assert.ok(un >= 0 && show >= 0 && focus >= 0, 'raise must do all three');
+  assert.ok(un < show && show < focus, 'and in the order unminimize, show, focus');
+});
+
+test('the main window is ALLOWED to unminimize', () => {
+  // The method existed in Tauri but the capability did not grant it, so the
+  // call would have been denied at the ACL — the kind of gap that only shows up
+  // at runtime, on the one path nobody tests.
+  const cap = JSON.parse(
+    readFileSync(new URL('../src-tauri/capabilities/default.json', import.meta.url), 'utf8'),
+  );
+  assert.ok(
+    cap.permissions.includes('core:window:allow-unminimize'),
+    'the main window must be allowed to unminimize',
+  );
+  assert.ok(cap.permissions.includes('core:window:allow-is-minimized'));
+});
+
+test('the docs do not claim focusView can summon a window', () => {
+  // The original recipe called focusView "the complete implementation of
+  // summon-a-plugin". It is complete for VIEW-based plugins only, and that
+  // wording sent a window-based plugin author down a dead end.
+  const api = readFileSync(new URL('../docs/plugin-dev/api.md', import.meta.url), 'utf8');
+  const recipes = readFileSync(new URL('../docs/plugin-dev/recipes.md', import.meta.url), 'utf8');
+
+  assert.match(api, /不管窗口/, 'api.md must say focusView does not touch windows');
+  assert.match(recipes, /窗口型/, 'recipes.md must cover the window-based shape');
+  assert.match(recipes, /raise/, 'and name the op that works for it');
+});

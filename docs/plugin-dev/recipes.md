@@ -125,25 +125,55 @@ ctx.onHotkey('toggle', () => { /* … */ });
 
 ## 用热键把插件叫出来
 
-**这是「快捷键启动插件」的全部实现** —— 没有别的机制：
+**先分清你的插件是哪种形状** —— 两者的做法**不一样**，用错的那个会静默失败。
 
 ```json
 // plugin.json
 "hotkeys": [{ "key": "ctrl+alt+n", "action": "open" }]
 ```
 
+### A. 视图型（内容在主窗口里）
+
 ```js
 export async function activate(ctx) {
   ctx.registerView('main', render);
-  // 「有视图」和「能被叫出来」接上，就完成了
   ctx.onHotkey('open', () => ctx.focusView('main'));
 }
 ```
 
-- **`focusView` 只能切你自己的视图** —— 所以不需要权限
+`focusView` 切的是**主窗口里的视图**，不需要权限。
+
+### B. 窗口型（内容在自己的独立窗口里）
+
+**`focusView` 对这种情况无效** —— 它管不到窗口。
+
+```js
+const LABEL = `plugin-${ctx.id.replace(/[^a-zA-Z0-9_-]/g, '-')}-main`;
+
+export async function activate(ctx) {
+  ctx.registerView('settings', renderSettings);   // 主窗口只放设置
+  ctx.onHotkey('open', async () => {
+    // 窗口可能已经关了 —— create 在已存在时是 no-op
+    await ctx.windows.create(LABEL, {
+      url: `index.html?mode=pluginwin&plugin=${encodeURIComponent(ctx.id)}&label=${LABEL}`,
+      title: '便签', width: 420, height: 560, center: true,
+    });
+    // 「呼出」用 raise，不是 focus
+    await ctx.windows.control(LABEL, 'raise', true);
+  });
+}
+```
+
+- **`raise` = `unminimize` → `show` → `focus`**，按能工作的顺序
+- **只调 `focus` 不够**：Windows 上对**最小化**的窗口 `setFocus` **不还原它**，
+  热键按下去什么都没发生，而每个调用都返回 Ok —— **静默失败**
+- 需要 `win:manage`
+
+### 两种形状共同的注意事项
+
 - **装上去默认是关的**，用户要在 Settings → Hotkeys 里打开（见上一节）
 - **读不到 `store.activeViewId`**，所以做不出「再按一次切走」；
-  热键只能「总是切过去」。行为可预测，也够用
+  热键只能「总是叫出来」。行为可预测，也够用
 
 ## 用热键把插件叫出来
 

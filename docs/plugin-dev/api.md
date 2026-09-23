@@ -254,6 +254,30 @@ ctx.onHotkey('open', () => ctx.focusView('main'));
 所以「已经在前台就切走」这种开关行为写不出来。热键只能「总是切过去」——
 行为可预测，也够用。
 
+### ⚠️ `focusView` **不管窗口** —— 它只切主窗口里的视图
+
+**你的插件如果是「主窗口放设置面板 + 独立窗口放真正的界面」，`focusView` 叫不出那个窗口。**
+
+```js
+// ❌ 独立窗口的插件这样做没用 —— 只是切了主窗口的视图
+ctx.onHotkey('open', () => ctx.focusView('settings'));
+
+// ✅ 窗口要自己叫出来
+ctx.onHotkey('open', async () => {
+  await ctx.windows.create(label, opts);   // 已存在时是 no-op（会 show + focus）
+  await ctx.windows.control(label, 'raise', true);
+});
+```
+
+**`raise` 是「呼出」的正确原语** —— 它按能工作的顺序做三件事：
+`unminimize` → `show` → `focus`。
+
+**为什么不能只调 `focus`**：Windows 上对**最小化**的窗口 `setFocus` **不会还原它** ——
+热键按下去什么都没发生，而每个调用都返回 Ok。**这种失败是静默的**，
+所以把它做成一个 op，而不是让每个插件自己排顺序。
+
+需要 `win:manage`。
+
 ## 我要用热键把插件「叫出来」
 
 ```json
