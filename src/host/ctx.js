@@ -325,6 +325,68 @@ export function buildCtx(plugin, disposer) {
     },
 
     /**
+     * Bring one of YOUR views to the front.
+     *
+     * This is what makes "a hotkey opens my plugin" work:
+     *
+     * ```js
+     * ctx.onHotkey('open', () => ctx.focusView('main'));
+     * ```
+     *
+     * **Only your own views.** Focusing someone else's is not a thing you can
+     * express here, which is what keeps this from being a way to hijack the UI.
+     *
+     * **No permission.** The action is the plugin's own view becoming visible —
+     * something the user sees and can undo with one click on the sidebar. The
+     * case worth worrying about is a plugin focusing itself at boot to grab
+     * attention, and the answer to that is not a permission: it is that a
+     * hotkey has to be enabled by the user before it can fire at all
+     * (see `contributes.hotkeys`), so the consented path is the normal one.
+     */
+    focusView: (viewId) => {
+      const full = `${id}/${viewId}`;
+      const own = store.views.some((v) => v.viewId === full);
+      if (!own) {
+        // Refuse rather than silently doing nothing: a typo here would look
+        // like "the hotkey stopped working".
+        throw new Error(`${prefix} focusView("${viewId}") — no such view of yours`);
+      }
+      store.activeViewId = full;
+      return full;
+    },
+
+    /**
+     * Bring one of YOUR views to the front.
+     *
+     * This is what makes "a hotkey opens my plugin" work:
+     *
+     * ```js
+     * ctx.onHotkey('open', () => ctx.focusView('main'));
+     * ```
+     *
+     * **Only your own views.** Focusing someone else's is not a thing you can
+     * express here, which is what keeps this from being a way to hijack the UI.
+     *
+     * **No permission.** The action is the plugin's own view becoming visible —
+     * something the user sees and can undo with one click on the sidebar. The
+     * case worth worrying about is a plugin focusing itself at boot to grab
+     * attention, and the answer to that is not a permission: it is that a
+     * hotkey has to be enabled by the user before it can fire at all
+     * (see `contributes.hotkeys`), so the consented path is the normal one.
+     */
+    focusView: (viewId) => {
+      const full = `${id}/${viewId}`;
+      const own = store.views.some((v) => v.viewId === full);
+      if (!own) {
+        // Refuse rather than silently doing nothing: a typo here would look
+        // like "the hotkey stopped working".
+        throw new Error(`${prefix} focusView("${viewId}") — no such view of yours`);
+      }
+      store.activeViewId = full;
+      return full;
+    },
+
+    /**
      * Files dropped onto the window, while one of YOUR views is showing.
      *
      * `fn(paths, info)` — `info` is `{ viewId }`.

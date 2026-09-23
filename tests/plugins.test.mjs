@@ -1004,3 +1004,23 @@ test('plugins: no plugin hard-codes a transport command instead of a scheme', ()
   }
   assert.deepEqual(offenders, [], `plugins must go through the hub:\n  ${offenders.join('\n  ')}`);
 });
+
+test('layout: each view gets its OWN container, so a stale redraw cannot leak', () => {
+  // A plugin that redraws on its own schedule (a log panel appending a line)
+  // keeps a reference to the element it was handed. With a SHARED container
+  // that reference stays live after the user switches away, so the next redraw
+  // writes into the container now owned by a different plugin — the view the
+  // user is looking at gets replaced by the one they left, which reads as
+  // "the app jumped back to that page".
+  //
+  // The fix is a keyed element: Vue discards the old node, so a stale reference
+  // points at something detached and the write is invisible. No plugin has to
+  // know it was unmounted, which matters because there is no such notification.
+  const src = read('src/components/ViewHost.vue');
+  assert.match(src, /:key="viewId"/, 'the container must be keyed by viewId');
+  assert.match(
+    src,
+    /await nextTick\(\)/,
+    'and the watcher must wait for the swap before rendering into the new element',
+  );
+});

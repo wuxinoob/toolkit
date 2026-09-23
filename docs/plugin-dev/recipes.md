@@ -123,6 +123,50 @@ ctx.onHotkey('toggle', () => { /* … */ });
 
 参考 `examples/plugins/probe/`（它用 `hotkey/list` 验证注册结果）。
 
+## 用热键把插件叫出来
+
+**这是「快捷键启动插件」的全部实现** —— 没有别的机制：
+
+```json
+// plugin.json
+"hotkeys": [{ "key": "ctrl+alt+n", "action": "open" }]
+```
+
+```js
+export async function activate(ctx) {
+  ctx.registerView('main', render);
+  // 「有视图」和「能被叫出来」接上，就完成了
+  ctx.onHotkey('open', () => ctx.focusView('main'));
+}
+```
+
+- **`focusView` 只能切你自己的视图** —— 所以不需要权限
+- **装上去默认是关的**，用户要在 Settings → Hotkeys 里打开（见上一节）
+- **读不到 `store.activeViewId`**，所以做不出「再按一次切走」；
+  热键只能「总是切过去」。行为可预测，也够用
+
+## 用热键把插件叫出来
+
+**这是「快捷键启动插件」的全部实现** —— 没有别的机制：
+
+```json
+// plugin.json
+"hotkeys": [{ "key": "ctrl+alt+n", "action": "open" }]
+```
+
+```js
+export async function activate(ctx) {
+  ctx.registerView('main', render);
+  // 「有视图」和「能被叫出来」接上，就完成了
+  ctx.onHotkey('open', () => ctx.focusView('main'));
+}
+```
+
+- **`focusView` 只能切你自己的视图** —— 所以不需要权限
+- **装上去默认是关的**，用户要在 Settings → Hotkeys 里打开（见上一节）
+- **读不到 `store.activeViewId`**，所以做不出「再按一次切走」；
+  热键只能「总是切过去」。行为可预测，也够用
+
 ## 定时 + 自启 + 崩溃重启
 
 ```js

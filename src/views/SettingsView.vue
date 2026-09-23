@@ -208,6 +208,72 @@ const declaredHotkeys = computed(() => {
 /** Per-row busy flag, so one slow registration does not disable every row. */
 const hotkeyBusy = ref('');
 
+/** The row currently capturing a keystroke, or ''. */
+const capturing = ref('');
+
+/**
+ * Turn a keydown into a Tauri `Shortcut` string, or null if it is not one yet.
+ *
+ * Modifier-only presses return null: the user is on the way to a combination,
+ * and committing "ctrl" the moment they press it would make the field useless.
+ * The combination is committed on the first NON-modifier key.
+ *
+ * Key names follow Tauri's `Code` enum (`ArrowUp`, `Space`, `Enter`, `F1`…),
+ * which is what `parse_shortcut` on the Rust side accepts.
+ */
+function comboFrom(e) {
+  if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return null;
+
+  const parts = [];
+  if (e.ctrlKey) parts.push('ctrl');
+  if (e.altKey) parts.push('alt');
+  if (e.shiftKey) parts.push('shift');
+  if (e.metaKey) parts.push('super');
+
+  // A printable key arrives as the character; everything else as its code name.
+  let key = e.key;
+  if (key === ' ') key = 'Space';
+  else if (key.length === 1) key = key.toLowerCase();
+
+  parts.push(key);
+  return parts.join('+');
+}
+
+/**
+ * Handle a keystroke while the field is capturing.
+ *
+ * Escape leaves WITHOUT changing anything — the way out of a capture you did not
+ * mean to start. Backspace/Delete clears the binding, which is how a user gets
+ * rid of one they cannot press any more.
+ *
+ * **A caveat worth knowing**: a key that is already registered as a GLOBAL
+ * hotkey will still fire at the OS level while you are capturing it — the
+ * webview never sees that event, so nothing here can prevent it. Rebind the
+ * offending hotkey from a field that does not use that key, or disable it
+ * first.
+ */
+function onCaptureKey(row, event) {
+  if (event.key === 'Escape') {
+    capturing.value = '';
+    event.target.blur();
+    return;
+  }
+  if (event.key === 'Backspace' || event.key === 'Delete') {
+    event.preventDefault();
+    capturing.value = '';
+    applyHotkey(row, { key: '' });
+    return;
+  }
+
+  const combo = comboFrom(event);
+  if (!combo) return; // still assembling modifiers
+
+  event.preventDefault();
+  capturing.value = '';
+  event.target.blur();
+  applyHotkey(row, { key: combo });
+}
+
 /**
  * Apply a change and show what ACTUALLY happened.
  *
@@ -226,13 +292,6 @@ async function applyHotkey(row, { key = null, enabled = null }) {
   } finally {
     hotkeyBusy.value = '';
   }
-}
-
-/** Commit a typed key on blur or Enter — not on every keystroke. */
-function commitKey(row, event) {
-  const next = String(event.target.value ?? '').trim();
-  if (!next || next === row.key) return;
-  applyHotkey(row, { key: next });
 }
 
 /**
@@ -343,14 +402,24 @@ onMounted(loadAutostart);
             <div class="truncate text-sm">{{ row.action }}</div>
             <div class="truncate text-xs text-muted-foreground">{{ row.pluginName }}</div>
           </div>
+          <!--
+            Click to capture. Typing a combination binds it; Escape leaves it
+            alone. `readonly` while capturing so the browser cannot insert the
+            characters into the field — the value shown is the binding, not what
+            was typed.
+          -->
           <input
             class="tb-input tb-mono w-[190px] text-xs"
-            :value="row.key"
+            :class="capturing === row.composite ? 'ring-2 ring-primary/40' : ''"
+            :value="capturing === row.composite ? '' : row.key"
+            :placeholder="capturing === row.composite ? 'press a combination…' : 'click to set'"
+            :readonly="capturing === row.composite"
             :disabled="hotkeyBusy === row.composite"
             spellcheck="false"
-            placeholder="ctrl+alt+k"
-            @blur="commitKey(row, $event)"
-            @keydown.enter="commitKey(row, $event)"
+            autocomplete="off"
+            @focus="capturing = row.composite"
+            @blur="capturing = ''"
+            @keydown="onCaptureKey(row, $event)"
           />
           <span v-if="row.error" class="w-full text-xs text-destructive">Not registered: {{ row.error }}</span>
         </div>
