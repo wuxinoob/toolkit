@@ -29,7 +29,7 @@
 - **示例部署用 `npm run deploy:examples`**；手工 `cp -r` 已两次导致"应用里跑的还是旧插件"。
 - **`git restore <path>` 按索引恢复，会连工作区里未提交的修改一起回滚**（本项目有多个并发会话在动同一仓库 → 动它之前先确认别处没在改）。反过来，恢复被误删的文件时它是**纯增量**的，不会覆盖已存在的东西。
 - **`git add <已删除的路径>` 会整条失败**（git 先校验全部 pathspec）→ 已暂存的删除不要再 add。
-- **`?mode=` 不是 `pluginwin` 时会 boot 完整宿主**（插件窗口传裸 `index.html` 会重复注册热键/定时器/自检）—— **尚未修的洞**，见 `2026-09-24.md`。
+- **窗口分发改按窗口 label，不按 URL 参数**：只有 label 是 `main` 的窗口 boot 宿主，其余走 `pluginwin-host.js`。**不要再写成 `if (mode === 'pluginwin') … else <boot 宿主>`** —— 那个 `else` 会让插件窗口跑起第二个完整宿主（重复注册热键、每个插件再激活一次、procman 再 auto-start 真实进程）。URL 校验也要求 `index.html?…&mode=pluginwin`（两个条件：入口页 + mode）。守卫在 `tests/window-options.test.mjs`。
 
 ## 验证命令
 
