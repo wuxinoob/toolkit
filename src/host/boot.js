@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
-import { store, saveSettings, toast } from './store.js';
+import { store, saveSettings, toast, closeToTray } from './store.js';
 import { bootPlugins } from './lifecycle.js';
 import { builtinSources } from './registry.js';
 import { scanExternalPlugins } from './external.js';
@@ -77,6 +77,40 @@ function subscribeSummon() {
       win.setFocus().catch(() => {});
     })
     .catch((e) => console.error('[boot] summon subscription failed', e));
+}
+
+/**
+ * Closing the main window HIDES it.
+ *
+ * The app has a tray icon, and the tray menu's "退出" is the real exit — so the
+ * ✕ puts the window away instead of ending the session. The tray is therefore
+ * load-bearing: the Rust side treats a tray that will not build as fatal, because
+ * an app that hides on close with no tray cannot be quit from its own UI.
+ *
+ * Registered by the HOST rather than by a plugin, because it has to happen
+ * whether or not any plugin is listening. A plugin may still register its own
+ * handler through `ctx.windows.onCloseRequested`, and `ctx.js` deliberately does
+ * NOT call it while this is in effect — the window did not close, so telling a
+ * plugin "the app is going away" would make it tear down windows it should have
+ * kept, and there is no signal on the way back to rebuild them.
+ *
+ * `preventDefault()` is what stops Tauri destroying the window; `hide()` is what
+ * the user sees. If this never installs — a frontend that failed to load — the ✕
+ * behaves normally and the app quits, which is the safe direction to fail in.
+ */
+function installCloseToTray() {
+  if (!closeToTray()) return;
+  try {
+    getCurrentWindow()
+      .onCloseRequested(async (event) => {
+        event.preventDefault();
+        await getCurrentWindow().hide();
+      })
+      .catch((e) => console.error('[boot] could not install close-to-tray', e));
+  } catch (e) {
+    // No Tauri (node --test, a plain browser): there is no window to close.
+    console.info('[boot] close-to-tray not installed', e?.message ?? e);
+  }
 }
 
 /**
@@ -198,6 +232,7 @@ export async function boot() {
     mark('external');
 
     subscribeSummon();
+    installCloseToTray();
     await applySummonShortcut();
     mark('hotkey');
 

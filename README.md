@@ -42,18 +42,33 @@ Rust side:
 
 ```bash
 cd src-tauri
-cargo test            # 39 tests: protocol, codecs, services, sessions, sidecar e2e
 cargo check --all-targets
-cargo run --example host-checks   # the same pure-logic assertions, no test harness
+cargo run --example host-checks   # 27 pure-logic assertions, no test harness
 ```
+
+`cargo test` does **not** work on Windows: `tauri-build` embeds the app manifest
+into bin targets only, so this crate's test binaries load without it and die at
+load with `STATUS_ENTRYPOINT_NOT_FOUND`. `host-checks` is the same assertions
+through a target that can actually load — see the note at the top of it.
 
 Dev builds run an in-app conformance suite (15 checks) at boot and write the
 report — plus the boot trace — to `{appData}/debug.log`, so a runtime problem is
 readable from outside the webview. Re-run it any time with
 `await window.__toolbox.selftest()` in the webview console.
 
-Last verified end to end: `15/15` in-app, 7 plugins and 7 views active,
-`cargo test` 39, `node --test` 60, zero code warnings.
+Last verified end to end: `node --test` 221, `host-checks` 27/27, build clean,
+zero code warnings.
+
+### Closing the window puts it in the tray
+
+The main window's ✕ **hides** it. The app keeps running, so a stray click does not
+tear down live sessions (a pty, a sidecar). Quit from the tray icon: right-click
+for **显示主窗口 / 退出 Toolbox**, or left-click to bring the window back.
+
+That makes the tray load-bearing, so a tray that will not build is a **fatal**
+startup error rather than a warning — an app that hides on close and has no tray
+cannot be quit from its own UI. To turn the behaviour off, set
+`store.settings.closeToTray = false` (it persists), and ✕ quits as before.
 
 ## Layout
 

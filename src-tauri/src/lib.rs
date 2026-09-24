@@ -377,6 +377,20 @@ fn require_main(window: &tauri::WebviewWindow) -> Result<(), String> {
     }
 }
 
+/// Bring the main window back — the same three steps, in the same order, that
+/// `ctx.windows.control(label, 'raise')` uses for a plugin window.
+///
+/// `unminimize` first, then `show`, then `set_focus`. The order is not
+/// decoration: on Windows `set_focus` on a MINIMISED window does not restore it,
+/// so the tray would look broken while every call returned Ok.
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Before the window exists: Ctrl+C must drain sessions too.
@@ -439,6 +453,53 @@ pub fn run() {
                     }
                 }
             });
+            // ---- system tray ----
+            //
+            // Closing the main window HIDES it (see `src/host/boot.js`), so the
+            // tray is both the way back and the only way to quit. That makes it
+            // load-bearing rather than a nicety, which is why a failure here is
+            // FATAL instead of a warning: an app that hides on close and has no
+            // tray cannot be quit from its own UI at all, and starting broken is
+            // worse than not starting.
+            let show = tauri::menu::MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
+            let quit = tauri::menu::MenuItem::with_id(app, "quit", "退出 Toolbox", true, None::<&str>)?;
+            let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
+            let menu = tauri::menu::Menu::with_items(app, &[&show, &separator, &quit])?;
+
+            let mut tray = tauri::tray::TrayIconBuilder::new()
+                .tooltip("Toolbox")
+                .menu(&menu)
+                // Left click brings the window back; the menu is on the RIGHT
+                // button, which is what a Windows user expects. Without this the
+                // menu would also open on left click and the window would never
+                // come forward.
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => show_main_window(app),
+                    // The ONE real exit path. `RunEvent::Exit` runs the session
+                    // drain (sidecars, streams and ptys alike), so quitting from
+                    // here is a graceful shutdown — not a process kill.
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main_window(tray.app_handle());
+                    }
+                });
+
+            // The icon comes from the bundle (`bundle.icon` in tauri.conf.json),
+            // so there is no second copy to keep in sync with it.
+            if let Some(icon) = app.default_window_icon() {
+                tray = tray.icon(icon.clone());
+            }
+            tray.build(app)?;
+
             Ok(())
         })
         .build(tauri::generate_context!())

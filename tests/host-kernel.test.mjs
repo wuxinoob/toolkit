@@ -56,7 +56,7 @@ const {
   setHotkey,
   Disposer,
 } = await import('../src/host/lifecycle.js');
-const { store } = await import('../src/host/store.js');
+const { store, closeToTray, saveSettings } = await import('../src/host/store.js');
 const { hub } = await import('../src/protocol/hub.js');
 const { descriptors } = await import('../src/protocol/registry.js');
 
@@ -626,4 +626,39 @@ test('hub: a plugin deactivation drops its subscriptions', async () => {
   hub.dropSubscriptions('drop.me');
   hub.publish('drop.me', 'topic', null, { scheme: 'in-process' });
   assert.equal(hits, 1, 'no delivery after dropSubscriptions');
+});
+
+/* --------------------------- close to tray ---------------------------------- */
+
+test('close-to-tray is on by default, and an explicit off wins', () => {
+  // The app has a tray icon and the tray menu is the only real exit, so this is
+  // not cosmetic: with it on and no tray, the app cannot be quit from its own UI
+  // (which is why the Rust side treats a tray that will not build as fatal).
+  //
+  // The accessor exists rather than a direct read because `ctx.js` needs the same
+  // answer, and because the settings object is spread over defaults at import
+  // time — a stored `false` has to beat the default `true`.
+  const original = store.settings.closeToTray;
+
+  delete store.settings.closeToTray;
+  assert.equal(closeToTray(), true, 'absent means on');
+
+  store.settings.closeToTray = false;
+  assert.equal(closeToTray(), false, 'an explicit off must win over the default');
+
+  store.settings.closeToTray = true;
+  assert.equal(closeToTray(), true);
+
+  store.settings.closeToTray = original;
+});
+
+test('close-to-tray survives a save/reload round trip', () => {
+  // `saveSettings` writes a hand-picked subset, so a new setting that is not
+  // added there is silently not persisted — it works until the next launch.
+  const original = store.settings.closeToTray;
+  store.settings.closeToTray = false;
+  saveSettings();
+  const stored = JSON.parse(localStorage.getItem('toolbox.settings'));
+  assert.equal(stored.closeToTray, false, 'saveSettings must carry closeToTray');
+  store.settings.closeToTray = original;
 });

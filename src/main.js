@@ -13,41 +13,46 @@ import { initTheme } from './host/theme.js';
 initTheme();
 
 /**
- * This entry belongs to the MAIN window, and it says so.
+ * Which window am I, and which page should I be?
  *
- * It used to be a SHARED entry that decided what to render from a `?mode=`
- * parameter, with an `else` arm that booted the whole plugin host — so a plugin
- * window opened with a bare `index.html`, or with a stale `?mode=floatwin`, or
- * with any typo, booted a SECOND host inside itself. The blast radius was not
- * cosmetic:
+ * Three answers, and the FIRST one is a compatibility shim rather than a
+ * feature:
  *
- *   - `bootPlugins()` activates every built-in again, and `procman` AUTO-STARTS
- *     its profiles — a second set of real subprocesses, and `runningFor()` reads
- *     per-window module state so nothing dedupes them across windows.
- *   - `scanExternalPlugins()` activates every drop-in plugin a second time, so
- *     its timers, sidecars and subscriptions exist twice.
- *   - `applySummonShortcut()` registers the summon hotkey again, and the plugin
- *     window's own `hotkey:summon` subscription calls `getCurrentWindow()` — so
- *     the summon key also raises the plugin window.
- *   - a second boot report and selftest land in `debug.log`.
- *   - the window renders the app SHELL instead of the plugin's UI, and the
- *     plugin's `mountWindow(bridge)` is never called.
+ *   1. `?mode=pluginwin`  — the LEGACY plugin-window URL. Redirect, do not boot.
+ *   2. not the main window — a misconfigured window; say so, do not boot.
+ *   3. the main window     — mount the shell and boot the host.
  *
- * (The one truly dangerous step, `plugin_reap_orphans()` — it kills every live
- * session — was already blocked by its `require_main` gate.)
+ * ## Why the legacy URL still has to work
  *
- * A plugin window now has its own PAGE: `pluginwin.html` → `src/pluginwin.js`.
- * It never loads this file at all, which is the real fix — and it is also what
- * made the stylesheet split possible, because a page picks its `<link>` before
- * any module runs. No JS branch could have kept the shell's CSS out of a plugin
- * window.
+ * A plugin window's URL used to be `index.html?mode=pluginwin&…`, and it was
+ * documented that way. When the two windows became two pages, that shape was
+ * replaced by `pluginwin.html?…` — and the old one was refused. That broke every
+ * plugin already installed:
  *
- * This check is the belt to that brace: reachable only if something created a
- * window pointing at `index.html` by a path that bypasses `ctx.windows.create`
- * (a config entry, a future native command). `main` is the label
- * `tauri.conf.json`'s window gets by default, and the same discriminator the
- * Rust side uses (`require_main`), so the two agree by construction.
+ *   - a third-party plugin cannot be edited at all (`moment-notes` asks for the
+ *     old URL in five places, and it is 686 KB of someone else's bundle),
+ *   - and the copy in the plugins directory is a COPY, so fixing `examples/` does
+ *     not fix what is installed.
+ *
+ * The symptom was not "the plugin is missing" — the plugin loaded, activated, and
+ * appeared in Settings. Its WINDOWS never opened, because `create` refused the
+ * URL, and every caller had a `catch` around it. That is the worst shape a
+ * regression can take: nothing errors, and the feature is just absent.
+ *
+ * So the old shape keeps working, by being sent to the page that has always been
+ * what it meant. `replace` rather than `href` so this is not a history entry —
+ * the window has one URL and it is the right one. The query is carried over
+ * verbatim: `plugin` and `label` are what the host page reads, and `mode` is
+ * inert there.
+ *
+ * This costs a legacy window the shell's stylesheet once (it is linked by
+ * `index.html`, before any module runs), which is exactly the 147 KB the split
+ * removed. That is the price of not breaking what is already installed, and it
+ * goes away when the plugin is updated.
  */
+const isLegacyPluginWindow =
+  new URLSearchParams(window.location.search).get('mode') === 'pluginwin';
+
 function isMainWindow() {
   try {
     return getCurrentWindow().label === 'main';
@@ -58,18 +63,45 @@ function isMainWindow() {
   }
 }
 
-if (!isMainWindow()) {
-  // Say so IN the window, rather than starting a second application.
+/**
+ * Reachable only if something created a window pointing at `index.html` by a path
+ * that bypasses `ctx.windows.create` (a config entry, a future native command).
+ *
+ * This used to be a branch on `?mode=`, with an `else` that booted the whole host
+ * — so a plugin window opened with a bare `index.html`, or a stale
+ * `?mode=floatwin`, booted a SECOND host inside itself: `procman` auto-started a
+ * second set of real subprocesses, every drop-in plugin was activated twice, and
+ * the summon hotkey was registered twice. (`plugin_reap_orphans()` — the one that
+ * kills every live session — was already blocked by its `require_main` gate.)
+ *
+ * Now the plugin-window host lives on its own page, so this file cannot start it
+ * at all. The label check is the belt to that brace: `main` is the label
+ * `tauri.conf.json`'s window gets by default, and the same discriminator the Rust
+ * side uses (`require_main`).
+ */
+function renderMisplacedWindow() {
   document.body.innerHTML =
     '<p style="font:13px/1.6 system-ui;padding:24px;max-width:52ch">' +
     'This page is the <b>main window</b> of Toolbox, and this is not the main window. ' +
     'A plugin window must load <code>pluginwin.html?plugin=&lt;id&gt;&amp;label=&lt;label&gt;</code> ' +
     '— see <code>docs/plugin-dev/api.md</code>.</p>';
-} else {
+}
+
+async function main() {
+  if (isLegacyPluginWindow) {
+    location.replace(`pluginwin.html${window.location.search}`);
+    return;
+  }
+
+  if (!isMainWindow()) {
+    renderMisplacedWindow();
+    return;
+  }
+
   // The shell is imported HERE rather than at the top of the file, and the
   // difference is not tidiness: a static import is fetched, parsed and EVALUATED
-  // by whichever window loads this module. It is dynamic so that the cost lands
-  // only where the shell is actually mounted.
+  // by whichever window loads this module. It is dynamic so the cost lands only
+  // where the shell is actually mounted.
   const { default: App } = await import('./App.vue');
   const app = createApp(App);
   app.mount('#app');
@@ -96,3 +128,7 @@ if (!isMainWindow()) {
 
   boot();
 }
+
+main().catch((e) => {
+  console.error('[shell] startup failed', e);
+});

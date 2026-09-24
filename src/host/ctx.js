@@ -6,7 +6,7 @@ import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi';
 import { hub } from '../protocol/hub.js';
 import { Capability, assertSupports } from '../protocol/registry.js';
 import { protocolContract } from '../protocol/contract.js';
-import { store, toast, sortViewList } from './store.js';
+import { store, toast, sortViewList, closeToTray } from './store.js';
 import { PLUGIN_ATTR } from './pluginTheme.js';
 import { createUiKit } from './ui.js';
 
@@ -29,6 +29,83 @@ import { createUiKit } from './ui.js';
  * can move between them, or be pointed at another scheme entirely, without
  * rewriting the call site.
  */
+
+/**
+ * The window URL, normalized. Only the plugin-window page is accepted.
+ *
+ * `pluginwin.html` and `index.html` are two different applications, not two
+ * modes of one:
+ *
+ *   index.html      the SHELL. Links the shell's stylesheet (Tailwind
+ *                   utilities + sonner), boots the plugin host, mounts
+ *                   `App.vue`. It knows nothing about `mountWindow`.
+ *   pluginwin.html  a plugin's OWN window. Links the plugin stylesheet (tokens
+ *                   + `.tb-*` only), imports the plugin host page, and calls
+ *                   the plugin's `mountWindow(bridge)`.
+ *
+ * Handing the shell page to a plugin window is what used to boot a whole second
+ * plugin host inside it — see `src/main.js` for the blast radius. That is
+ * unreachable now, but the mistake should still fail HERE, at the call site the
+ * author is looking at.
+ *
+ * ## The legacy shape is accepted, and REWRITTEN
+ *
+ * A plugin window's URL used to be `index.html?mode=pluginwin&…`, and it was
+ * documented that way. When the two windows became two pages that shape was
+ * refused — which broke every plugin already installed, and the symptom was
+ * nothing at all: `create` rejected the URL, every caller had a `catch` around
+ * it, so the plugin loaded, activated, showed up in Settings, and its windows
+ * simply never appeared. A third-party plugin cannot be edited (one asks for
+ * the old URL in five places), and the copy in the plugins directory is a COPY,
+ * so fixing `examples/` does not fix what is installed.
+ *
+ * So the old shape is translated rather than rejected. Translating HERE, at the
+ * boundary, is what makes it free: the window is created with the right URL, so
+ * it never loads the shell's 166 KB stylesheet only to navigate away from it.
+ * (`src/main.js` still redirects a legacy URL, as a net for a window that came
+ * from somewhere other than this function.)
+ *
+ * Returns the canonical URL, or `null` if this is not one. The caller owns
+ * the error message, because only it knows which plugin is asking.
+ *
+ * Anything that is not a LOCAL page is refused: no scheme (`https:`), no
+ * root-relative path (`/x`), no traversal (`../x`). A remote page would carry
+ * no IPC (no capability declares a remote origin, so Tauri denies it by
+ * default), but it would still replace the host page and skip the loader that
+ * hands the plugin its `bridge`.
+ */
+export function normalizePluginWindowUrl(url) {
+  if (/^pluginwin\.html(\?|#|$)/.test(url)) return url;
+
+  const legacy = url.match(/^index\.html\?(.*)$/);
+  if (legacy) {
+    const params = new URLSearchParams(legacy[1].split('#')[0]);
+    if (params.get('mode') === 'pluginwin') {
+      params.delete('mode'); // the page IS the mode now
+      const q = params.toString();
+      return q ? `pluginwin.html?${q}` : 'pluginwin.html';
+    }
+  }
+
+  return null;
+}
+
+/**
+ * This window's label, or `null` when there is no Tauri (a browser, `node
+ * --test`).
+ *
+ * `getCurrentWindow()` reads `__TAURI_INTERNALS__.metadata`, which does not
+ * exist outside a Tauri webview — and it is a synchronous read, not an IPC, so
+ * this is safe to call from inside an event handler.
+ */
+export function currentWindowLabel() {
+  try {
+    return getCurrentWindow().label;
+  } catch {
+    return null;
+  }
+}
+
 export function buildCtx(plugin, disposer) {
   const { manifest } = plugin;
   const id = manifest.id;
@@ -74,39 +151,6 @@ export function buildCtx(plugin, disposer) {
     'visible',
   ]);
 
-  /**
-   * A plugin window may only load the plugin-window PAGE.
-   *
-   * `pluginwin.html` and `index.html` are now two different applications, not two
-   * modes of one:
-   *
-   *   index.html      the SHELL. Links the shell's stylesheet (Tailwind
-   *                   utilities + sonner), boots the plugin host, mounts
-   *                   `App.vue`. It knows nothing about `mountWindow`.
-   *   pluginwin.html  a plugin's OWN window. Links the plugin stylesheet (tokens
-   *                   + `.tb-*` only), imports the plugin host page, and calls
-   *                   the plugin's `mountWindow(bridge)`.
-   *
-   * Handing the shell page to a plugin window is what used to boot a whole second
-   * plugin host inside it — see `src/main.js` for the blast radius. That is
-   * unreachable now, but the mistake should still fail HERE, at the call site the
-   * author is looking at, with the correct shape in the message.
-   *
-   * The pattern also refuses anything that is not a LOCAL page: no scheme
-   * (`https:`), no root-relative path (`/x`), no traversal (`../x`). A remote
-   * page would carry no IPC (no capability declares a remote origin, so Tauri
-   * denies it by default), but it would still replace the host page and skip the
-   * loader that hands the plugin its `bridge`.
-   */
-  function assertPluginWindowUrl(url) {
-    if (!/^pluginwin\.html(\?|#|$)/.test(url)) {
-      throw new Error(
-        `${prefix} window url must be the plugin-window page ` +
-          `(pluginwin.html?plugin=<id>&label=<label>), got "${url}"`,
-      );
-    }
-    return url;
-  }
 
   /**
    * A window label must be one the native ACL can match.
@@ -143,8 +187,21 @@ export function buildCtx(plugin, disposer) {
     if (unknown.length) {
       throw new Error(`${prefix} window option(s) not allowed: ${unknown.join(', ')}`);
     }
-    if (options.url !== undefined) assertPluginWindowUrl(String(options.url));
-    return { ...options };
+    const clean = { ...options };
+    if (clean.url !== undefined) {
+      // Normalized, not merely checked: a caller may still be passing the legacy
+      // shape, and the window must be CREATED with the canonical one — that is
+      // what keeps the translation free.
+      const normalized = normalizePluginWindowUrl(String(clean.url));
+      if (normalized === null) {
+        throw new Error(
+          `${prefix} window url must be the plugin-window page ` +
+            `(pluginwin.html?plugin=<id>&label=<label>), got "${clean.url}"`,
+        );
+      }
+      clean.url = normalized;
+    }
+    return clean;
   }
 
   const perms = manifest.permissions || [];
@@ -519,11 +576,25 @@ export function buildCtx(plugin, disposer) {
        */
       onCloseRequested: (fn) =>
         gatedWin(async () => {
-          // Contain a handler failure. Tauri's own implementation calls
-          // `destroy()` only AFTER the handler resolves, so a throw here would
-          // leave the window impossible to close — a plugin bug must not wedge
-          // the window. The handler still runs; only its failure is contained.
           const un = await getCurrentWindow().onCloseRequested(async (event) => {
+            /**
+             * The MAIN window does not close — it hides (see
+             * `installCloseToTray` in `boot.js`), so a plugin must not be told
+             * the app is going away, because it is not.
+             *
+             * This is the reason the handler goes through the host instead of a
+             * plugin listening for `tauri://close-requested` itself: the host is
+             * the only party that knows whether a close request means "gone". A
+             * plugin that tore its windows down here would have no signal on the
+             * way back to rebuild them — the tray would restore a window whose
+             * widgets had been destroyed.
+             */
+            if (closeToTray() && currentWindowLabel() === 'main') return;
+
+            // Contain a handler failure. Tauri's own implementation calls
+            // `destroy()` only AFTER the handler resolves, so a throw here would
+            // leave the window impossible to close — a plugin bug must not wedge
+            // the window. The handler still runs; only its failure is contained.
             try {
               await fn(event);
             } catch (e) {

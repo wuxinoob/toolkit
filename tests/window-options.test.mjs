@@ -35,7 +35,7 @@ globalThis.localStorage = {
 };
 
 register('./browser-stubs-loader.mjs', import.meta.url);
-const { buildCtx } = await import('../src/host/ctx.js');
+const { buildCtx, normalizePluginWindowUrl } = await import('../src/host/ctx.js');
 
 const disposer = { track() {}, dispose() {} };
 const ctx = buildCtx({ manifest: { id: 'test.winopts', permissions: ['win:manage'] } }, disposer);
@@ -85,9 +85,12 @@ test('windows.create: anything that is not the plugin-window page is rejected', 
     // every drop-in plugin activated twice, and a window rendering the app shell
     // instead of the plugin's UI. Refused at the call site now, where the author
     // is looking, with the correct shape in the message.
+    //
+    // Note `index.html?mode=pluginwin` is NOT here: that is the LEGACY shape and
+    // it is accepted, translated rather than rejected — see the test below.
     'index.html',
-    'index.html?mode=pluginwin&plugin=x',
     'index.html?mode=floatwin',
+    'index.html?mode=plugin',
   ]) {
     const msg = await reason(ctx.windows.create('plugin-probe-b', { url }));
     assert.ok(
@@ -398,6 +401,86 @@ test('the plugin-window host styles itself with .tb-* only', () => {
       `${rel} uses ${stray.join(', ')} — plugin.css ships only the .tb-* vocabulary, ` +
         'so these would render unstyled with no error anywhere',
     );
+  }
+});
+
+test('closing the main window hides it, and the tray is the only way out', () => {
+  // The behaviour spans three files and every one of them can be edited away
+  // without an error anywhere: the window would just start quitting on ✕, or the
+  // tray would lose its quit item and the app would become unquittable.
+  const boot = readFileSync(new URL('../src/host/boot.js', import.meta.url), 'utf8');
+  assert.match(boot, /installCloseToTray/, 'boot.js must install the close handler');
+  assert.match(
+    boot,
+    /onCloseRequested\(async \(event\) => \{\s*event\.preventDefault\(\)/,
+    'and it must preventDefault — without that Tauri destroys the window anyway',
+  );
+  assert.match(boot, /\.hide\(\)/, 'and hide rather than close');
+
+  // The plugin-facing handler must stand DOWN on the main window while this is
+  // in effect: the window did not close, so a plugin that tore its windows down
+  // would have no signal on the way back to rebuild them.
+  const ctx = readFileSync(new URL('../src/host/ctx.js', import.meta.url), 'utf8');
+  assert.match(
+    ctx,
+    /if \(closeToTray\(\) && currentWindowLabel\(\) === 'main'\) return;/,
+    'ctx.js must skip a plugin close handler while the main window only hides',
+  );
+
+  // Rust: a tray, a quit item, and a GRACEFUL exit. `app.exit(0)` runs
+  // `RunEvent::Exit` → `kill_all()`, so sidecars and ptys are drained; a process
+  // kill would leave them orphaned.
+  const lib = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
+  assert.match(lib, /TrayIconBuilder::new\(\)/, 'lib.rs must build a tray icon');
+  assert.match(lib, /MenuItem::with_id\(app, "quit"/, 'the tray menu must have a quit item');
+  assert.match(lib, /"quit" => app\.exit\(0\)/, 'and quit must go through app.exit, not a kill');
+  assert.match(
+    lib,
+    /tray\.build\(app\)\?;/,
+    'a tray that will not build must be FATAL — hiding on close with no tray means the app cannot be quit',
+  );
+});
+
+test('the legacy plugin-window URL is translated, not rejected', () => {
+  // A plugin window's URL used to be `index.html?mode=pluginwin&…` and it was
+  // documented that way. When the two windows became two pages that shape was
+  // refused — and that broke every plugin already installed, with a symptom of
+  // NOTHING AT ALL: `create` rejected the URL, every caller had a `catch` around
+  // it, so the plugin loaded, activated, showed up in Settings, and its windows
+  // simply never appeared. A third-party plugin cannot be edited, and the copy in
+  // the plugins directory is a COPY, so fixing `examples/` does not fix what is
+  // installed.
+  //
+  // So the old shape is translated at the boundary. Translating there is what
+  // makes it free: the window is CREATED with the canonical URL, so it never
+  // loads the shell's 166 KB stylesheet only to navigate away from it.
+  const cases = [
+    ['index.html?mode=pluginwin&plugin=x&label=plugin-y', 'pluginwin.html?plugin=x&label=plugin-y'],
+    ['index.html?plugin=x&label=plugin-y&mode=pluginwin', 'pluginwin.html?plugin=x&label=plugin-y'],
+    ['index.html?mode=pluginwin&plugin=x#frag', 'pluginwin.html?plugin=x'],
+    ['index.html?mode=pluginwin', 'pluginwin.html'],
+  ];
+  for (const [legacy, canonical] of cases) {
+    assert.equal(normalizePluginWindowUrl(legacy), canonical, `${legacy} should translate`);
+  }
+
+  // The canonical shape passes through untouched, so a plugin that already
+  // updated is not rewritten into something else.
+  for (const url of ['pluginwin.html?plugin=x&label=plugin-y', 'pluginwin.html']) {
+    assert.equal(normalizePluginWindowUrl(url), url);
+  }
+
+  // `index.html` WITHOUT the mode is still refused — that is the shell page, and
+  // handing it to a plugin window is the thing that used to boot a second host.
+  for (const url of [
+    'index.html',
+    'index.html?plugin=x',
+    'index.html?mode=floatwin',
+    'https://example.com',
+    '/pluginwin.html',
+    '../pluginwin.html',
+  ]) {
+    assert.equal(normalizePluginWindowUrl(url), null, `${url} should be refused`);
   }
 });
 

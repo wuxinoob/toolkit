@@ -92,7 +92,13 @@ const WHERE = [
 const methodsUsed = (source) => {
   const found = new Set();
   for (const m of source.matchAll(/\.([a-zA-Z]+)\(/g)) {
-    if (NEEDS[m[1]]) found.add(m[1]);
+    // `Object.hasOwn`, not `NEEDS[m[1]]`: a plain object literal inherits from
+    // Object.prototype, so `NEEDS['toString']` (or `constructor`, `valueOf`, …)
+    // is a FUNCTION rather than undefined — and the audit then reported
+    // "calls toString() but default.json does not grant function toString()
+    // { [native code] }". Any `.toString()` in the scanned file tripped it, which
+    // is a false failure on correct code.
+    if (Object.hasOwn(NEEDS, m[1])) found.add(m[1]);
   }
   return found;
 };

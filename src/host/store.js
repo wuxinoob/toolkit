@@ -20,6 +20,16 @@ export const store = reactive({
   settings: {
     summonShortcut: 'Ctrl+Alt+T',
     /**
+     * Whether the main window's ✕ hides it instead of quitting.
+     *
+     * On by default: the app has a tray icon, and closing a window that lives in
+     * the tray should put it away, not end the session. The tray's "退出" is the
+     * real exit, and it is the ONLY one — so if the tray ever fails to appear,
+     * this must be turned off or the app cannot be quit from its own UI. The Rust
+     * side treats a tray that will not build as fatal for exactly that reason.
+     */
+    closeToTray: true,
+    /**
      * Per-hotkey user state, keyed `<pluginId>:<action>`.
      *
      * A plugin's `contributes.hotkeys` entry is a REQUEST, not a registration:
@@ -40,8 +50,19 @@ export const store = reactive({
 });
 
 export function saveSettings() {
-  const { summonShortcut, hotkeys } = store.settings;
-  localStorage.setItem('toolbox.settings', JSON.stringify({ summonShortcut, hotkeys }));
+  const { summonShortcut, hotkeys, closeToTray } = store.settings;
+  localStorage.setItem('toolbox.settings', JSON.stringify({ summonShortcut, hotkeys, closeToTray }));
+}
+
+/**
+ * Whether closing the main window should hide it rather than quit.
+ *
+ * A function, not a direct read, because `ctx.js` needs the same answer and the
+ * two must not drift — and because the settings object is spread over defaults
+ * at import time, so a stored `false` has to win over the default `true`.
+ */
+export function closeToTray() {
+  return store.settings.closeToTray !== false;
 }
 
 /* ---------------------------------------------------------------------------
