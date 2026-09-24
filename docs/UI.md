@@ -112,13 +112,19 @@ with arbitrary content and skip `pluginwin-host.js` — the documented loader th
 hands the plugin its `bridge`.
 
 So options are now validated against an allow-list, and `url` must be the app's
-own entry page:
+own plugin-window page — the entry page AND `mode=pluginwin`, because a window
+without it would not mount the plugin:
 
 ```js
 ctx.windows.create('mywin', { url: 'index.html?mode=pluginwin&plugin=…' })  // ok
-ctx.windows.create('mywin', { url: 'https://example.com' })                 // throws
-ctx.windows.create('mywin', { someFutureOption: true })                     // throws
+ctx.windows.create('mywin', { url: 'index.html' })         // throws — no mode=pluginwin
+ctx.windows.create('mywin', { url: 'https://example.com' }) // throws
+ctx.windows.create('mywin', { someFutureOption: true })     // throws
 ```
+
+The dispatch itself is on the window LABEL, not on the URL: only the window
+labelled `main` boots the plugin host, so no URL can start a second one. See the
+note in `src/main.js` for what that used to cost.
 
 Validation runs **before** the async window lookup, so a bad option fails the
 same way whether or not that window already exists.

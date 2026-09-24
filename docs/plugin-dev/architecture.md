@@ -63,9 +63,11 @@ await ctx.windows.create('plugin-my-win', {
 });
 ```
 
-- **`url` 必须是应用自己的入口页**（`index.html?...`）。宿主会校验；
-  传外部 URL 会被拒绝 —— 那会替换掉宿主页、跳过 `pluginwin-host.js`
-  （那个把 `bridge` 交给你的加载器）
+- **`url` 必须是应用自己的插件窗口页**（`index.html?mode=pluginwin&plugin=<id>&label=<label>`）。
+  宿主会校验**两个条件**：不是 `index.html…` 会替换掉宿主页、跳过 `pluginwin-host.js`
+  （那个把 `bridge` 交给你的加载器）；是 `index.html…` 但没带 `mode=pluginwin`
+  则那个窗口不会加载你的插件（以前更糟 —— 它会让宿主在插件窗口里再跑一个完整宿主，
+  见 `src/main.js` 的注释）。
 - 窗口选项走**白名单**，不在名单上的会被拒绝并告诉你名字
 - 自绘标题栏：传 `decorations: false`，然后自己画一条，用 `bridge.drag()` 拖。
   参考 `examples/plugins/eyecare/`

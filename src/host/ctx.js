@@ -75,17 +75,42 @@ export function buildCtx(plugin, disposer) {
   ]);
 
   /**
-   * A plugin window may only load the app's OWN entry page.
+   * A plugin window may only load the app's own plugin-window page.
    *
-   * Every plugin window passes `index.html?mode=pluginwin&…`, which is how the
-   * host page decides what to render. An arbitrary URL would replace the host
-   * page with remote content and skip `pluginwin-host.js` — the documented
-   * loader that hands the plugin its `bridge`. The window would carry no IPC
-   * (no capability declares a remote origin, so Tauri denies it by default), so
-   * this is not an escalation;
-   * it is an undeclared capability that breaks the one contract the window host
-   * has.
+   * Two halves, and they are not the same check:
+   *
+   *   `index.html…`     — the app's own entry page. Anything else replaces the
+   *                       host page with content no capability covers, and skips
+   *                       `pluginwin-host.js` — the documented loader that hands
+   *                       the plugin its `bridge`. The window would carry no IPC
+   *                       (no capability declares a remote origin, so Tauri
+   *                       denies it by default), so this is not an escalation;
+   *                       it is an undeclared capability that breaks the one
+   *                       contract the window host has.
+   *
+   *   `mode=pluginwin`  — the page that actually mounts the plugin. Without it
+   *                       the window renders something else entirely. This used
+   *                       to be accepted, and the `else` arm in `main.js` booted
+   *                       a whole second plugin host inside the plugin window
+   *                       (see `main.js` for the blast radius). `main.js` now
+   *                       routes on the window LABEL, so a second host is
+   *                       unreachable either way — but the mistake should fail
+   *                       HERE, at the call site the author is looking at, with
+   *                       the correct shape in the message.
    */
+  function assertPluginWindowUrl(url) {
+    const q = url.indexOf('?');
+    const ok = url.startsWith('index.html') && q >= 0 &&
+      new URLSearchParams(url.slice(q + 1).split('#')[0]).get('mode') === 'pluginwin';
+    if (!ok) {
+      throw new Error(
+        `${prefix} window url must be the app's plugin-window page ` +
+          `(index.html?mode=pluginwin&plugin=<id>&label=<label>), got "${url}"`,
+      );
+    }
+    return url;
+  }
+
   /**
    * A window label must be one the native ACL can match.
    *
@@ -121,11 +146,7 @@ export function buildCtx(plugin, disposer) {
     if (unknown.length) {
       throw new Error(`${prefix} window option(s) not allowed: ${unknown.join(', ')}`);
     }
-    if (options.url !== undefined && !/^index\.html(\?|$)/.test(String(options.url))) {
-      throw new Error(
-        `${prefix} window url must be the app's own entry page (index.html?…), got "${options.url}"`,
-      );
-    }
+    if (options.url !== undefined) assertPluginWindowUrl(String(options.url));
     return { ...options };
   }
 

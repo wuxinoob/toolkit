@@ -48,22 +48,43 @@ async function reason(promise) {
   }
 }
 
-test('windows.create: the app\'s own entry page is allowed', async () => {
-  // These are the shapes the windowed plugins actually pass. They must get PAST
+test('windows.create: the plugin-window page is allowed', async () => {
+  // The shapes the windowed plugins actually pass. They must get PAST
   // validation; where they fail afterwards (no Tauri in Node) is not what this
   // test is about, so the assertion is only that the failure is not a
   // validation one.
-  for (const url of ['index.html?mode=pluginwin&plugin=x', 'index.html']) {
+  for (const url of [
+    'index.html?mode=pluginwin&plugin=x',
+    'index.html?plugin=x&label=plugin-y&mode=pluginwin', // parameter order is not fixed
+    'index.html?mode=pluginwin&plugin=x#anything', // nor is a fragment
+  ]) {
     const msg = await reason(ctx.windows.create('plugin-probe-a', { url, width: 200, height: 200 }));
     assert.ok(
-      msg === null || !msg.includes('must be the app'),
+      msg === null || !msg.includes('must be the'),
       `"${url}" should pass validation, got: ${msg}`,
     );
   }
 });
 
 test('windows.create: an arbitrary URL is rejected', async () => {
-  for (const url of ['https://example.com', 'http://127.0.0.1/x', 'file:///etc/passwd', 'index.htmlx']) {
+  for (const url of [
+    // Not the app's own page at all.
+    'https://example.com',
+    'http://127.0.0.1/x',
+    'file:///etc/passwd',
+    'index.htmlx',
+    // The app's own page, but NOT the one that mounts a plugin. Every one of
+    // these used to be ACCEPTED, and `main.js`'s `else` arm then booted a whole
+    // second plugin host inside the window — a second set of auto-started
+    // processes, every drop-in plugin activated twice, and a window showing the
+    // app shell instead of the plugin's UI. They are refused at the call site
+    // now, where the author is looking.
+    'index.html',
+    'index.html?mode=floatwin',
+    'index.html?mode=plugin',
+    'index.html?plugin=x',
+    'index.html?mod=pluginwin',
+  ]) {
     const msg = await reason(ctx.windows.create('plugin-probe-b', { url }));
     assert.ok(
       msg && msg.includes('must be the app'),
@@ -196,6 +217,9 @@ test('windows.create: a label the ACL cannot match is refused', async () => {
   // plugin author who lost an afternoon to exactly that.
   const bad = ['my-win', 'moment-notes-main', 'calc', 'widget', 'plugin', ''];
   for (const label of bad) {
+    // Deliberately a URL the new check would ALSO reject: the label is validated
+    // first, so a bad label is reported as a bad label rather than as a bad URL.
+    // Otherwise the author fixes the URL and gets the same window back.
     const msg = await reason(ctx.windows.create(label, { url: 'index.html' }));
     assert.ok(msg, `label "${label}" should have been refused`);
     assert.ok(
@@ -210,14 +234,37 @@ test('windows.create: the one label shape the ACL matches is accepted', async ()
   // capability, so `floatwin` was a second accepted label. Both are gone, and
   // the host's check now recognises exactly one pattern — which is the state
   // worth pinning, because a second arm is how the list rots.
+  const url = 'index.html?mode=pluginwin&plugin=x&label=plugin-y';
   for (const label of ['plugin-anything', 'plugin-my.plugin-main']) {
-    const msg = await reason(ctx.windows.create(label, { url: 'index.html' }));
+    const msg = await reason(ctx.windows.create(label, { url }));
     assert.ok(
       msg === null || !/matches no capability/.test(msg),
       `"${label}" should pass the label check, got: ${msg}`,
     );
   }
   // `floatwin` is now just another label that matches nothing.
-  const msg = await reason(ctx.windows.create('floatwin', { url: 'index.html' }));
+  const msg = await reason(ctx.windows.create('floatwin', { url }));
   assert.match(msg ?? '', /matches no capability/, 'the retired bespoke label must no longer be special');
+});
+
+test('the shell routes on the window LABEL, not on a query parameter', () => {
+  // The structural half of the fix, and the half that cannot be bypassed.
+  // `ctx.windows.create` now refuses a URL that is not the plugin-window page,
+  // but a window can also come from `tauri.conf.json` or from a future native
+  // path — so the dispatch itself must not be steerable by a URL a caller
+  // controls. Reading the label makes a second host unreachable: the only way to
+  // boot the host is to BE the main window.
+  const main = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+  const code = main.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  assert.match(code, /getCurrentWindow\(\)\.label/, 'main.js must read the window label');
+  assert.match(code, /label !== 'main'/, 'and branch on it');
+
+  // The old shape is the bug: a `mode === 'pluginwin'` selector whose `else`
+  // boots the whole host. Anything that looks like it again must fail here.
+  assert.doesNotMatch(
+    code,
+    /if \(mode === 'pluginwin'\)/,
+    'the dispatch must not be selected by the ?mode= parameter alone — that is what booted a second host',
+  );
 });

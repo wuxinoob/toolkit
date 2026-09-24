@@ -14,20 +14,64 @@ import { initTheme } from './host/theme.js';
 // read, and it also wires the OS listener and the cross-window one.
 initTheme();
 
-// Secondary windows reuse this entry with a ?mode= query: they must render
-// their own page only and skip the whole plugin host — a second host would
-// double-register global shortcuts, timers and startup selftests.
-//   ?mode=pluginwin&plugin=<id>&label= -> generic EXTERNAL plugin window host
-//                                         (Blob-imports the plugin entry and
-//                                         calls its mountWindow(bridge))
-//
-// There used to be a second mode, `?mode=floatwin`, pointing at the built-in
-// FloatWin widget page. It went with the plugin: a page only one plugin could
-// use is that plugin's page, not a host feature. A plugin that wants a window
-// supplies its own entry and reaches it through `pluginwin`.
-const mode = new URLSearchParams(window.location.search).get('mode');
+/**
+ * Which window am I? — decided by the window's own LABEL.
+ *
+ * This used to be decided by a `?mode=` query parameter:
+ *
+ *   if (mode === 'pluginwin')  -> plugin-window host
+ *   else                       -> boot the whole plugin host
+ *
+ * and that `else` was a loaded gun. A plugin window opened with a bare
+ * `index.html`, or with a stale `?mode=floatwin`, or with any typo, fell into it
+ * and booted a SECOND host inside a plugin window. The blast radius is not
+ * cosmetic:
+ *
+ *   - `bootPlugins()` activates every built-in again, and `procman`
+ *     AUTO-STARTS its profiles — a second set of real subprocesses. Its guard
+ *     (`runningFor(p.id)`) reads per-window module state, so nothing dedupes
+ *     them across windows.
+ *   - `scanExternalPlugins()` loads and activates every drop-in plugin again, so
+ *     its timers, sidecars and subscriptions exist twice.
+ *   - `applySummonShortcut()` registers the summon hotkey a second time, and the
+ *     plugin window's own `hotkey:summon` subscription calls
+ *     `getCurrentWindow()` — so the summon key also raises the plugin window.
+ *   - a second boot report and selftest land in `debug.log`.
+ *   - the window renders the app SHELL instead of the plugin's UI, and the
+ *     plugin's `mountWindow(bridge)` is never called — so the window is useless
+ *     to the plugin that asked for it.
+ *
+ * The one truly dangerous step, `plugin_reap_orphans()` (it kills every live
+ * session), was already blocked: it is `require_main`-gated and the window is
+ * not `main`. Everything else went through.
+ *
+ * So the branch is now on IDENTITY, not on a parameter a caller can get wrong.
+ * `main` is the label `tauri.conf.json`'s window gets by default, and it is the
+ * same discriminator the Rust side uses (`require_main`), so the two agree by
+ * construction. Every other window goes to the plugin-window host, which either
+ * mounts the plugin or renders an inline error naming the missing query
+ * parameter — so the worst case is a readable message IN the window rather than
+ * a silent second application.
+ */
+function windowLabel() {
+  try {
+    return getCurrentWindow().label;
+  } catch {
+    return null; // no Tauri (plain browser, `node --test`)
+  }
+}
 
-if (mode === 'pluginwin') {
+const label = windowLabel();
+// Without Tauri there is no label to read, and no second host to collide with,
+// so the query parameter is still the answer — that keeps a browser dev server
+// rendering whichever page it was asked for.
+const isPluginWindow =
+  label === null
+    ? new URLSearchParams(window.location.search).get('mode') === 'pluginwin'
+    : label !== 'main';
+
+if (isPluginWindow) {
+  // `?mode=pluginwin&plugin=<id>&label=<label>` — the host page reads the rest.
   import('./host/pluginwin-host.js').then((m) => m.mountPluginWindow());
 } else {
   const app = createApp(App);

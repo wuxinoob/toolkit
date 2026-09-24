@@ -656,8 +656,16 @@ ctx.windows.onCloseRequested(async () => { /* 清理 */ });
 
    推荐写法：`` `plugin-${ctx.id.replace(/[^a-zA-Z0-9_-]/g, '-')}-main` ``
 
-2. **`url` 必须是应用自己的入口页**（`index.html?...`）。传外部 URL 会被拒绝 ——
-   那会替换掉宿主页、跳过 `pluginwin-host.js`（把 `bridge` 交给你的加载器）
+2. **`url` 必须是应用自己的插件窗口页**：`index.html?mode=pluginwin&plugin=<id>&label=<label>`。
+   **两个条件都要满足，而且理由不同**：
+   - **不是 `index.html…`** → 会替换掉宿主页、跳过 `pluginwin-host.js`
+     （那个把 `bridge` 交给你的加载器）
+   - **是 `index.html…` 但没有 `mode=pluginwin`** → 那个窗口不会加载你的插件。
+     以前这种 URL 更糟：宿主会在**插件窗口里再跑一个完整宿主** —— 重复注册热键、
+     每个插件再激活一次（`procman` 会再 auto-start 一套真实进程）、
+     窗口显示的是应用外壳而不是你的界面。
+     现在 `main.js` 按**窗口 label** 分发，第二个宿主不可能出现了；
+     但错误仍然在 `create()` 当场被拒，报错里带着正确写法 —— 在你看得见的地方失败。
 
 3. **窗口选项走白名单**。不在名单上的会被拒绝**并告诉你名字**，不会静默忽略
 
