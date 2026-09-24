@@ -14,6 +14,9 @@
 - **错误码是闭集**（14 个，`codes.rs` ↔ `codes.js` 有测试比对），服务错误用 `ServiceError`。**编译器抓不到**经 `From` 静默变 `internal` 的点 → 改这类代码必须手工枚举定性。
 - **Tauri `Channel` 单向**（JS 没有 `send`）→ 插件→宿主上行靠**批量 invoke**。别再去找 Channel。
 - **外部插件是 Blob URL 单文件 ESM，不能 import** → JS 组件库与 Tailwind 工具类到不了它们；**不要给插件加 safelist**。
+- **内置插件只留覆盖消息面的**：`src/host/registry.js` 是权威清单（现在只有 `procman` + `streamlab`）。**测试里不要硬编码插件名单** —— 从注册表派生（`builtinSources()` 或读 `registry.js` 的 import），否则删/加插件时它们静默空过。已有 4 处犯过这个错。
+- **`capabilities/*.json` 是源文件；运行期用的是编译进二进制的 ACL**（`tauri-build` → `OUT_DIR/capabilities.json`，**Cargo 会缓存**）。**源文件正确 ≠ 应用有权限**。全窗口权限被拒（`event.listen` / `window.get_all_windows` / `pty.spawn` 一起挂）时先 `wc -c src-tauri/target/debug/build/toolbox-*/out/capabilities.json` —— **`2` 就是空 ACL**，`cargo clean -p toolbox` 重建。守卫在 `tests/capabilities.test.mjs`。清缓存前**必须优雅关闭正在跑的应用**，否则 `os error 5` / `LNK1104`。
+- **插件列表显示顺序**：规则只在 `store.js` 一处（`sortPluginList` / `sortViewList`，键 = 内置优先 + **显示名**字母序，不是 id）。**作用在数组上而非渲染时**，5 个写入点都接了排序调用 —— 新增写入点必须同时接。
 - **插件窗口一律 `visible:false` 创建，等 UI 报 `hello` 再 `show()`**（否则"创建时白屏几秒"）。
 - **`ctx.windows.control` 每次 = 2 次 IPC 往返** → **拖动时逐帧连带动多个窗口 = 卡顿**。**几何上报必须 rAF 合并 + 去重**（两层各管一件事）：`resize` 在拖拽期按 `WM_SIZE` **连续**触发，而 `SetWindowPos` 又产生新的 `resize` → **跨两窗口 + 原生侧的自放大回路**。用户按住拖窗口**不要**用 publish+`control('position')` 模拟，用原生 `bridge.drag()`。
 - **透明置顶窗口上不要 `backdrop-filter: blur()`，也不要留无限动画**（拖动任何窗口/整块表面每帧重合成）。
@@ -24,6 +27,9 @@
 - **`setIgnoreCursorEvents(true)` 是窗口级标志** → 透传窗口收不到**任何**鼠标事件（含 `pointermove`）。
 - **⚠️ 绝对不要硬杀 Tauri 应用**（累积孤儿 `msedgewebview2`、弄坏 WebView2 profile → 窗口全白）。**应用内验证必须由用户在交互终端做。**
 - **示例部署用 `npm run deploy:examples`**；手工 `cp -r` 已两次导致"应用里跑的还是旧插件"。
+- **`git restore <path>` 按索引恢复，会连工作区里未提交的修改一起回滚**（本项目有多个并发会话在动同一仓库 → 动它之前先确认别处没在改）。反过来，恢复被误删的文件时它是**纯增量**的，不会覆盖已存在的东西。
+- **`git add <已删除的路径>` 会整条失败**（git 先校验全部 pathspec）→ 已暂存的删除不要再 add。
+- **`?mode=` 不是 `pluginwin` 时会 boot 完整宿主**（插件窗口传裸 `index.html` 会重复注册热键/定时器/自检）—— **尚未修的洞**，见 `2026-09-24.md`。
 
 ## 验证命令
 
