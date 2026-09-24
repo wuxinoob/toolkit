@@ -32,7 +32,11 @@
 - **窗口分发改按窗口 label，不按 URL 参数**：只有 label 是 `main` 的窗口 boot 宿主，其余走 `pluginwin-host.js`。**不要再写成 `if (mode === 'pluginwin') … else <boot 宿主>`** —— 那个 `else` 会让插件窗口跑起第二个完整宿主（重复注册热键、每个插件再激活一次、procman 再 auto-start 真实进程）。URL 校验也要求 `index.html?…&mode=pluginwin`（两个条件：入口页 + mode）。守卫在 `tests/window-options.test.mjs`。
 - **两个窗口 = 两个页面**：`index.html` → `src/main.js` → `assets/app.css`（外壳）；`pluginwin.html` → `src/pluginwin.js` → `assets/plugin.css`（插件窗口）。**一个页面的样式表是 `<link>`，在模块之前生效 → 只能在页面层选，JS 分支拦不住。** 两份共享 `assets/design-system.css`（令牌 + 64 个 `.tb-*`）。实测插件窗口 948 KB → **61 KB**。插件窗口的 URL 是 `pluginwin.html?plugin=…&label=…`。
 - **⚠️ 插件窗口里没有 Tailwind 工具类**（`plugin.css` 只有令牌 + `.tb-*`）。写了**静默失效** —— 元素就是没样式、不报错。用 `.tb-*` / 内联 `style` / 自己的 `<style>`。守卫在 `tests/window-options.test.mjs`（断言插件窗口路径的类名全是 `.tb-*`）。
+- **改契约必须留迁移路径** —— 判断依据不是「仓库里还有谁在用」，而是「**用户机器上已装的是什么**」。本仓库踩过：把插件窗口 URL 从 `index.html?mode=pluginwin&…` 改成 `pluginwin.html?…` 时直接拒绝旧写法 → **所有已装插件开不出窗口**（第三方插件改不到，插件目录里那份是副本），而症状是「什么都没有」（每个调用方都套了 `catch`，插件照常激活，只有窗口不出现）。**做法：在边界处翻译而不是拒绝**（`normalizePluginWindowUrl` 返回规范形状，用返回值创建窗口，旧写法零成本）。
+- **托盘与关闭到托盘**：主窗口 ✕ = 隐藏（`boot.js` 的 `installCloseToTray`），退出只在托盘右键菜单（`app.exit(0)` → `RunEvent::Exit` → `kill_all()`）。**托盘建不起来是致命错误**（否则应用无法从自己界面退出）。`store.settings.closeToTray` 持久化 —— 注意 `saveSettings` 只写手挑的子集。**主窗口上插件的 `onCloseRequested` 不触发**（窗口没关），所以那条 API 必须由宿主中转。
+- **用对象当查找表要防原型链**：`NEEDS[m]` 对 `toString`/`constructor`/`valueOf` 会取到 `Object.prototype` 上的函数 → 假失败。用 `Object.hasOwn`。
 - **断言只匹配「你期望的那种错误」，就会把「另一种错误」当成成功** —— 本仓库已两次踩到（URL 校验的文案改了，而测试只查旧文案 → 被拒绝了却算通过）。**报错类断言要覆盖整个校验面。**
+- **`cargo test` 在本机跑不起来**（Windows：`tauri-build` 只给 bin 目标嵌 manifest，测试二进制加载即 `STATUS_ENTRYPOINT_NOT_FOUND`）。Rust 侧用 `cargo run --example host-checks`（现 27 项）。README 曾写「cargo test 39 项」，是不实的。
 - **`win:self` 做不到**：Tauri 的窗口命令**不校验调用者身份** —— 目标窗口由调用者传的 `label` 决定（`window/plugin.rs` 的 `get_window`），ACL 只按调用窗口授权（`webview/mod.rs` 的 `resolve_access`），window 插件的权限**没有 `scope`**。给插件窗口窗口权限 = 它能操作任意窗口（含主窗口），且能绕开 bridge 直接 `__TAURI_INTERNALS__.invoke`。「限自己」要放在**宿主层**（`control` 的归属校验，当前**缺失**——插件 A 能改插件 B 的窗口）。插件窗口动自己的正解是 `bridge.drag()`（原生，零 IPC）。
 
 ## 验证命令
