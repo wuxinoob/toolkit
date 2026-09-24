@@ -23,7 +23,7 @@ use std::sync::Arc;
 use toolbox_lib::protocol::codec::{json_envelope, line_json, raw_binary};
 use toolbox_lib::protocol::envelope::{Envelope, Kind};
 use toolbox_lib::protocol::codes;
-use toolbox_lib::services::{hotkey, schema, session, stream, table, ServiceError};
+use toolbox_lib::services::{external, hotkey, schema, session, stream, table, ServiceError};
 
 static FAILED: AtomicBool = AtomicBool::new(false);
 static PASSED: AtomicU64 = AtomicU64::new(0);
@@ -79,10 +79,17 @@ fn main() {
     );
 
     // ---- service table + schema ----
+    //
+    // Pinned on purpose, not derived from `table()` — a check that reads the
+    // thing it checks cannot notice a service appearing. The intent is "adding
+    // or removing a service is a deliberate, reviewable change", so when this
+    // fails the answer is to confirm the new entry and update the list, NOT to
+    // delete the check. (`notify` was added and this was left stale, which made
+    // the whole harness red — and a red harness is one nobody reads.)
     let names = table().iter().map(|s| s.name()).collect::<Vec<_>>();
     check(
         "service-table",
-        names == vec!["storage", "host", "proc", "stream", "bus", "hotkey"],
+        names == vec!["storage", "host", "proc", "stream", "bus", "hotkey", "notify"],
         &format!("{names:?}"),
     );
     let all_declare = table().iter().all(|s| !s.actions().is_empty());
@@ -256,6 +263,55 @@ fn main() {
         sch["codes"] == json!(codes::ALL),
         "a caller is told the codes instead of guessing at strings",
     );
+
+    // ---- external plugin lookup ----
+    //
+    // `plugin_info` exists so opening a plugin window does not read every
+    // manifest AND every entry file in the plugins directory (see `info_at`).
+    // The cost is the reason it exists, so what has to hold is that it answers
+    // the SAME question as the scan — a cheaper answer that disagrees would just
+    // be a faster bug.
+    {
+        use std::fs;
+        let root = std::env::temp_dir().join(format!("tb-checks-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        // The directory name deliberately differs from the id, which is the case
+        // in this repo too (`eyecare.demo/`, `probe.demo/`) and the reason the
+        // lookup has to walk the root rather than derive a path from the id.
+        let good = root.join("folder-name-is-not-the-id");
+        fs::create_dir_all(&good).unwrap();
+        fs::write(good.join("plugin.json"), r#"{"id":"a.demo","entry":"main.js"}"#).unwrap();
+        fs::write(good.join("main.js"), "export const manifest={id:'a.demo'}").unwrap();
+
+        let scan = external::scan_at(&root).unwrap();
+        let info = external::info_at(&root, "a.demo").unwrap();
+        check(
+            "plugin-info-agrees-with-scan",
+            info.as_ref().map(|i| (i.id.as_str(), i.dir.as_str(), i.entry_file.as_str()))
+                == scan.first().map(|p| (p.id.as_str(), p.dir.as_str(), p.entry_file.as_str())),
+            "one lookup resolves the same plugin to the same place as a full scan",
+        );
+        check(
+            "plugin-info-misses-are-none-not-an-error",
+            external::info_at(&root, "nope.demo").unwrap().is_none(),
+            "an unknown id is a plain miss, so a window can report it instead of failing",
+        );
+
+        // An entry that cannot be READ is not a plugin `scan_at` reports, so the
+        // lookup must not hand one out either — a window given that directory
+        // could not load anything from it. A directory is the portable way to
+        // make `fs::read` fail while the path still exists.
+        fs::remove_file(good.join("main.js")).unwrap();
+        fs::create_dir(good.join("main.js")).unwrap();
+        check(
+            "plugin-info-honours-the-loadability-rule",
+            external::info_at(&root, "a.demo").unwrap().is_none()
+                && external::scan_at(&root).unwrap().is_empty(),
+            "a plugin whose entry cannot be read is invisible to both",
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
 
     let passed = PASSED.load(Ordering::SeqCst);
     if FAILED.load(Ordering::SeqCst) {

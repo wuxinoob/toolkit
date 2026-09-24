@@ -415,6 +415,7 @@ pub fn run() {
             host_autostart_set,
             plugin_dialog,
             services::external::plugin_scan,
+            services::external::plugin_info,
             services::external::plugin_read_entry,
             services::external::plugin_open_dir
         ])

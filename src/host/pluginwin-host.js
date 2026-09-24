@@ -159,9 +159,14 @@ export async function mountPluginWindow() {
   try {
     if (!pluginId) throw new Error('missing ?plugin=<id> in the window URL');
 
-    // Resolve the plugin (manifest + dir + entry) through the Rust scanner.
-    const list = await invoke('plugin_scan');
-    const item = list.find((p) => p.id === pluginId);
+    // Resolve ONE plugin's location.
+    //
+    // This used to call `plugin_scan` and `.find()` the one it wanted, which made
+    // opening a window read every manifest AND every entry file in the plugins
+    // directory — ~900 KB of I/O on this repo, to learn a `dir` and an
+    // `entry_file` the main window already knew at boot. `plugin_info` reads
+    // manifests only and stops at the match.
+    const item = await invoke('plugin_info', { id: pluginId });
     if (!item) {
       throw new Error(`plugin "${pluginId}" not found in the plugins root — reinstall it or click Rescan`);
     }

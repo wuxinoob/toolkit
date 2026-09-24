@@ -114,14 +114,15 @@ test('the gateway keeps its blocking work off the async workers too', () => {
   assert.ok(gate > 0 && gate < spawn, 'the permission gate runs before the blocking hop');
 });
 
-test('the scan and entry-read commands go through the blocking pool', () => {
-  // These two are the heaviest file I/O in the app: `plugin_scan` walks the
-  // plugins directory and reads each plugin's manifest AND its entire entry
-  // file (the digest needs the bytes), and it runs at boot and again every time
-  // a plugin window opens. On the main thread that is a frozen window at the
-  // exact moment the user is waiting for one.
+test('the scan, lookup and entry-read commands go through the blocking pool', () => {
+  // These three are the file I/O in the app: `plugin_scan` walks the plugins
+  // directory and reads each plugin's manifest AND its entire entry file (the
+  // digest needs the bytes), `plugin_info` walks it reading manifests only, and
+  // `plugin_read_entry` reads one entry. The scan runs at boot and every time a
+  // plugin window opens; on the main thread that is a frozen window at the exact
+  // moment the user is waiting for one.
   const src = readFileSync(join(SRC, 'services', 'external.rs'), 'utf8');
-  for (const name of ['plugin_scan', 'plugin_read_entry']) {
+  for (const name of ['plugin_scan', 'plugin_info', 'plugin_read_entry']) {
     const start = src.indexOf(`async fn ${name}`);
     assert.ok(start > 0, `${name} should be an async fn`);
     const body = src.slice(start, src.indexOf('\n}\n', start));

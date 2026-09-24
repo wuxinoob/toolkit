@@ -13,6 +13,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { register } from 'node:module';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join, resolve } from 'node:path';
 
 // A window/localStorage shim, installed before any host module is imported —
 // ctx.js reads localStorage at import time.
@@ -245,6 +247,85 @@ test('windows.create: the one label shape the ACL matches is accepted', async ()
   // `floatwin` is now just another label that matches nothing.
   const msg = await reason(ctx.windows.create('floatwin', { url }));
   assert.match(msg ?? '', /matches no capability/, 'the retired bespoke label must no longer be special');
+});
+
+test('the shell is not statically imported by the entry', () => {
+  // The invariant behind a ~19x difference in what opening a window costs.
+  //
+  // `main.js` used to import `App.vue` STATICALLY, and a static import is
+  // fetched, parsed and evaluated by every window — including a plugin window,
+  // which never mounts the shell. It paid for the whole graph anyway (the shell,
+  // ViewHost, SettingsView, the entire `components/ui/` set, the toaster, the
+  // tooltips). Measured by walking the BUILT chunks: 782.3 KB over 24 chunks per
+  // plugin window, against 40.8 KB over 4 once the import became dynamic.
+  //
+  // The regression vector is a static import, so that is what this checks — and
+  // it has to be checked in the SOURCE. Walking the import graph from
+  // `pluginwin-host.js` would not see it: that file never imported `App.vue`,
+  // the two got linked together by the BUNDLER, because a module the entry pulls
+  // in statically lands in a chunk the dynamic plugin-window chunk then shares.
+  const main = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+  const code = main.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  assert.doesNotMatch(
+    code,
+    /^\s*import\s+App\s+from\s*['"]\.\/App\.vue['"]/m,
+    'a static `import App from "./App.vue"` makes every window load the whole shell — use `await import(...)`',
+  );
+  assert.match(
+    code,
+    /await import\(['"]\.\/App\.vue['"]\)/,
+    'and the shell must still be reachable, dynamically, from the main-window branch',
+  );
+});
+
+test('the plugin-window host does not pull the boot path or the built-ins', () => {
+  // The other half: `pluginwin-host.js` has its own import graph, and it must
+  // stay a thin loader. It needs the protocol hub and the theme scope; it does
+  // NOT need the boot path, the plugin registry, or a built-in plugin.
+  const root = fileURLToPath(new URL('..', import.meta.url));
+
+  /** Static import/export specifiers only — `import('x')` is dynamic and excluded. */
+  const specifiers = (src) => {
+    const out = [];
+    for (const m of src.matchAll(/\bfrom\s*['"]([^'"]+)['"]/g)) out.push(m[1]);
+    for (const m of src.matchAll(/^\s*import\s*['"]([^'"]+)['"]/gm)) out.push(m[1]);
+    return out;
+  };
+
+  const reachable = (entry) => {
+    const seen = new Set();
+    const stack = [entry];
+    while (stack.length) {
+      const file = stack.pop();
+      if (seen.has(file) || !existsSync(file)) continue;
+      seen.add(file);
+      for (const spec of specifiers(readFileSync(file, 'utf8'))) {
+        // A bare specifier is a package, not our source.
+        if (spec.startsWith('.')) stack.push(resolve(dirname(file), spec));
+      }
+    }
+    return [...seen].map((f) => f.slice(root.length).replace(/\\/g, '/'));
+  };
+
+  const graph = reachable(join(root, 'src/host/pluginwin-host.js'));
+  assert.ok(graph.length > 1, `the graph walk found nothing — did the import shape change? (${graph})`);
+
+  const forbidden = [
+    'src/App.vue',
+    'src/host/boot.js',
+    'src/host/registry.js',
+    'src/host/lifecycle.js',
+    'src/host/external.js',
+  ];
+  const leaked = forbidden.filter((f) => graph.includes(f));
+  assert.deepEqual(
+    leaked,
+    [],
+    `a plugin window would load ${leaked.join(', ')} — these belong to the main window.`,
+  );
+  const builtins = graph.filter((f) => f.startsWith('src/plugins/'));
+  assert.deepEqual(builtins, [], `a plugin window would load a built-in plugin: ${builtins}`);
 });
 
 test('the shell routes on the window LABEL, not on a query parameter', () => {

@@ -53,6 +53,54 @@ pub(crate) fn plugins_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// One plugin's location, without the digest.
+///
+/// Deliberately NOT `ExternalPlugin`: that type's `digest` is computed from the
+/// entry file's bytes, and a lookup that read them just to fill a field nobody
+/// asked for would give back the cost this exists to avoid. A separate type
+/// makes "there is no digest here" a fact of the shape rather than an empty
+/// string a caller might trust.
+#[derive(Serialize)]
+pub struct PluginInfo {
+    pub id: String,
+    pub dir: String,
+    pub manifest: Value,
+    pub entry_file: String,
+}
+
+/// The manifest fields both the full scan and the single lookup need.
+struct ManifestFacts {
+    id: String,
+    entry_file: String,
+    manifest: Value,
+    /// The raw text — the scan's digest is computed over it.
+    text: String,
+}
+
+/// Read and parse one plugin directory's `plugin.json`.
+///
+/// Shared, so the scan and the single lookup cannot drift on what counts as a
+/// plugin. `None` covers every way a directory fails to be one: no manifest,
+/// unparseable JSON, or a manifest with no `id`.
+fn read_manifest(dir: &Path) -> Option<ManifestFacts> {
+    let text = fs::read_to_string(dir.join("plugin.json")).ok()?;
+    let manifest: Value = serde_json::from_str(&text).ok()?;
+    let id = manifest
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if id.is_empty() {
+        return None;
+    }
+    let entry_file = manifest
+        .get("entry")
+        .and_then(|v| v.as_str())
+        .unwrap_or("main.js")
+        .to_string();
+    Some(ManifestFacts { id, entry_file, manifest, text })
+}
+
 /// Pure scan core (path-based, unit-testable).
 pub fn scan_at(root: &Path) -> Result<Vec<ExternalPlugin>, String> {
     let mut out = Vec::new();
@@ -62,40 +110,62 @@ pub fn scan_at(root: &Path) -> Result<Vec<ExternalPlugin>, String> {
         if !dir.is_dir() {
             continue;
         }
-        let manifest_path = dir.join("plugin.json");
-        let Ok(text) = fs::read_to_string(&manifest_path) else {
-            continue; // no manifest -> not a plugin, skip silently
+        let Some(facts) = read_manifest(&dir) else {
+            continue; // no/invalid manifest -> not a plugin, skip silently
         };
-        let Ok(manifest) = serde_json::from_str::<Value>(&text) else {
-            continue; // invalid JSON -> skip
-        };
-        let id = manifest
-            .get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        if id.is_empty() {
-            continue;
-        }
-        let entry_file = manifest
-            .get("entry")
-            .and_then(|v| v.as_str())
-            .unwrap_or("main.js")
-            .to_string();
-        let Ok(entry) = fs::read(dir.join(&entry_file)) else {
+        let Ok(entry) = fs::read(dir.join(&facts.entry_file)) else {
             continue; // unreadable entry -> not loadable, skip
         };
-        let digest = digest_of(&text, &entry);
+        let digest = digest_of(&facts.text, &entry);
         out.push(ExternalPlugin {
-            id,
+            id: facts.id,
             dir: dir.to_string_lossy().into_owned(),
-            manifest,
-            entry_file,
+            manifest: facts.manifest,
+            entry_file: facts.entry_file,
             digest,
         });
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(out)
+}
+
+/// Look up ONE plugin by id, reading no entry files.
+///
+/// `scan_at` answers the same question by reading every manifest AND every entry
+/// file — the digest needs the bytes. Measured on this repo that is ~900 KB of
+/// I/O across 8 plugins, and `pluginwin-host.js` paid all of it to learn one
+/// `dir` + `entry_file` that the main window already knew at boot. Opening a
+/// window should not cost a directory's worth of reads.
+///
+/// The directory name is NOT the id — a folder may be called anything, and in
+/// this repo several are (`eyecare.demo/`, `probe.demo/`) — so this still walks
+/// the root. What it does not do is read the entry files: manifests are ~300
+/// bytes each, and it stops at the match.
+///
+/// The entry's existence is still required, because `scan_at` skips a plugin
+/// whose entry cannot be read — a lookup that did not would hand a window a
+/// directory it cannot load from. Checked with metadata, not by reading it.
+pub fn info_at(root: &Path, id: &str) -> Result<Option<PluginInfo>, String> {
+    let entries = fs::read_dir(root).map_err(|e| format!("read plugins dir: {e}"))?;
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let Some(facts) = read_manifest(&dir) else {
+            continue;
+        };
+        if facts.id != id || !dir.join(&facts.entry_file).is_file() {
+            continue;
+        }
+        return Ok(Some(PluginInfo {
+            id: facts.id,
+            dir: dir.to_string_lossy().into_owned(),
+            manifest: facts.manifest,
+            entry_file: facts.entry_file,
+        }));
+    }
+    Ok(None)
 }
 
 /// Pure entry-reader core (path-based, unit-testable).
@@ -134,6 +204,22 @@ pub async fn plugin_scan(app: tauri::AppHandle) -> Result<Vec<ExternalPlugin>, S
     tauri::async_runtime::spawn_blocking(move || scan_at(&root))
         .await
         .map_err(|e| format!("scan task failed: {e}"))?
+}
+
+/// Where one plugin lives — what a plugin window needs to load its own entry.
+///
+/// A plugin window used to call `plugin_scan` and `.find()` the one it wanted,
+/// which made opening a window read every manifest and every entry file in the
+/// plugins directory. See `info_at` for the numbers.
+#[tauri::command]
+pub async fn plugin_info(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<Option<PluginInfo>, String> {
+    let root = plugins_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || info_at(&root, &id))
+        .await
+        .map_err(|e| format!("plugin info task failed: {e}"))?
 }
 
 /// Read a plugin's entry source. Same reasoning as `plugin_scan` — it is a file

@@ -4,7 +4,6 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 // are global on purpose — external plugins (Blob-URL ESM) cannot import a
 // component library, but they CAN use these classes.
 import './assets/app.css';
-import App from './App.vue';
 import { boot } from './host/boot.js';
 import { initTheme } from './host/theme.js';
 
@@ -74,6 +73,19 @@ if (isPluginWindow) {
   // `?mode=pluginwin&plugin=<id>&label=<label>` — the host page reads the rest.
   import('./host/pluginwin-host.js').then((m) => m.mountPluginWindow());
 } else {
+  // The shell is imported HERE, not at the top of the file, and the difference
+  // is not tidiness. A static import is fetched, parsed and EVALUATED by every
+  // window, and a plugin window never mounts the shell — but it was paying for
+  // the whole graph anyway: measured on this repo, `App.vue` pulls in ~615 KB of
+  // JS (the shell, ViewHost, SettingsView, the entire `components/ui/` set, the
+  // toaster, the tooltips) plus 166 KB of CSS. That is the bulk of what a plugin
+  // window costs to open, for code it will never run.
+  //
+  // A dynamic import keeps the module out of the graph a plugin window walks, so
+  // the cost lands on the one window that actually needs it. (It is the same
+  // reason `pluginwin-host.js` was already dynamic — this was just the half that
+  // got missed.)
+  const { default: App } = await import('./App.vue');
   const app = createApp(App);
   app.mount('#app');
 

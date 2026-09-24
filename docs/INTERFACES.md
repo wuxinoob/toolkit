@@ -16,7 +16,7 @@
 
 ---
 
-## 1. 原生入口：8 个命令
+## 1. 原生入口：9 个命令
 
 | # | 命令 | 用途 | 谁调用 | 在网关内 |
 |---|---|---|---|---|
@@ -25,11 +25,16 @@
 | 3 | `plugin_stream_open_raw` | 开一条 raw-binary 推送流 | `channel-raw` 方案 | ✗ 同上 |
 | 4 | `plugin_stream_close` | 取消一条流 | 两个 channel 方案的 `close()` | ✗ 同上 |
 | 5 | `plugin_register` | 上报插件声明的权限 | `lifecycle.loadPlugin` | ✗ 加载期引导 |
-| 6 | `plugin_scan` | 扫描磁盘插件目录 | `host/external.js`、`pluginwin-host.js` | ✗ 宿主内部操作 |
-| 7 | `plugin_read_entry` | 读插件入口源码 | 同上 | ✗ 同上 |
-| 8 | `plugin_open_dir` | 打开插件目录 | `SettingsView` | ✗ 同上 |
+| 6 | `plugin_scan` | 扫描磁盘插件目录（读 manifest **+ 每个入口文件**算 digest） | `host/external.js` | ✗ 宿主内部操作 |
+| 7 | `plugin_info` | 按 id 查**一个**插件的位置（只读 manifest） | `pluginwin-host.js` | ✗ 同上 |
+| 8 | `plugin_read_entry` | 读插件入口源码 | 同上 | ✗ 同上 |
+| 9 | `plugin_open_dir` | 打开插件目录 | `SettingsView` | ✗ 同上 |
 
-**1–4 是数据面**（必须携带 IPC `Channel`，塞不进 JSON 请求/响应信封），**5–8 是宿主自身的管理操作**，不是插件能力。两类都不经过权限闸口——插件也调用不到它们（5 由宿主调用、6–8 只在宿主 UI 里用）。
+**1–4 是数据面**（必须携带 IPC `Channel`，塞不进 JSON 请求/响应信封），**5–9 是宿主自身的管理操作**，不是插件能力。两类都不经过权限闸口——插件也调用不到它们（5 由宿主调用、6–9 只在宿主内部用）。
+
+> `plugin_info` 存在的唯一理由是**成本**：插件窗口以前调 `plugin_scan` 再 `.find()` 自己要的那个，
+> 于是开一个窗口要读遍插件目录里**所有** manifest **和所有入口文件**（本仓库实测 ~900KB），
+> 只为拿一个 `dir` + `entry_file` —— 而主窗口启动时早就知道。见 §1.2。
 
 > 原先还有第 9 个 `plugin_registry`，核查时发现**没有任何调用方**（Settings 页走网关的 `host/plugins`），已删除，避免留一个无人使用、无人校验的入口。
 
@@ -59,9 +64,34 @@
    就会饿死应用里其他 async 任务，那是同一个 bug 换顶帽子。阻塞池才是它该待的地方。
 
 两条都由 `tests/main-thread.test.mjs` 机器把关（第 1 条扫全部命令，第 2 条盯
-`plugin_rpc` / `plugin_scan` / `plugin_read_entry`）。**加新命令时它会替你记住这件事。**
+`plugin_rpc` / `plugin_scan` / `plugin_info` / `plugin_read_entry`）。
+**加新命令时它会替你记住这件事。**
 
-## 2. 网关背后的服务：6 个服务 / 29 个动作
+### 1.2 开一个插件窗口要付多少
+
+窗口的开启成本由**两件不相干的事**决定，两边都量过（本仓库实测）：
+
+**① 这个窗口加载多少 JS。** `main.js` 曾把 `App.vue` **静态**导入，而静态导入是
+每个窗口都要**取、解析、求值**的 —— 包括永远不挂载外壳的插件窗口。它为此付了
+`App.vue` 拉进来的整张图（外壳 + ViewHost + SettingsView + 整个 `components/ui/` +
+toaster + tooltip）。改成动态导入后，实测（`dist/assets/pluginwin-host-*.js` 的
+传递闭包）：
+
+| | 之前 | 之后 |
+|---|---|---|
+| 插件窗口加载的 JS | **782.3 KB**（24 chunks） | **40.8 KB**（4 chunks） |
+| 主窗口加载的 JS | 534.9 KB | 534.9 KB（不变） |
+
+**② 这个窗口要读多少磁盘。** 插件窗口曾调 `plugin_scan` 再 `.find()` 自己要的那个 ——
+而 `plugin_scan` 为了算 digest 会读**每个插件的完整入口文件**。本仓库 8 个插件、
+入口合计 ~896 KB（`moment-notes` 一个就 686 KB），全读一遍只为拿一个 `dir`。
+`plugin_info` 只读 manifest（每个 ~300 字节）并在命中处停下。
+
+**这两条都不是"优化"，是"别做无关的事"** —— 前者把不属于插件窗口的模块排除出它的图，
+后者把单条查询从"扫整个目录"降成"读一个清单"。**判断标准是「这个窗口真的需要它吗」**，
+不是「快一点」。
+
+## 2. 网关背后的服务：7 个服务 / 30 个动作
 
 | 服务 | 动作 | 说明 |
 |---|---|---|
@@ -71,6 +101,7 @@
 | `stream` | `close` `providers` `list` `session_open` `session_close` `open_in` `write_in` `close_in` | 推送流生命周期 + 第三方进程的会话登记 + **上行流**（插件按批把帧推给宿主侧 sink） |
 | `bus` | `publish` | 跨窗口广播（宿主 `app.emit` 扇出到所有窗口） |
 | `hotkey` | `register` `unregister` `unregister_all` `list` | 全局热键，**由宿主代插件注册**（`contributes.hotkeys`） |
+| `notify` | `send` | **操作系统**通知（动作中心/通知中心）。与 `ctx.ui.notify` 的站内 toast 是两回事：toast 只在用户看着这个窗口时有用 |
 
 分发是**查表**的：`services::route` 按 `name()` 找 `Service` 实现，并用该服务自己声明的
 `actions()` 先校验动作，`lib.rs` 里没有任何 `if service == ...`。加一个能力 = 加一个表项。
