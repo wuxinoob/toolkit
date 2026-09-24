@@ -30,7 +30,9 @@
 - **`git restore <path>` 按索引恢复，会连工作区里未提交的修改一起回滚**（本项目有多个并发会话在动同一仓库 → 动它之前先确认别处没在改）。反过来，恢复被误删的文件时它是**纯增量**的，不会覆盖已存在的东西。
 - **`git add <已删除的路径>` 会整条失败**（git 先校验全部 pathspec）→ 已暂存的删除不要再 add。
 - **窗口分发改按窗口 label，不按 URL 参数**：只有 label 是 `main` 的窗口 boot 宿主，其余走 `pluginwin-host.js`。**不要再写成 `if (mode === 'pluginwin') … else <boot 宿主>`** —— 那个 `else` 会让插件窗口跑起第二个完整宿主（重复注册热键、每个插件再激活一次、procman 再 auto-start 真实进程）。URL 校验也要求 `index.html?…&mode=pluginwin`（两个条件：入口页 + mode）。守卫在 `tests/window-options.test.mjs`。
-- **`App.vue` 只能动态导入**（`await import`）。静态导入会被**打包器**链进入口 chunk，而插件窗口的动态 chunk 共享它 → 每个插件窗口白付 782KB（实测；动态后 40.8KB）。**这个不变量要在源文件层面查「有没有静态 import」，走源图查不出来。**
+- **两个窗口 = 两个页面**：`index.html` → `src/main.js` → `assets/app.css`（外壳）；`pluginwin.html` → `src/pluginwin.js` → `assets/plugin.css`（插件窗口）。**一个页面的样式表是 `<link>`，在模块之前生效 → 只能在页面层选，JS 分支拦不住。** 两份共享 `assets/design-system.css`（令牌 + 64 个 `.tb-*`）。实测插件窗口 948 KB → **61 KB**。插件窗口的 URL 是 `pluginwin.html?plugin=…&label=…`。
+- **⚠️ 插件窗口里没有 Tailwind 工具类**（`plugin.css` 只有令牌 + `.tb-*`）。写了**静默失效** —— 元素就是没样式、不报错。用 `.tb-*` / 内联 `style` / 自己的 `<style>`。守卫在 `tests/window-options.test.mjs`（断言插件窗口路径的类名全是 `.tb-*`）。
+- **断言只匹配「你期望的那种错误」，就会把「另一种错误」当成成功** —— 本仓库已两次踩到（URL 校验的文案改了，而测试只查旧文案 → 被拒绝了却算通过）。**报错类断言要覆盖整个校验面。**
 - **`win:self` 做不到**：Tauri 的窗口命令**不校验调用者身份** —— 目标窗口由调用者传的 `label` 决定（`window/plugin.rs` 的 `get_window`），ACL 只按调用窗口授权（`webview/mod.rs` 的 `resolve_access`），window 插件的权限**没有 `scope`**。给插件窗口窗口权限 = 它能操作任意窗口（含主窗口），且能绕开 bridge 直接 `__TAURI_INTERNALS__.invoke`。「限自己」要放在**宿主层**（`control` 的归属校验，当前**缺失**——插件 A 能改插件 B 的窗口）。插件窗口动自己的正解是 `bridge.drag()`（原生，零 IPC）。
 
 ## 验证命令
