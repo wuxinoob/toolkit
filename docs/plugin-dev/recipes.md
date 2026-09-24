@@ -10,7 +10,7 @@
 | 文件访问（选择器 / 拖放）的现场验证 | `examples/plugins/fileprobe/` |
 | 内嵌终端 | `src/plugins/streamlab.js` |
 | 管进程 + 定时 + 重启 | `src/plugins/procman.js` |
-| 自绘标题栏的独立窗口 | `src/plugins/floatwin.js` + `floatwin-widget.js` |
+| 自绘标题栏的独立窗口 | `examples/plugins/eyecare/`（多窗口 + 自绘 chrome） |
 | 独立窗口（普通） | `examples/calc-plugin/` |
 
 ---
@@ -253,8 +253,11 @@ async activate(ctx) {
 ## 开一个自绘标题栏的窗口
 
 ```js
-const win = await ctx.windows.create('plugin-widget', {
-  url: 'index.html?mode=floatwin',   // 或你自己的 mode
+// label 决定哪个 capability 生效，所以必须以 `plugin-` 开头。
+const label = `plugin-${ctx.id.replace(/[^a-zA-Z0-9_-]/g, '-')}-widget`;
+
+const win = await ctx.windows.create(label, {
+  url: `index.html?mode=pluginwin&plugin=${encodeURIComponent(ctx.id)}&label=${label}`,
   width: 260, height: 120,
   transparent: true,
   decorations: false,                // ← 自绘的前提
@@ -276,7 +279,7 @@ bar.addEventListener('mousedown', (e) => {
 **要点**：
 - 插件窗口的 capability 恰好给两个权限：`start-dragging` + `close`
 - **尺寸/位置/置顶/透传归创建它的窗口**（主窗口），不在插件窗口自己的权限里
-- 完整参考 `floatwin.js`（创建方）+ `floatwin-widget.js`（窗口页）
+- 完整参考 `examples/plugins/eyecare/`（创建方 + 窗口页都在一个文件里）
 
 ---
 

@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 
 import { buildCtx } from './ctx.js';
-import { store, saveSettings, toast } from './store.js';
+import { store, saveSettings, toast, sortPluginList, sortViewList } from './store.js';
 import { events } from './events.js';
 import { hub } from '../protocol/hub.js';
 import { HOST_API } from '../protocol/contract.js';
@@ -268,8 +268,20 @@ export async function deactivate(plugin, { silent = false } = {}) {
     plugin._disposer = null;
     plugin._ctx = null;
     hub.dropSubscriptions(plugin.manifest.id);
+    // Only take the user off their page if the page was THIS plugin's.
+    //
+    // The test used to be "is the active id still in `store.views`", and that is
+    // false for the shell's OWN pages: `__settings` is a synthetic id that never
+    // enters `store.views`, so disabling ANY plugin while the user was reading
+    // Settings threw them onto the first plugin's page. The question worth
+    // asking is narrower, and it does not need to know about shell pages at all:
+    // did the page the user is looking at belong to the plugin that just left?
+    const owned = store.views
+      .filter((v) => v.pluginId === plugin.manifest.id)
+      .map((v) => v.viewId);
     store.views = store.views.filter((v) => v.pluginId !== plugin.manifest.id);
-    if (store.activeViewId && !store.views.some((v) => v.viewId === store.activeViewId)) {
+    sortViewList();
+    if (owned.includes(store.activeViewId)) {
       store.activeViewId = store.views[0]?.viewId || null;
     }
     setPluginState(plugin.manifest.id, 'inactive');
@@ -328,6 +340,7 @@ export async function loadPlugin(source, { declarative = null } = {}) {
   await registerWithHost(plugin.manifest);
   if (!store.plugins.some((p) => p.manifest.id === plugin.manifest.id)) {
     store.plugins.push({ manifest: plugin.manifest, status: 'inactive', error: null, note: apiNote });
+    sortPluginList();
   }
   return plugin;
 }

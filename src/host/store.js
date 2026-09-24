@@ -13,7 +13,7 @@ export const store = reactive({
   activeViewId: null,
   /** @type {Array<{id:number, message:string, type:string}>} */
   toasts: [],
-  /** DOM element reserved for plugin overlay content (eyecare break screen). */
+  /** DOM element reserved for plugin overlay content (a full-window takeover). */
   overlayEl: null,
   /** Scheme table snapshot, filled at boot for the diagnostics view. */
   schemes: [],
@@ -27,7 +27,7 @@ export const store = reactive({
      * reaches the OS until the user turns it on here — a plugin must not be able
      * to take a global shortcut just by shipping.
      *
-     *   { 'builtin.eyecare:pause': { key: 'ctrl+alt+p', enabled: false } }
+     *   { 'demo.breaktimer:pause': { key: 'ctrl+alt+p', enabled: false } }
      *
      * `key` is the user's binding, seeded from the plugin's declared default
      * the first time the action is seen. So a rebind survives a plugin update
@@ -42,6 +42,45 @@ export const store = reactive({
 export function saveSettings() {
   const { summonShortcut, hotkeys } = store.settings;
   localStorage.setItem('toolbox.settings', JSON.stringify({ summonShortcut, hotkeys }));
+}
+
+/* ---------------------------------------------------------------------------
+ * Display order
+ *
+ * Built-ins first, then external, then alphabetical within each group.
+ *
+ * Applied to the arrays the shell RENDERS FROM, not at render time, so every
+ * consumer reads one sequence: the sidebar, the Settings table, and the "which
+ * view do I fall back to when the current one disappears" choice. Sorting
+ * independently in each of those is exactly how they end up disagreeing.
+ *
+ * The key is the display NAME, compared case-insensitively. It is the string
+ * the user is actually reading; ordering by the raw id would produce a sequence
+ * nobody can predict from the screen (`builtin.procman` before `calc.demo` is
+ * not "alphabetical" to anyone looking at "Processes" and "Calculator").
+ * ------------------------------------------------------------------------- */
+
+/** `[isExternal, name]` — the comparable shape for both arrays. */
+function orderKey(entry) {
+  return [entry.builtin ? 0 : 1, String(entry.name ?? entry.title ?? '')];
+}
+
+function compareOrder(a, b) {
+  const [ab, an] = orderKey(a);
+  const [bb, bn] = orderKey(b);
+  if (ab !== bb) return ab - bb;
+  return an.localeCompare(bn, undefined, { sensitivity: 'base' });
+}
+
+/** Re-sort the plugin rows. Call after adding or removing one. */
+export function sortPluginList() {
+  const key = (p) => ({ builtin: p.manifest.builtin, name: p.manifest.name });
+  store.plugins.sort((a, b) => compareOrder(key(a), key(b)));
+}
+
+/** Re-sort the view list. Call after adding or removing views. */
+export function sortViewList() {
+  store.views.sort(compareOrder);
 }
 
 let toastSeq = 0;

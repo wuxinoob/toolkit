@@ -16,7 +16,7 @@ and both validate the same rules.
   "ch": "calc-view",      // stream / session channel id
   "svc": "storage",       // service name (req)
   "act": "get",           // action name (req)
-  "topic": "floatwin.config", // broadcast topic (evt)
+  "topic": "eyecare.state", // broadcast topic (evt)
   "code": "div_by_zero",  // machine-readable failure
   "msg": "…",             // human-readable failure
   "p": { }                // payload: any JSON value, or raw bytes on a binary wire

@@ -118,12 +118,9 @@
 
 | 功能 | 用到的接口 |
 |---|---|
-| notepad（内置） | `rpc:storage` · `event-bus` |
-| eyecare（内置） | `rpc:storage` · overlay 层 |
 | procman（内置） | `rpc:storage` · `pty-stream` · `rpc:host`(sessions) |
 | streamlab（内置） | `rpc:host` · `channel-json` · `channel-raw` · `event-bus` · `in-process` · 方案表 |
-| floatwin（内置） | `rpc:storage` · `event-bus` · `win:manage` |
-| floatwin-widget（窗口页） | `rpc:storage` · `event-bus` |
+| eyecare.demo（外部） | `rpc:storage` · overlay 层 · 多窗口 · `stdio-line`(sidecar) |
 | fileprobe.demo（外部） | `rpc:dialog` · `rpc:notify` · `rpc:host` |
 | calc.demo（外部） | `stdio-line`(经 `ctx.sidecar`) · `rpc:host` · `win:manage` |
 | probe.demo（外部） | 上述全部（除 pty / stdio） |

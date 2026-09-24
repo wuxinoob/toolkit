@@ -7,7 +7,7 @@ import {
   adoptNewPlugin,
   setPluginState,
 } from './lifecycle.js';
-import { store } from './store.js';
+import { store, sortPluginList } from './store.js';
 import { hub } from '../protocol/hub.js';
 
 /** Host identity: the only caller allowed to revoke a plugin registration. */
@@ -75,6 +75,7 @@ async function revokeNativeGrant(id) {
 function dropPluginRow(id) {
   const i = store.plugins.findIndex((p) => p.manifest.id === id);
   if (i >= 0) store.plugins.splice(i, 1);
+  sortPluginList();
 }
 
 /** Import a plugin's entry through a Blob URL, then release the URL. */
@@ -112,6 +113,7 @@ function rememberFailure(item, e) {
       error: String(e),
       note: null,
     });
+    sortPluginList();
   }
 }
 

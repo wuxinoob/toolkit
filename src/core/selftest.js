@@ -20,6 +20,7 @@ import { descriptors, assertSupports, Capability } from '../protocol/registry.js
 import { transportIds } from '../protocol/transports/index.js';
 import { buildCtx } from '../host/ctx.js';
 import { store } from '../host/store.js';
+import { builtinSources } from '../host/registry.js';
 
 const HOST = '__host__';
 const disposerStub = { track() {} };
@@ -261,10 +262,22 @@ const tests = [
     async () => {
       if (!store.booted) throw new Error('store.booted is false (suite ran too early?)');
       const ids = store.views.map((v) => v.viewId);
-      for (const expected of ['builtin.notepad/notepad', 'builtin.procman/procman', 'builtin.streamlab/streamlab']) {
-        if (!ids.includes(expected)) throw new Error(`view missing: ${expected} (have: ${ids.join(', ')})`);
+      // Derived from the registry rather than hardcoded. A literal list has two
+      // failure modes and this check had both: it kept passing after the plugin
+      // it named was deleted (so it stopped covering anything), and it silently
+      // did not cover a plugin added later. Reading the registry means the
+      // assertion is "every shipped built-in registered its declared view",
+      // which is the property worth having and never needs editing.
+      for (const mod of builtinSources()) {
+        const declared = mod.manifest.contributes?.views ?? [];
+        for (const v of declared) {
+          const expected = `${mod.manifest.id}/${v.id}`;
+          if (!ids.includes(expected)) {
+            throw new Error(`view missing: ${expected} (have: ${ids.join(', ')})`);
+          }
+        }
       }
-      return `views registered: ${ids.length}`;
+      return `views registered: ${ids.length}, covering ${builtinSources().length} built-in(s)`;
     },
   ],
   [

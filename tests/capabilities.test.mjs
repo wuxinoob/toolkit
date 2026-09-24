@@ -18,7 +18,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { register } from 'node:module';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 
 // `lifecycle.js` now pulls in the component factory (host/ui.js -> Vue SFCs +
 // `import.meta.glob`), none of which Node can resolve. The stub loader fakes the
@@ -85,7 +87,6 @@ const NEEDS = {
 const WHERE = [
   ['src/host/ctx.js', 'default.json', 'the main window (host + builtin plugins)'],
   ['src/host/pluginwin-host.js', 'pluginwin.json', 'plugin-* windows'],
-  ['src/plugins/floatwin-widget.js', 'floatwin.json', 'the floating widget'],
 ];
 
 const methodsUsed = (source) => {
@@ -131,4 +132,63 @@ test('the effective set really does expand core:default', () => {
   assert.ok(granted.has('core:window:allow-get-all-windows'), 'window:default is expanded');
   assert.ok(granted.has('core:event:allow-listen'), 'event:default is expanded');
   assert.ok(!granted.has('core:window:allow-nonsense'), 'and it is not a blanket allow');
+});
+
+/* ---------------------------------------------------------------------------
+ * Source vs. compiled — the check that was missing
+ *
+ * Everything above reads `capabilities/*.json`: the SOURCE. The app does not.
+ * Tauri compiles those files into the binary — `tauri-build` writes
+ * `OUT_DIR/capabilities.json` and `generate_context!` embeds it — and Cargo
+ * caches the result. So the two can disagree, and when they do, the source
+ * looks perfect while the running app denies everything.
+ *
+ * It happened for real. A build ran while `capabilities/` was momentarily
+ * incomplete and wrote `{}`. The source came back seconds later; the build
+ * output did not. The next launch denied `core:event:allow-listen`,
+ * `core:window:allow-get-all-windows` and `pty:allow-spawn` — every permission
+ * the files declare — so plugins failed on their first API call. The reported
+ * symptom was "the plugins are broken", and nothing in the repo pointed at the
+ * ACL. This is that pointer.
+ * ------------------------------------------------------------------------- */
+
+test('the compiled ACL contains every capability the source declares', () => {
+  const dir = fileURLToPath(new URL('../src-tauri/capabilities/', import.meta.url));
+  const sources = readdirSync(dir)
+    .filter((f) => f.endsWith('.json'))
+    .map((f) => ({ file: f, ...JSON.parse(readFileSync(join(dir, f), 'utf8')) }));
+  assert.ok(sources.length > 0, 'the capabilities directory should not be empty');
+
+  // Cargo keeps one ACL per build-script hash; the newest is the one the last
+  // build produced. Absent entirely on a checkout with no Rust build — that is
+  // not a failure, it is nothing to compare.
+  const buildRoot = fileURLToPath(new URL('../src-tauri/target/debug/build/', import.meta.url));
+  if (!existsSync(buildRoot)) return;
+  const artifacts = readdirSync(buildRoot)
+    .map((d) => join(buildRoot, d, 'out', 'capabilities.json'))
+    .filter((p) => existsSync(p))
+    .map((p) => ({ path: p, mtime: statSync(p).mtimeMs }))
+    .sort((a, b) => b.mtime - a.mtime);
+  if (artifacts.length === 0) return;
+
+  const newest = artifacts[0];
+  const present = new Set(Object.keys(JSON.parse(readFileSync(newest.path, 'utf8'))));
+
+  // Only capabilities that EXISTED when this build ran. One added afterwards is
+  // legitimately absent until the next build; what must never happen is a file
+  // the build could see and did not compile in.
+  const missing = sources
+    .filter((s) => statSync(join(dir, s.file)).mtimeMs <= newest.mtime)
+    .map((s) => s.identifier)
+    .filter((id) => !present.has(id));
+
+  assert.deepEqual(
+    missing,
+    [],
+    `the compiled ACL is missing ${missing.join(', ')}. It was built from an incomplete ` +
+      'capabilities/ directory and Cargo cached the result, so the source looks correct while ' +
+      'the running app denies EVERY window permission (event.listen, window.get_all_windows, ' +
+      'pty.spawn …) and the plugins look broken. ' +
+      `Fix: \`cargo clean -p toolbox\` then rebuild. (artifact: ${newest.path})`,
+  );
 });

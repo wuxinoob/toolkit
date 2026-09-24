@@ -13,10 +13,10 @@
 ```
 --- boot 2026-09-22T03:07:43.010Z ---
 message plane: rpc, channel-json, channel-in, channel-raw, event-bus, stdio-line, pty-stream, in-process
-boot timing (ms): debug 42 | reap 58 | schemes 60 | builtins 1722 | external 1891 | hotkey 1899
-  plugin load (ms): builtin.notepad 3 | builtin.eyecare 2 | …
-boot ok: 9 plugins, 9 views, active=builtin.notepad/notepad
-  plugin builtin.notepad: active
+boot timing (ms): debug 10 | reap 12 | uikit 399 | schemes 402 | builtins 429 | external 640 | hotkey 646
+  plugin load (ms): builtin.procman 24 | builtin.streamlab 3 | …
+boot ok: 10 plugins, 6 views, active=builtin.procman/procman
+  plugin builtin.procman: active
   plugin my.plugin: error — [plugin:my.plugin] view "main" not declared in manifest.contributes.views
 --- toolbox selftest … : 15/15 passed ---
 ```
@@ -93,8 +93,8 @@ window.__toolbox.selftest()
 日志里的 `boot timing` 和 `plugin load` 直接指出来：
 
 ```
-boot timing (ms): debug 42 | reap 58 | schemes 60 | builtins 1722 | external 1891 | hotkey 1899
-  plugin load (ms): builtin.notepad 3 | builtin.floatwin 1600 | …
+boot timing (ms): debug 10 | reap 12 | uikit 399 | schemes 402 | builtins 429 | external 640 | hotkey 646
+  plugin load (ms): builtin.procman 24 | builtin.streamlab 1600 | …
 ```
 
 **`bootPlugins` 是串行 await 的** —— 一个插件的 `activate()` 慢，
@@ -143,6 +143,41 @@ boot timing (ms): debug 42 | reap 58 | schemes 60 | builtins 1722 | external 189
 
 **别加不必要的权限**：订阅、读自己的热键、关自己开的流都**不要**权限
 （见 [manifest.md](manifest.md#permissions--权限清单)）。
+
+### 全都缺权限？先看**编译出来的** ACL，不是源文件
+
+如果报的不是某一个权限，而是**每个窗口 API 都缺** ——
+`core:event:allow-listen`、`core:window:allow-get-all-windows`、`pty:allow-spawn` ——
+那问题不在插件的清单里，而是**整个 capability 集合没进二进制**。
+
+Tauri 运行时**不读** `capabilities/*.json`：`tauri-build` 把它们编译成
+`OUT_DIR/capabilities.json`，`generate_context!` 再嵌进可执行文件，
+而 **Cargo 会缓存这个结果**。所以「源文件正确」和「跑起来的应用有权限」是两件事 ——
+源文件对不上产物的时候，**每个测试都通过、而运行时什么都干不了**，
+症状看起来就是「插件全坏了」。
+
+**判据**：
+
+```bash
+for f in src-tauri/target/debug/build/toolbox-*/out/capabilities.json; do
+  echo "$(wc -c < "$f")  $f"
+done
+```
+
+最新那个应该是**上千字节**的 JSON。**`2` 就是 `{}`** —— 空 ACL：
+那次构建读到的 `capabilities/` 是空的（文件被误删、checkout 到一半、
+或构建正好撞上写入）。产物里还带着时间戳，能对上是哪一次构建干的。
+
+**修**：
+
+```bash
+cargo clean -p toolbox
+cd src-tauri && cargo build
+```
+
+`tests/capabilities.test.mjs` 现在盯着这件事：它把**编译出来的** ACL 和磁盘上的
+`capabilities/*.json` 逐条对比，所以「源文件看着对、产物是空的」会直接测失败，
+并告诉你上面这条修复命令。**它替代不了重启应用** —— 清完记得重新构建。
 
 ---
 

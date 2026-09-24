@@ -6,7 +6,7 @@ import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi';
 import { hub } from '../protocol/hub.js';
 import { Capability, assertSupports } from '../protocol/registry.js';
 import { protocolContract } from '../protocol/contract.js';
-import { store, toast } from './store.js';
+import { store, toast, sortViewList } from './store.js';
 import { PLUGIN_ATTR } from './pluginTheme.js';
 import { createUiKit } from './ui.js';
 
@@ -41,9 +41,8 @@ export function buildCtx(plugin, disposer) {
    * made it the one surface here with no allow-list — everything else (service
    * actions, capabilities, the component vocabulary) is an explicit, fail-closed
    * list. The blast radius was small, because Tauri matches capabilities by
-   * window LABEL and the only labels a plugin can reach (`plugin-*`, `floatwin`)
-   * grant three permissions each; so no option could escalate. What it could do
-   * is surprise.
+   * window LABEL and the only labels a plugin can reach (`plugin-*`) grant three
+   * permissions each; so no option could escalate. What it could do is surprise.
    */
   /** The window-local topic the host publishes OS file drops on. */
   const DROP_TOPIC = 'host:drop';
@@ -78,36 +77,39 @@ export function buildCtx(plugin, disposer) {
   /**
    * A plugin window may only load the app's OWN entry page.
    *
-   * Both built-ins pass `index.html?mode=…`, which is how the host page decides
-   * what to render. An arbitrary URL would replace the host page with remote
-   * content and skip `pluginwin-host.js` — the documented loader that hands the
-   * plugin its `bridge`. The window would carry no IPC (no capability declares a
-   * remote origin, so Tauri denies it by default), so this is not an escalation;
+   * Every plugin window passes `index.html?mode=pluginwin&…`, which is how the
+   * host page decides what to render. An arbitrary URL would replace the host
+   * page with remote content and skip `pluginwin-host.js` — the documented
+   * loader that hands the plugin its `bridge`. The window would carry no IPC
+   * (no capability declares a remote origin, so Tauri denies it by default), so
+   * this is not an escalation;
    * it is an undeclared capability that breaks the one contract the window host
    * has.
    */
   /**
    * A window label must be one the native ACL can match.
    *
-   * Tauri matches capabilities by window LABEL, and the only files that grant a
-   * plugin window anything are:
+   * Tauri matches capabilities by window LABEL, and the only file that grants a
+   * plugin window anything is:
    *
    *   pluginwin.json  ->  ["plugin-*"]   drag + close + core:default
-   *   floatwin.json   ->  ["floatwin"]   drag + close + core:default
    *
-   * A label like `my-win` matches NEITHER, so the window comes up with no
+   * A label like `my-win` matches NOTHING, so the window comes up with no
    * permissions at all — it cannot be dragged and its close button silently
    * fails with an ACL denial. That is a confusing way to fail, and it is
    * entirely predictable from the label, so it is refused here instead.
    *
-   * `builtin.floatwin` is the one plugin that owns a bespoke capability file;
-   * everything else uses the shared `plugin-*` one.
+   * This used to have a second arm: `builtin.floatwin` owned a bespoke
+   * `floatwin.json` capability for the label `floatwin`, so that one label was
+   * allowed through. Both the plugin and its capability are gone, and the arm
+   * with them — which is the point of having the check here rather than in a
+   * doc: the list of reachable labels is now exactly one pattern.
    */
   function assertWindowLabel(label) {
     if (typeof label !== 'string' || !label) {
       throw new Error(PREFIX_NEEDS_LABEL);
     }
-    if (label.startsWith('plugin-') || label === 'floatwin') return label;
+    if (label.startsWith('plugin-')) return label;
     const suggestion = 'plugin-' + label.replace(/[^a-zA-Z0-9_-]/g, '-');
     throw new Error(
       PREFIX_LABEL_DENIED.replace('%L', label).replace('%S', suggestion),
@@ -656,8 +658,13 @@ export function buildCtx(plugin, disposer) {
           slot: decl.slot || 'tool',
           title: decl.title || manifest.name,
           icon: decl.icon || '🧩',
+          // The view carries its own ordering key, so the list can be re-sorted
+          // without looking the plugin up again. `manifest.builtin` is set by
+          // `loadPlugin` before `activate()` runs, so it is already correct here.
+          builtin: Boolean(manifest.builtin),
           render,
         });
+        sortViewList();
       }
     },
   };

@@ -23,11 +23,25 @@ import { readFileSync } from 'node:fs';
 import { register } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { readdirSync } from 'node:fs';
+import { readdirSync, existsSync } from 'node:fs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 
-const BUILTIN = ['notepad', 'eyecare', 'procman', 'streamlab', 'floatwin'];
+/**
+ * The built-ins, DERIVED from the registry rather than listed here.
+ *
+ * `src/host/registry.js` IS the list — it is what the app ships — so reading it
+ * means this audit cannot silently stop covering a plugin that was added, nor
+ * keep auditing one that was deleted. The literal that used to sit here had the
+ * second failure mode for real: it named `notepad` (and `eyecare`, and
+ * `floatwin`) long after those were removed, so several tests below passed
+ * vacuously on an empty set of files they could no longer read.
+ */
+const BUILTIN = [
+  ...readFileSync(path.join(root, 'src/host/registry.js'), 'utf8').matchAll(
+    /from '\.\.\/plugins\/([a-z0-9-]+)\.js'/g,
+  ),
+].map((m) => m[1]);
 const EXAMPLES = [
   // The two live-check plugins. They are here because they exercise the parts
   // of the surface nothing else does — native dialogs, OS drops, OS
@@ -212,6 +226,20 @@ function registeredViews(src) {
 
 // ------------------------------- built-in plugins ------------------------------
 
+test('the built-in list is read from the registry, and is not empty', () => {
+  // Guards the derivation above. Every test in this section loops over BUILTIN,
+  // so an empty or mis-parsed list would make them all pass while auditing
+  // nothing — the exact failure the derivation exists to prevent.
+  assert.ok(
+    BUILTIN.length > 0,
+    'no built-in modules found in src/host/registry.js — the import shape changed, ' +
+      'so this whole section is now vacuous',
+  );
+  for (const name of BUILTIN) {
+    assert.ok(existsSync(path.join(root, `src/plugins/${name}.js`)), `registry names a missing file: ${name}.js`);
+  }
+});
+
 test('builtin plugins: manifests parse, ids are unique, views are declared', () => {
   const seen = new Set();
   for (const name of BUILTIN) {
@@ -270,11 +298,8 @@ test('builtin plugins: the declared permission set is not silently over-broad', 
   // a permission model rots. This pins the exact set per plugin so widening it
   // is a deliberate, reviewable change.
   const expected = {
-    notepad: ['rpc:storage', 'rpc:bus'],
-    eyecare: ['rpc:storage'],
     procman: ['rpc:storage', 'rpc:stream', 'rpc:host'],
     streamlab: ['rpc:host', 'rpc:stream', 'rpc:bus', 'rpc:storage'],
-    floatwin: ['rpc:storage', 'rpc:bus', 'win:manage'],
   };
   for (const name of BUILTIN) {
     const manifest = extractManifest(read(`src/plugins/${name}.js`), name);
@@ -582,7 +607,6 @@ test('theming: every .tb-* class a plugin uses actually exists in the stylesheet
 
   const files = [
     ...BUILTIN.map((n) => `src/plugins/${n}.js`),
-    'src/plugins/floatwin-widget.js',
     'src/App.vue',
     'src/views/SettingsView.vue',
   ];
@@ -816,7 +840,7 @@ test('theming: no plugin hard-codes a colour', () => {
   // legitimate case is the fallback argument of the token reader, because xterm
   // is a canvas and needs a concrete value — so that form is stripped first.
   const offenders = [];
-  for (const rel of [...BUILTIN.map((n) => `src/plugins/${n}.js`), 'src/plugins/floatwin-widget.js']) {
+  for (const rel of BUILTIN.map((n) => `src/plugins/${n}.js`)) {
     const src = read(rel)
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/^\s*\/\/.*$/gm, '')
@@ -958,14 +982,12 @@ test('factory: built-in plugin views are built through the factory, not innerHTM
   // component library". An `innerHTML =` assignment bypasses the factory, and
   // because it is invisible to every other check it is exactly the kind of thing
   // a later edit reintroduces. (Passing `innerHTML` as a PROP is fine — that goes
-  // through Vue, and is how the Markdown preview is rendered.)
+  // through Vue, which sanitises and escapes on its own terms.)
   //
-  // No exception list: the only remaining `innerHTML =` in the tree is
-  // `floatwin-widget.js`, which is a plugin's own WINDOW — a separate document
-  // that builds its own DOM with its own CSS. It is not in BUILTIN precisely
-  // because it is not a view. (The first version of this test carried an
-  // exception list for it anyway, and an assertion about the list being
-  // non-empty caught that it was dead code.)
+  // No exception list. The first version of this test carried one for
+  // `floatwin-widget.js` (a plugin's own WINDOW — a separate document that
+  // builds its own DOM), and an assertion about the list being non-empty caught
+  // that it was dead code. That file is gone now, and the list stayed empty.
   const offenders = [];
   for (const name of BUILTIN) {
     const file = `src/plugins/${name}.js`;
@@ -989,9 +1011,9 @@ test('factory: built-in plugin views are built through the factory, not innerHTM
 test('plugins: no plugin hard-codes a transport command instead of a scheme', () => {
   // A plugin reaching for invoke()/a raw Channel would bypass the permission
   // gate and the scheme table — exactly what the unified protocol exists to
-  // prevent. Only the protocol layer itself (and the host's own window pages
-  // floatwin-widget.js / pluginwin-host.js, which run outside the plugin host
-  // and have no ctx) may do that.
+  // prevent. Only the protocol layer itself (and the host's own window page
+  // pluginwin-host.js, which runs outside the plugin host and has no ctx) may
+  // do that.
   const offenders = [];
   for (const rel of [
     ...BUILTIN.map((n) => `src/plugins/${n}.js`),

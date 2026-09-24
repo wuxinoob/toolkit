@@ -75,7 +75,7 @@ globalThis.cancelAnimationFrame ||= (id) => clearTimeout(id);
 
 // dynamic imports AFTER shims are in place
 const { boot } = await import('../src/host/boot.js');
-const { store } = await import('../src/host/store.js');
+const { store, sortPluginList } = await import('../src/host/store.js');
 const { builtinSources } = await import('../src/host/registry.js');
 const { deactivate } = await import('../src/host/lifecycle.js');
 const { descriptors } = await import('../src/protocol/registry.js');
@@ -86,9 +86,8 @@ const { hub } = await import('../src/protocol/hub.js');
  *
  * Clearing `store` is not enough: a plugin module caches its activation state
  * (`_ctx`), so a second boot would no-op and the test would assert against a
- * stale status. Deactivating also releases plugin timers (eyecare's 45-minute
- * interval, floatwin's status poll) which would otherwise keep this process
- * alive and hang the test runner.
+ * stale status. Deactivating also releases the plugin's timers and streams,
+ * which would otherwise keep this process alive and hang the test runner.
  */
 async function resetHost() {
   for (const mod of builtinSources()) {
@@ -139,7 +138,11 @@ test('boot: every built-in plugin activates with no errors', async () => {
   assert.equal(store.booted, true, 'boot must mark the store booted');
 
   const sources = builtinSources();
-  assert.equal(sources.length, 5, 'five built-in plugins expected');
+  // Deliberately not an exact count: how many built-ins ship is the registry's
+  // decision (see src/host/registry.js), and pinning it here meant this test
+  // failed for a change that was correct. What must hold is that the registry is
+  // not empty — otherwise the loop below proves nothing.
+  assert.ok(sources.length > 0, 'the registry must ship at least one built-in plugin');
   for (const mod of sources) {
     const row = store.plugins.find((p) => p.manifest.id === mod.manifest.id);
     assert.ok(row, `plugin ${mod.manifest.id} never registered`);
@@ -152,14 +155,17 @@ test('boot: every built-in plugin activates with no errors', async () => {
 });
 
 test('boot: the expected views are registered, one per declared view', async () => {
+  // Derived from the registry, so this asserts the property that matters —
+  // "every view a shipped built-in declares got registered" — and does not need
+  // editing when the set of built-ins changes. The literal that used to be here
+  // outlived three of the plugins it named.
+  const declared = builtinSources().flatMap((m) =>
+    (m.manifest.contributes?.views ?? []).map((v) => `${m.manifest.id}/${v.id}`),
+  );
+  assert.ok(declared.length > 0, 'the registry should declare at least one view');
+
   const ids = store.views.map((v) => v.viewId).sort();
-  for (const expected of [
-    'builtin.eyecare/eyecare',
-    'builtin.floatwin/floatwin',
-    'builtin.notepad/notepad',
-    'builtin.procman/procman',
-    'builtin.streamlab/streamlab',
-  ]) {
+  for (const expected of declared) {
     assert.ok(ids.includes(expected), `view ${expected} missing (have ${ids.join(', ')})`);
   }
   // every registered view carries what the shell needs to render a nav item
@@ -179,25 +185,25 @@ test('boot: the scheme table is published for the diagnostics view', async () =>
 });
 
 test('boot: every plugin declares its permissions to the native host', async () => {
+  const expectedIds = builtinSources().map((m) => m.manifest.id).sort();
   const registrations = invokeCalls.filter((c) => c.cmd === 'plugin_register');
-  assert.equal(registrations.length, 5, 'one registration per built-in plugin');
+  assert.equal(registrations.length, expectedIds.length, 'one registration per built-in plugin');
   for (const r of registrations) {
     assert.ok(r.args.pluginId, 'registration must carry a plugin id');
     assert.ok(Array.isArray(r.args.permissions), `${r.args.pluginId}: permissions must be an array`);
   }
   const ids = registrations.map((r) => r.args.pluginId).sort();
-  assert.deepEqual(ids, [
-    'builtin.eyecare',
-    'builtin.floatwin',
-    'builtin.notepad',
-    'builtin.procman',
-    'builtin.streamlab',
-  ]);
+  assert.deepEqual(ids, expectedIds);
 });
 
 test('boot: a plugin that throws on activate is contained, not fatal', async () => {
   // The blast radius of one bad plugin must be exactly one bad plugin: boot
   // still completes and the others still come up.
+  //
+  // The victim has to be a built-in that reads storage DURING activate, so the
+  // injected error lands inside `activate()` rather than after it — procman
+  // seeds its default profiles there.
+  const VICTIM = 'builtin.procman';
   await resetHost();
 
   invokeImpl = async (cmd, args) => {
@@ -208,7 +214,7 @@ test('boot: a plugin that throws on activate is contained, not fatal', async () 
     if (cmd === 'plugin_rpc') {
       const { msg } = args;
       // make storage reads explode for one plugin only
-      if (args.pluginId === 'builtin.eyecare') {
+      if (args.pluginId === VICTIM) {
         return { v: 1, kind: 'err', id: msg.id, code: 'storage/get', msg: 'simulated failure' };
       }
       return { v: 1, kind: 'res', id: msg.id, p: msg.act === 'get' ? null : true };
@@ -219,16 +225,105 @@ test('boot: a plugin that throws on activate is contained, not fatal', async () 
   await boot();
 
   assert.equal(store.booted, true, 'boot must still complete');
-  const eyecare = store.plugins.find((p) => p.manifest.id === 'builtin.eyecare');
-  assert.equal(eyecare.status, 'error', 'the failing plugin must be marked as an error');
-  assert.ok(eyecare.error, 'the error must be recorded, not swallowed');
-  const others = store.plugins.filter((p) => p.manifest.id !== 'builtin.eyecare');
+  const failed = store.plugins.find((p) => p.manifest.id === VICTIM);
+  assert.equal(failed.status, 'error', 'the failing plugin must be marked as an error');
+  assert.ok(failed.error, 'the error must be recorded, not swallowed');
+  const others = store.plugins.filter((p) => p.manifest.id !== VICTIM);
+  assert.ok(others.length > 0, 'there must be another plugin, or "contained" proves nothing');
   assert.ok(
     others.every((p) => p.status === 'active'),
     `other plugins must be unaffected: ${others.map((p) => `${p.manifest.id}=${p.status}`).join(', ')}`,
   );
   assert.ok(
-    !store.views.some((v) => v.pluginId === 'builtin.eyecare'),
+    !store.views.some((v) => v.pluginId === VICTIM),
     'a failed plugin must not leave a view behind',
+  );
+});
+
+/* ---------------------------------------------------------------------------
+ * Display order, and staying put
+ * ------------------------------------------------------------------------- */
+
+/** `[isExternal, name]` — the comparable key both lists are ordered by. */
+const rowKey = (p) => [p.manifest.builtin ? 0 : 1, p.manifest.name];
+const viewKey = (v) => [v.builtin ? 0 : 1, v.title];
+const byKey = (a, b) => a[0] - b[0] || a[1].localeCompare(b[1], undefined, { sensitivity: 'base' });
+
+test('the plugin list is ordered built-ins first, then alphabetically', async () => {
+  // The lenient gateway goes in BEFORE the reset: resetting deactivates the
+  // previous test's plugins, and that teardown fires `unlisten` — which the
+  // strict stub the previous test installs would reject as unhandled.
+  installGateway();
+  await resetHost();
+  await boot();
+
+  const rows = store.plugins.map(rowKey);
+  assert.deepEqual(
+    rows,
+    [...rows].sort(byKey),
+    `plugin rows out of order: ${store.plugins.map((p) => p.manifest.name).join(' | ')}`,
+  );
+
+  const views = store.views.map(viewKey);
+  assert.deepEqual(
+    views,
+    [...views].sort(byKey),
+    `views out of order: ${store.views.map((v) => v.title).join(' | ')}`,
+  );
+
+  // The rule really is "built-ins first", not merely alphabetical. A plugin
+  // whose name sorts before every built-in must still come LAST, because it is
+  // external — this is the assertion that fails if the builtin axis is dropped.
+  store.plugins.push({
+    manifest: { id: 'aaa.demo', name: 'AAA Demo', builtin: false },
+    status: 'inactive',
+    error: null,
+  });
+  sortPluginList();
+  const names = store.plugins.map((p) => p.manifest.name);
+  assert.equal(names[names.length - 1], 'AAA Demo', 'an external plugin sorts after the built-ins');
+  assert.ok(names.length > 1, 'and there were built-ins for it to sort after');
+});
+
+test('deactivate: disabling a plugin leaves the user where they were', async () => {
+  installGateway();
+  await resetHost();
+  await boot();
+
+  // The MODULE, not the store row — `deactivate` reads `plugin._ctx`, which only
+  // the module has. (SettingsView resolves it the same way.)
+  const victim = builtinSources()[0];
+  assert.ok(victim._ctx, 'the victim must be active, or deactivate returns early and this proves nothing');
+
+  // The shell's own pages are NOT in `store.views` — `__settings` is a synthetic
+  // id — so "is the active view still in store.views" is false for them, and the
+  // old check threw the user onto the first plugin's page every time they
+  // toggled ANY plugin off while reading Settings.
+  store.activeViewId = '__settings';
+  await deactivate(victim, { silent: true });
+  assert.equal(
+    store.activeViewId,
+    '__settings',
+    'disabling a plugin must not navigate away from Settings',
+  );
+});
+
+test('deactivate: the user IS moved off a page that belonged to the disabled plugin', async () => {
+  installGateway();
+  await resetHost();
+  await boot();
+
+  const victim = builtinSources()[0];
+  assert.ok(victim._ctx, 'the victim must be active, or deactivate returns early and this proves nothing');
+  const own = store.views.find((v) => v.pluginId === victim.manifest.id);
+  assert.ok(own, 'the victim must own a view, or this test proves nothing');
+
+  store.activeViewId = own.viewId;
+  await deactivate(victim, { silent: true });
+  assert.notEqual(store.activeViewId, own.viewId, 'a page that no longer exists must not stay active');
+  assert.ok(store.activeViewId, 'and the shell lands somewhere real rather than nowhere');
+  assert.ok(
+    store.views.some((v) => v.viewId === store.activeViewId),
+    'the fallback must be a view that actually exists',
   );
 });

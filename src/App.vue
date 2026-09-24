@@ -182,7 +182,8 @@ const navClass = (active) =>
         </div>
       </main>
 
-      <!-- Layer plugins mount overlay content into (eyecare's break screen, …). -->
+      <!-- Layer plugins mount overlay content into (a full-window takeover of
+           their own — a reminder, a blocking prompt). -->
       <div ref="overlayEl" class="tb-overlay"></div>
       <Toaster position="bottom-right" rich-colors close-button />
     </div>

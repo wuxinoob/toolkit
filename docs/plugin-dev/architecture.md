@@ -68,7 +68,7 @@ await ctx.windows.create('plugin-my-win', {
   （那个把 `bridge` 交给你的加载器）
 - 窗口选项走**白名单**，不在名单上的会被拒绝并告诉你名字
 - 自绘标题栏：传 `decorations: false`，然后自己画一条，用 `bridge.drag()` 拖。
-  参考 `builtin.floatwin`
+  参考 `examples/plugins/eyecare/`
 - 窗口的尺寸/位置/置顶/透传**归创建它的窗口**（主窗口），不在插件窗口自己的权限里 ——
   「能改自己尺寸」和「能被拖动」不是一回事
 
@@ -142,9 +142,9 @@ JS 侧只有接收回调、**没有 `send`**。所以别去找「从 JS 推给 R
 ### ① 启动日志
 
 ```
-boot timing (ms): debug 42 | reap 58 | schemes 60 | builtins 1722 | external 1891 | hotkey 1899
-  plugin load (ms): builtin.notepad 2163 | builtin.eyecare 34 | …
-boot ok: 9 plugins, 9 views, active=builtin.notepad/notepad
+boot timing (ms): debug 10 | reap 12 | uikit 399 | schemes 402 | builtins 429 | external 640 | hotkey 646
+  plugin load (ms): builtin.procman 24 | builtin.streamlab 3 | …
+boot ok: 10 plugins, 6 views, active=builtin.procman/procman
   plugin my.plugin: error — [plugin:my.plugin] view "main" not declared in manifest.contributes.views
 ```
 

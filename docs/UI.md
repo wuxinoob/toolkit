@@ -73,7 +73,6 @@ Three windows, two mechanisms, and one rule that keeps it honest.
 | window | label | frame | capability file |
 |---|---|---|---|
 | main | `main` | **native** (OS) | `capabilities/default.json` |
-| floating widget | `floatwin` | **self-drawn** | `capabilities/floatwin.json` |
 | plugin windows | `plugin-*` | **self-drawn** | `capabilities/pluginwin.json` |
 
 A self-drawn window is a plugin calling `ctx.windows.create(label, { decorations: false, … })`
@@ -194,7 +193,7 @@ Two things do not inherit, and each needs its own handling:
   the tokens off the document (`readTermTheme()`) and re-applies them when the
   theme changes. This is the only place a token is copied into JS, and the copy is
   refreshed rather than frozen.
-- **A transparent window** (floatwin) needs alpha, which tokens do not carry. It
+- **A transparent window** needs alpha, which tokens do not carry. It
   uses `color-mix(in srgb, var(--color-surface) 97%, transparent)` — same hue,
   plus the alpha the window needs. Still zero JS.
 
@@ -419,7 +418,8 @@ deliberately **not** `position:absolute` and does **not** set
 - `pointer-events:none` is inherited, so an overlay button could never be clicked.
 
 Your overlay element positions *itself* (`position:fixed; inset:0` for a
-full-screen break screen) — see `src/plugins/eyecare.js` for a working example.
+full-screen takeover) and is handed to the host with `ctx.ui.mountOverlay(el)` —
+see `examples/plugins/eyecare/` for a working example.
 
 ## Adding a primitive
 

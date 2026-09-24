@@ -641,9 +641,9 @@ ctx.windows.onCloseRequested(async () => { /* 清理 */ });
 
 **三个约束，前两个宿主会直接拒绝，第三个要你自己注意**：
 
-1. **`label` 必须以 `plugin-` 开头**（或正好是 `floatwin`）。
+1. **`label` 必须以 `plugin-` 开头**。
    **这是最容易踩的坑。** Tauri 按 **window label** 匹配 capability，而给插件窗口授权的
-   只有两个文件：`pluginwin.json` 的 `["plugin-*"]` 和 `floatwin.json` 的 `["floatwin"]`。
+   只有一个文件：`pluginwin.json` 的 `["plugin-*"]`。
    **别的 label 匹配不到任何 capability → 那个窗口没有任何权限** ——
    拖不动，关闭按钮静默失败（ACL denial）。宿主现在会**直接拒绝**并给你建议的 label：
 
@@ -706,7 +706,7 @@ async function closeMe() {
 
 自绘标题栏时，插件窗口的 capability 恰好给两个权限：
 `core:window:allow-start-dragging` + `allow-close`。
-用 `bridge.drag()` 拖。参考 `builtin.floatwin`。
+用 `bridge.drag()` 拖。参考 `examples/plugins/eyecare/`（多窗口 + 自绘 chrome）。
 
 ### `bridge`（独立窗口）≠ `ctx`（主窗口）
 

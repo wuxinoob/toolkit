@@ -177,8 +177,8 @@ export async function boot() {
 
     // The component factory loads all 376 components. `activate()` awaits it too,
     // but whoever gets there FIRST pays for it — which used to be whichever
-    // plugin happened to be first, making the per-plugin timings a lie
-    // (`builtin.notepad 2163ms` was really the UI kit, not notepad).
+    // plugin happened to be first, making the per-plugin timings a lie (the
+    // first plugin's number was really the UI kit's).
     //
     // Loading it here gives it its own mark, so `plugin load (ms)` means what it
     // says.

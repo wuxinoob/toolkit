@@ -3,22 +3,30 @@
  * Static imports keep first-party plugins bundled with the app; external
  * plugins (app_data_dir/plugins/*) join via Blob-URL dynamic import.
  *
- * Every built-in plugin exercises a different part of the message plane, so
- * the scheme table is covered end to end by shipped code:
- *   notepad    storage (rpc) + broadcast (event-bus)
- *   eyecare    storage + overlay + timers
+ * ## Kept deliberately small
+ *
+ * A built-in is code the user cannot uninstall and that every boot pays for, so
+ * it has to earn its place by covering part of the message plane that nothing
+ * else covers:
+ *
  *   procman    pty (pty-stream) + sidecar-free multi-process management
  *   streamlab  channel-json / channel-raw / stdio-line / in-process, side by side
- *   floatwin   multi-window + broadcast instead of polling
+ *
+ * That is now the whole list. `notepad`, `eyecare` and `floatwin` used to be
+ * here too — three working demos, but demos: a notepad, a break-timer overlay
+ * and a floating widget are not parts of the message plane, and each one cost
+ * every boot. A plugin a user wants is a plugin a user can install; the place
+ * to learn the framework from is `examples/plugins/`.
+ *
+ * So the rule for adding one: **it must exercise a scheme that nothing else in
+ * this table exercises.** "It is a nice feature" is not a reason — that is what
+ * the plugins directory is for.
  */
-import notepad from '../plugins/notepad.js';
-import eyecare from '../plugins/eyecare.js';
 import procman from '../plugins/procman.js';
 import streamlab from '../plugins/streamlab.js';
-import floatwin from '../plugins/floatwin.js';
 
 const REGISTRY = new Map(
-  [notepad, eyecare, procman, streamlab, floatwin].map((mod) => [mod.manifest.id, mod]),
+  [procman, streamlab].map((mod) => [mod.manifest.id, mod]),
 );
 
 export function resolveBuiltin(id) {

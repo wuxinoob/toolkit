@@ -39,8 +39,8 @@
 │   └── <任意子目录>\  plugin.json + main.js
 └── plugin-data\                     ← 每个插件一个目录
     ├── __host__\data.json           ← 宿主自己的
-    ├── builtin.notepad\data.json
-    ├── builtin.floatwin\data.json
+    ├── builtin.procman\data.json
+    ├── builtin.streamlab\data.json
     └── msglog.demo\data.json
 ```
 

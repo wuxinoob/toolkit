@@ -245,8 +245,14 @@ function extractManifest(src, label) {
 }
 
 test('theme: every shipped theme contribution is valid and complete', () => {
+  // The built-ins come from the registry, not a literal — see the note in
+  // plugins.test.mjs. A stale list here means the check quietly stops covering
+  // the plugins it names.
+  const builtinNames = [
+    ...read('src/host/registry.js').matchAll(/from '\.\.\/plugins\/([a-z0-9-]+)\.js'/g),
+  ].map((m) => m[1]);
   const cases = [
-    ...['notepad', 'eyecare', 'procman', 'streamlab', 'floatwin'].map((n) => ({
+    ...builtinNames.map((n) => ({
       label: `src/plugins/${n}.js`,
       manifest: extractManifest(read(`src/plugins/${n}.js`), n),
     })),

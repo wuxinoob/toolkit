@@ -17,15 +17,17 @@ initTheme();
 // Secondary windows reuse this entry with a ?mode= query: they must render
 // their own page only and skip the whole plugin host — a second host would
 // double-register global shortcuts, timers and startup selftests.
-//   ?mode=floatwin                     -> builtin FloatWin widget page
 //   ?mode=pluginwin&plugin=<id>&label= -> generic EXTERNAL plugin window host
 //                                         (Blob-imports the plugin entry and
 //                                         calls its mountWindow(bridge))
+//
+// There used to be a second mode, `?mode=floatwin`, pointing at the built-in
+// FloatWin widget page. It went with the plugin: a page only one plugin could
+// use is that plugin's page, not a host feature. A plugin that wants a window
+// supplies its own entry and reaches it through `pluginwin`.
 const mode = new URLSearchParams(window.location.search).get('mode');
 
-if (mode === 'floatwin') {
-  import('./plugins/floatwin-widget.js').then((m) => m.mountWidget());
-} else if (mode === 'pluginwin') {
+if (mode === 'pluginwin') {
   import('./host/pluginwin-host.js').then((m) => m.mountPluginWindow());
 } else {
   const app = createApp(App);

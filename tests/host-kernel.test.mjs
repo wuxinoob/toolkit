@@ -114,7 +114,9 @@ test('ctx: unpermitted rpc is rejected before reaching invoke', async () => {
   await assert.rejects(() => ctx.rpc('host', 'info', {}), /missing permission/);
   await assert.rejects(() => ctx.sidecar('c', { exe: 'x' }), /missing permission/);
   await assert.rejects(() => ctx.pty('c', { program: 'x' }), /missing permission/);
-  await assert.rejects(() => ctx.windows.exists('floatwin'), /missing permission/);
+  // The permission gate fires BEFORE the label check, so any label does — this
+  // one just has to be a plausible one.
+  await assert.rejects(() => ctx.windows.exists('plugin-anything'), /missing permission/);
   assert.equal(invokeCalls.length, before, 'no invoke may be issued for unpermitted calls');
 });
 

@@ -765,7 +765,8 @@
     color: var(--color-success);
   }
 
-  /* The layer plugins mount overlay content into (eyecare's break screen, …).
+  /* The layer plugins mount overlay content into — a full-window takeover of
+     their own (a reminder, a blocking prompt).
      It is deliberately NOT position:absolute and does NOT set pointer-events:
      none. A plugin overlay positions itself (usually `position:fixed`), and an
      absolutely-positioned empty container would swallow every click in the app
