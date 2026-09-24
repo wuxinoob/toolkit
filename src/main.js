@@ -1,90 +1,75 @@
 import { createApp } from 'vue';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-// One stylesheet for every window: the design tokens and the `.tb-*` primitives
-// are global on purpose — external plugins (Blob-URL ESM) cannot import a
-// component library, but they CAN use these classes.
+// The MAIN window's stylesheet. A plugin window links `plugin.css` instead — see
+// the note at the top of `assets/app.css` for why that split exists and what it
+// saves.
 import './assets/app.css';
 import { boot } from './host/boot.js';
 import { initTheme } from './host/theme.js';
 
-// Before anything renders, in EVERY window: the theme is one attribute on <html>
-// and a plugin window is as entitled to it as the main one. index.html sets it
-// even earlier (inline, pre-paint) to avoid a flash; this is the authoritative
+// Before anything renders: the theme is one attribute on <html>. index.html sets
+// it even earlier (inline, pre-paint) to avoid a flash; this is the authoritative
 // read, and it also wires the OS listener and the cross-window one.
 initTheme();
 
 /**
- * Which window am I? — decided by the window's own LABEL.
+ * This entry belongs to the MAIN window, and it says so.
  *
- * This used to be decided by a `?mode=` query parameter:
- *
- *   if (mode === 'pluginwin')  -> plugin-window host
- *   else                       -> boot the whole plugin host
- *
- * and that `else` was a loaded gun. A plugin window opened with a bare
- * `index.html`, or with a stale `?mode=floatwin`, or with any typo, fell into it
- * and booted a SECOND host inside a plugin window. The blast radius is not
+ * It used to be a SHARED entry that decided what to render from a `?mode=`
+ * parameter, with an `else` arm that booted the whole plugin host — so a plugin
+ * window opened with a bare `index.html`, or with a stale `?mode=floatwin`, or
+ * with any typo, booted a SECOND host inside itself. The blast radius was not
  * cosmetic:
  *
- *   - `bootPlugins()` activates every built-in again, and `procman`
- *     AUTO-STARTS its profiles — a second set of real subprocesses. Its guard
- *     (`runningFor(p.id)`) reads per-window module state, so nothing dedupes
- *     them across windows.
- *   - `scanExternalPlugins()` loads and activates every drop-in plugin again, so
+ *   - `bootPlugins()` activates every built-in again, and `procman` AUTO-STARTS
+ *     its profiles — a second set of real subprocesses, and `runningFor()` reads
+ *     per-window module state so nothing dedupes them across windows.
+ *   - `scanExternalPlugins()` activates every drop-in plugin a second time, so
  *     its timers, sidecars and subscriptions exist twice.
- *   - `applySummonShortcut()` registers the summon hotkey a second time, and the
- *     plugin window's own `hotkey:summon` subscription calls
- *     `getCurrentWindow()` — so the summon key also raises the plugin window.
+ *   - `applySummonShortcut()` registers the summon hotkey again, and the plugin
+ *     window's own `hotkey:summon` subscription calls `getCurrentWindow()` — so
+ *     the summon key also raises the plugin window.
  *   - a second boot report and selftest land in `debug.log`.
  *   - the window renders the app SHELL instead of the plugin's UI, and the
- *     plugin's `mountWindow(bridge)` is never called — so the window is useless
- *     to the plugin that asked for it.
+ *     plugin's `mountWindow(bridge)` is never called.
  *
- * The one truly dangerous step, `plugin_reap_orphans()` (it kills every live
- * session), was already blocked: it is `require_main`-gated and the window is
- * not `main`. Everything else went through.
+ * (The one truly dangerous step, `plugin_reap_orphans()` — it kills every live
+ * session — was already blocked by its `require_main` gate.)
  *
- * So the branch is now on IDENTITY, not on a parameter a caller can get wrong.
- * `main` is the label `tauri.conf.json`'s window gets by default, and it is the
- * same discriminator the Rust side uses (`require_main`), so the two agree by
- * construction. Every other window goes to the plugin-window host, which either
- * mounts the plugin or renders an inline error naming the missing query
- * parameter — so the worst case is a readable message IN the window rather than
- * a silent second application.
+ * A plugin window now has its own PAGE: `pluginwin.html` → `src/pluginwin.js`.
+ * It never loads this file at all, which is the real fix — and it is also what
+ * made the stylesheet split possible, because a page picks its `<link>` before
+ * any module runs. No JS branch could have kept the shell's CSS out of a plugin
+ * window.
+ *
+ * This check is the belt to that brace: reachable only if something created a
+ * window pointing at `index.html` by a path that bypasses `ctx.windows.create`
+ * (a config entry, a future native command). `main` is the label
+ * `tauri.conf.json`'s window gets by default, and the same discriminator the
+ * Rust side uses (`require_main`), so the two agree by construction.
  */
-function windowLabel() {
+function isMainWindow() {
   try {
-    return getCurrentWindow().label;
+    return getCurrentWindow().label === 'main';
   } catch {
-    return null; // no Tauri (plain browser, `node --test`)
+    // No Tauri: a plain browser dev server. There is no second window to collide
+    // with there, and the shell is the only thing worth rendering.
+    return true;
   }
 }
 
-const label = windowLabel();
-// Without Tauri there is no label to read, and no second host to collide with,
-// so the query parameter is still the answer — that keeps a browser dev server
-// rendering whichever page it was asked for.
-const isPluginWindow =
-  label === null
-    ? new URLSearchParams(window.location.search).get('mode') === 'pluginwin'
-    : label !== 'main';
-
-if (isPluginWindow) {
-  // `?mode=pluginwin&plugin=<id>&label=<label>` — the host page reads the rest.
-  import('./host/pluginwin-host.js').then((m) => m.mountPluginWindow());
+if (!isMainWindow()) {
+  // Say so IN the window, rather than starting a second application.
+  document.body.innerHTML =
+    '<p style="font:13px/1.6 system-ui;padding:24px;max-width:52ch">' +
+    'This page is the <b>main window</b> of Toolbox, and this is not the main window. ' +
+    'A plugin window must load <code>pluginwin.html?plugin=&lt;id&gt;&amp;label=&lt;label&gt;</code> ' +
+    '— see <code>docs/plugin-dev/api.md</code>.</p>';
 } else {
-  // The shell is imported HERE, not at the top of the file, and the difference
-  // is not tidiness. A static import is fetched, parsed and EVALUATED by every
-  // window, and a plugin window never mounts the shell — but it was paying for
-  // the whole graph anyway: measured on this repo, `App.vue` pulls in ~615 KB of
-  // JS (the shell, ViewHost, SettingsView, the entire `components/ui/` set, the
-  // toaster, the tooltips) plus 166 KB of CSS. That is the bulk of what a plugin
-  // window costs to open, for code it will never run.
-  //
-  // A dynamic import keeps the module out of the graph a plugin window walks, so
-  // the cost lands on the one window that actually needs it. (It is the same
-  // reason `pluginwin-host.js` was already dynamic — this was just the half that
-  // got missed.)
+  // The shell is imported HERE rather than at the top of the file, and the
+  // difference is not tidiness: a static import is fetched, parsed and EVALUATED
+  // by whichever window loads this module. It is dynamic so that the cost lands
+  // only where the shell is actually mounted.
   const { default: App } = await import('./App.vue');
   const app = createApp(App);
   app.mount('#app');

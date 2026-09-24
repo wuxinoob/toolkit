@@ -56,9 +56,9 @@ test('windows.create: the plugin-window page is allowed', async () => {
   // test is about, so the assertion is only that the failure is not a
   // validation one.
   for (const url of [
-    'index.html?mode=pluginwin&plugin=x',
-    'index.html?plugin=x&label=plugin-y&mode=pluginwin', // parameter order is not fixed
-    'index.html?mode=pluginwin&plugin=x#anything', // nor is a fragment
+    'pluginwin.html?plugin=x&label=plugin-y',
+    'pluginwin.html?label=plugin-y&plugin=x', // parameter order is not fixed
+    'pluginwin.html?plugin=x#anything', // nor is a fragment
   ]) {
     const msg = await reason(ctx.windows.create('plugin-probe-a', { url, width: 200, height: 200 }));
     assert.ok(
@@ -68,28 +68,30 @@ test('windows.create: the plugin-window page is allowed', async () => {
   }
 });
 
-test('windows.create: an arbitrary URL is rejected', async () => {
+test('windows.create: anything that is not the plugin-window page is rejected', async () => {
   for (const url of [
     // Not the app's own page at all.
     'https://example.com',
     'http://127.0.0.1/x',
     'file:///etc/passwd',
-    'index.htmlx',
-    // The app's own page, but NOT the one that mounts a plugin. Every one of
-    // these used to be ACCEPTED, and `main.js`'s `else` arm then booted a whole
-    // second plugin host inside the window — a second set of auto-started
-    // processes, every drop-in plugin activated twice, and a window showing the
-    // app shell instead of the plugin's UI. They are refused at the call site
-    // now, where the author is looking.
+    'pluginwin.htmlx',
+    // Root-relative and traversal paths. The page has to resolve against the
+    // window's OWN origin; a caller must not be able to name somewhere else.
+    '/pluginwin.html',
+    '../pluginwin.html',
+    'x/pluginwin.html',
+    // The SHELL page. Handing it to a plugin window is what used to boot a whole
+    // second plugin host inside it — a second set of auto-started processes,
+    // every drop-in plugin activated twice, and a window rendering the app shell
+    // instead of the plugin's UI. Refused at the call site now, where the author
+    // is looking, with the correct shape in the message.
     'index.html',
+    'index.html?mode=pluginwin&plugin=x',
     'index.html?mode=floatwin',
-    'index.html?mode=plugin',
-    'index.html?plugin=x',
-    'index.html?mod=pluginwin',
   ]) {
     const msg = await reason(ctx.windows.create('plugin-probe-b', { url }));
     assert.ok(
-      msg && msg.includes('must be the app'),
+      msg && msg.includes('must be the'),
       `"${url}" should have been rejected, got: ${msg}`,
     );
   }
@@ -107,7 +109,7 @@ test('windows.create: the documented options still pass', async () => {
   // Everything the windowed plugins pass today, plus the neighbours a plugin
   // might reasonably want. A regression here would break every windowed plugin.
   const ok = {
-    url: 'index.html?mode=pluginwin&plugin=x&label=plugin-y',
+    url: 'pluginwin.html?plugin=x&label=plugin-y',
     title: 'x',
     width: 300,
     height: 400,
@@ -127,7 +129,13 @@ test('windows.create: the documented options still pass', async () => {
     visible: true,
   };
   const msg = await reason(ctx.windows.create('plugin-probe-d', ok));
-  assert.ok(msg === null || !msg.includes('not allowed'), `a documented option was refused: ${msg}`);
+  // Assert on the whole validation surface, not just the option check: with only
+  // `!msg.includes('not allowed')` a URL that the validator REFUSES passes this
+  // test, because a refusal says something else. It did exactly that.
+  assert.ok(
+    msg === null || !/not allowed|must be the/.test(msg),
+    `a documented option or url was refused: ${msg}`,
+  );
 });
 
 test('windows.create: the allow-list covers every option the built-ins pass', () => {
@@ -236,12 +244,12 @@ test('windows.create: the one label shape the ACL matches is accepted', async ()
   // capability, so `floatwin` was a second accepted label. Both are gone, and
   // the host's check now recognises exactly one pattern — which is the state
   // worth pinning, because a second arm is how the list rots.
-  const url = 'index.html?mode=pluginwin&plugin=x&label=plugin-y';
+  const url = 'pluginwin.html?plugin=x&label=plugin-y';
   for (const label of ['plugin-anything', 'plugin-my.plugin-main']) {
     const msg = await reason(ctx.windows.create(label, { url }));
     assert.ok(
-      msg === null || !/matches no capability/.test(msg),
-      `"${label}" should pass the label check, got: ${msg}`,
+      msg === null || !/matches no capability|must be the/.test(msg),
+      `"${label}" should pass both the label and url checks, got: ${msg}`,
     );
   }
   // `floatwin` is now just another label that matches nothing.
@@ -279,10 +287,14 @@ test('the shell is not statically imported by the entry', () => {
   );
 });
 
-test('the plugin-window host does not pull the boot path or the built-ins', () => {
-  // The other half: `pluginwin-host.js` has its own import graph, and it must
-  // stay a thin loader. It needs the protocol hub and the theme scope; it does
-  // NOT need the boot path, the plugin registry, or a built-in plugin.
+test('the plugin-window entry does not pull the boot path or the built-ins', () => {
+  // The other half: a plugin window is its own page with its own entry, and that
+  // entry must stay a thin loader. It needs the protocol hub and the theme scope;
+  // it does NOT need the boot path, the plugin registry, or a built-in plugin —
+  // and it must not reach the shell, or the stylesheet split's JS half is undone.
+  //
+  // The walk starts at `src/pluginwin.js` (what `pluginwin.html` loads), not at
+  // `pluginwin-host.js`, so it covers the page's own imports too.
   const root = fileURLToPath(new URL('..', import.meta.url));
 
   /** Static import/export specifiers only — `import('x')` is dynamic and excluded. */
@@ -308,7 +320,7 @@ test('the plugin-window host does not pull the boot path or the built-ins', () =
     return [...seen].map((f) => f.slice(root.length).replace(/\\/g, '/'));
   };
 
-  const graph = reachable(join(root, 'src/host/pluginwin-host.js'));
+  const graph = reachable(join(root, 'src/pluginwin.js'));
   assert.ok(graph.length > 1, `the graph walk found nothing — did the import shape change? (${graph})`);
 
   const forbidden = [
@@ -328,24 +340,101 @@ test('the plugin-window host does not pull the boot path or the built-ins', () =
   assert.deepEqual(builtins, [], `a plugin window would load a built-in plugin: ${builtins}`);
 });
 
-test('the shell routes on the window LABEL, not on a query parameter', () => {
-  // The structural half of the fix, and the half that cannot be bypassed.
-  // `ctx.windows.create` now refuses a URL that is not the plugin-window page,
-  // but a window can also come from `tauri.conf.json` or from a future native
-  // path — so the dispatch itself must not be steerable by a URL a caller
-  // controls. Reading the label makes a second host unreachable: the only way to
-  // boot the host is to BE the main window.
+test('both pages set the theme before first paint, identically', () => {
+  // The bundled stylesheet is a <link>, and a <link> applies before any module
+  // runs — so without an inline script a light-theme user sees one dark frame on
+  // every window open. That script has to be duplicated per page (it must run
+  // before the module graph, so it cannot live in a module), which makes it
+  // exactly the kind of thing that drifts silently: a divergence shows up as a
+  // flash nobody can reproduce on demand.
+  const scriptOf = (file) => {
+    const html = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+    const m = html.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(m, `${file} has no inline theme script`);
+    return m[1].replace(/\s+/g, ' ').trim();
+  };
+
+  assert.equal(
+    scriptOf('index.html'),
+    scriptOf('pluginwin.html'),
+    'the two inline theme scripts must be identical — see the note in pluginwin.html',
+  );
+
+  // And they must read the key `src/host/theme.js` writes, or the whole thing is
+  // a no-op that still looks correct.
+  const theme = readFileSync(new URL('../src/host/theme.js', import.meta.url), 'utf8');
+  const key = theme.match(/'(toolbox\.theme)'/)?.[1];
+  assert.ok(key, 'theme.js must name its storage key');
+  assert.ok(
+    scriptOf('index.html').includes(key),
+    `the inline script must read ${key}, the key theme.js writes`,
+  );
+});
+
+test('the plugin-window host styles itself with .tb-* only', () => {
+  // A plugin window links `plugin.css`, which has NO Tailwind utilities. A plugin
+  // cannot use them anyway — it is a Blob-URL single-file ESM living outside this
+  // project, so Tailwind never scans it and the classes would not exist — and
+  // shipping them cost ~143 KB per window. The consequence is that a utility
+  // class in host code HERE fails SILENTLY: the element renders unstyled, and the
+  // bug reads as the plugin's fault.
+  //
+  // So the host's own plugin-window code is restricted to the vocabulary that
+  // page actually ships. (A plugin's own window code may additionally define its
+  // own classes in its own `<style>` — that is the documented escape hatch and it
+  // is a separate document, so it cannot reach the main window.)
+  for (const rel of ['src/pluginwin.js', 'src/host/pluginwin-host.js']) {
+    const src = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    const classes = new Set();
+    for (const m of src.matchAll(/class(?:Name)?\s*[=:]\s*['"`]([^'"`]*)['"`]/g)) {
+      for (const c of m[1].split(/\s+/)) if (c) classes.add(c);
+    }
+    const stray = [...classes].filter((c) => !c.startsWith('tb-'));
+    assert.deepEqual(
+      stray,
+      [],
+      `${rel} uses ${stray.join(', ')} — plugin.css ships only the .tb-* vocabulary, ` +
+        'so these would render unstyled with no error anywhere',
+    );
+  }
+});
+
+test('the two windows are two pages, and the shell asserts it is the shell', () => {
+  // The structural half, and the half that cannot be bypassed. `ctx.windows.create`
+  // refuses a URL that is not `pluginwin.html`, but a window can also come from
+  // `tauri.conf.json` or a future native path — so `index.html` must not be able
+  // to boot the host anywhere but the main window.
+  //
+  // There are two independent guarantees and both are checked:
+  //
+  //   1. a plugin window never loads `src/main.js` at all — `pluginwin.html`
+  //      points at `src/pluginwin.js`, a page of its own. That is also what lets
+  //      the two pages link different stylesheets, which no JS branch could do.
+  //   2. if something DOES point a window at `index.html`, this entry checks its
+  //      own label and refuses rather than starting a second host.
+  const shellHtml = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const pluginHtml = readFileSync(new URL('../pluginwin.html', import.meta.url), 'utf8');
+  assert.match(shellHtml, /src="\/src\/main\.js"/, 'index.html is the shell entry');
+  assert.match(pluginHtml, /src="\/src\/pluginwin\.js"/, 'pluginwin.html is its own entry');
+
   const main = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
   const code = main.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
   assert.match(code, /getCurrentWindow\(\)\.label/, 'main.js must read the window label');
-  assert.match(code, /label !== 'main'/, 'and branch on it');
+  assert.match(code, /=== 'main'/, 'and assert it IS the main window');
 
   // The old shape is the bug: a `mode === 'pluginwin'` selector whose `else`
   // boots the whole host. Anything that looks like it again must fail here.
   assert.doesNotMatch(
     code,
-    /if \(mode === 'pluginwin'\)/,
-    'the dispatch must not be selected by the ?mode= parameter alone — that is what booted a second host',
+    /mode === 'pluginwin'/,
+    'the dispatch must not be selected by a ?mode= parameter — that is what booted a second host',
+  );
+  assert.doesNotMatch(
+    code,
+    /pluginwin-host/,
+    'the shell entry must not know about the plugin-window host at all — that page is pluginwin.html',
   );
 });

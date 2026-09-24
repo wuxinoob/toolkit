@@ -596,13 +596,37 @@ test('plugins: no plugin calls a function it never declares (dead call sites)', 
 
 // ------------------------------ theming invariants ------------------------------
 
+/**
+ * Where the design system lives.
+ *
+ * The tokens and the `.tb-*` vocabulary are in ONE file, and both stylesheet
+ * entries import it: `app.css` for the shell, `plugin.css` for a plugin window.
+ * That is what keeps the two windows from disagreeing about what a token means,
+ * and it is why every check below reads this file rather than either entry —
+ * an entry is a list of imports, not a place where the design system is defined.
+ */
+const DESIGN_SYSTEM = 'src/assets/design-system.css';
+
+test('theming: both stylesheet entries import the one design system', () => {
+  for (const entry of ['src/assets/app.css', 'src/assets/plugin.css']) {
+    assert.match(
+      read(entry),
+      /@import '\.\/design-system\.css'/,
+      `${entry} must import the shared design system`,
+    );
+    // And may not carry its own copy of it. A second `:root` or `@theme` block in
+    // an entry is exactly how the two windows would start disagreeing — silently,
+    // because both would still render.
+    assert.doesNotMatch(read(entry), /^:root|^@theme|^@layer components/m, `${entry} must not define tokens or .tb-* itself`);
+  }
+});
 
 test('theming: every .tb-* class a plugin uses actually exists in the stylesheet', () => {
   // The design system is class-based precisely so Blob-URL plugins can use it.
   // The cost of that choice is that a typo'd class name fails SILENTLY — the
   // element simply renders unstyled. This is the check that makes the trade
   // safe.
-  const css = read('src/assets/app.css');
+  const css = read(DESIGN_SYSTEM);
   const defined = new Set([...css.matchAll(/\.(tb-[a-z0-9-]+)/gi)].map((m) => m[1]));
 
   const files = [
@@ -616,7 +640,7 @@ test('theming: every .tb-* class a plugin uses actually exists in the stylesheet
       if (!defined.has(m[0])) unknown.add(`${rel}: ${m[0]}`);
     }
   }
-  assert.deepEqual([...unknown], [], `classes with no definition in app.css:\n  ${[...unknown].join('\n  ')}`);
+  assert.deepEqual([...unknown], [], `classes with no definition in ${DESIGN_SYSTEM}:\n  ${[...unknown].join('\n  ')}`);
 });
 
 /**
@@ -639,10 +663,10 @@ test('theming: every .tb-* class a plugin uses actually exists in the stylesheet
  * variable reference from a missing override.
  */
 function readThemeBlocks() {
-  const css = read('src/assets/app.css');
+  const css = read(DESIGN_SYSTEM);
   const block = (startRe) => {
     const m = css.match(startRe);
-    assert.ok(m, `app.css: block not found (${startRe})`);
+    assert.ok(m, `${DESIGN_SYSTEM}: block not found (${startRe})`);
     const open = css.indexOf('{', m.index);
     let depth = 0;
     let i = open;
@@ -828,9 +852,9 @@ test('theming: the dark: variant is redirected to data-theme, not the OS', () =>
   // follows `prefers-color-scheme`, so without this redirect the app's own
   // theme setting would be ignored by every component — and it would look
   // right to anyone whose OS happened to match.
-  const css = read('src/assets/app.css');
+  const css = read(DESIGN_SYSTEM);
   const m = css.match(/@custom-variant\s+dark\s*\(([^)]*)\)/);
-  assert.ok(m, 'app.css: no @custom-variant dark declaration');
+  assert.ok(m, `${DESIGN_SYSTEM}: no @custom-variant dark declaration`);
   assert.match(m[1], /data-theme/, 'the dark variant must key off data-theme');
   assert.doesNotMatch(m[1], /prefers-color-scheme/, 'the dark variant must not follow the OS');
 });

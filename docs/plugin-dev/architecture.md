@@ -58,16 +58,16 @@ ctx.registerView(viewId, (root) => { /* 往 root 里渲染 */ });
 
 ```js
 await ctx.windows.create('plugin-my-win', {
-  url: 'index.html?mode=pluginwin&plugin=my.plugin&label=plugin-my-win',
+  url: 'pluginwin.html?plugin=my.plugin&label=plugin-my-win',
   title: 'My Window', width: 400, height: 300,
 });
 ```
 
-- **`url` 必须是应用自己的插件窗口页**（`index.html?mode=pluginwin&plugin=<id>&label=<label>`）。
-  宿主会校验**两个条件**：不是 `index.html…` 会替换掉宿主页、跳过 `pluginwin-host.js`
-  （那个把 `bridge` 交给你的加载器）；是 `index.html…` 但没带 `mode=pluginwin`
-  则那个窗口不会加载你的插件（以前更糟 —— 它会让宿主在插件窗口里再跑一个完整宿主，
-  见 `src/main.js` 的注释）。
+- **`url` 必须是插件窗口那一页**（`pluginwin.html?plugin=<id>&label=<label>`）。
+  `pluginwin.html` 和 `index.html` 是两个不同的应用：前者引插件样式表并调用你的
+  `mountWindow`，后者是外壳。传 `index.html` 曾经会让宿主在插件窗口里再跑一个完整宿主
+  （见 `src/main.js` 的注释），现在插件窗口根本不加载那一页，但错误仍在 `create()` 当场被拒。
+  外部地址与 `/x`、`../x` 这类路径也一律拒绝。
 - 窗口选项走**白名单**，不在名单上的会被拒绝并告诉你名字
 - 自绘标题栏：传 `decorations: false`，然后自己画一条，用 `bridge.drag()` 拖。
   参考 `examples/plugins/eyecare/`

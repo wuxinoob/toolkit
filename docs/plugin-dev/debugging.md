@@ -185,10 +185,10 @@ cd src-tauri && cargo build
 
 | 错误 | 原因 |
 |---|---|
-| `window url must be the app's plugin-window page` | `url` 不是 `index.html?mode=pluginwin&…`。**两个条件都要**：应用入口页 + `mode=pluginwin` |
+| `window url must be the plugin-window page` | `url` 不是 `pluginwin.html?plugin=…`。`index.html` 是外壳那一页，不是这个 |
 | `window option(s) not allowed: xxx` | 用了白名单外的选项，**报错会告诉你是哪个** |
 | `window "x" create failed` | 看 payload —— 通常是 label 冲突或窗口参数非法 |
-| 窗口开了但空白 | 插件窗口加载的是 `index.html?mode=pluginwin&plugin=<id>&label=<label>`，**三个参数都不能少** |
+| 窗口开了但空白 | 插件窗口加载的是 `pluginwin.html?plugin=<id>&label=<label>`，**三个参数都不能少** |
 
 自绘标题栏时别忘了 `decorations: false`，否则你会画两条标题栏。
 

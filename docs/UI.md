@@ -35,25 +35,67 @@ The dividing line is the window, not the plugin.
 
 | | main window | a plugin's own window |
 |---|---|---|
+| which PAGE | `index.html` | `pluginwin.html` |
+| which stylesheet | `assets/app.css` | `assets/plugin.css` |
 | who renders it | the host, for the plugin | the plugin, in its own document |
-| how a plugin styles it | `ctx.ui` (the component factory) + `.tb-*` + tokens | **its own `<style>`, anything it likes** |
-| follows the app theme | yes, automatically | only if the plugin chooses to |
+| how a plugin styles it | `ctx.ui` (the component factory) + `.tb-*` + tokens | `.tb-*` + tokens, **plus its own `<style>`, anything it likes** |
+| Tailwind utilities | **yes** | **NO** — see below |
+| follows the app theme | yes, automatically | yes for `.tb-*`; a hardcoded palette opts out |
 | can it break the app | no — scoped to `[data-plugin]` | no — **it is a different document** |
+
+### ⚠️ A plugin window has no Tailwind utilities
+
+This is the one thing to know before writing a window page. `plugin.css` links
+Tailwind's **theme and preflight** but deliberately not its **utilities layer**,
+for two reasons that reinforce each other:
+
+- **A plugin cannot use them anyway.** An external plugin is a Blob-URL
+  single-file ESM living outside this project, so Tailwind never scans its source
+  and `flex gap-2` in it produces no CSS at all.
+- **They were most of the cost.** Measured on this repo, utilities were 122 KB of
+  a 166 KB stylesheet, and vue-sonner another 22 KB — so every plugin window paid
+  ~147 KB for CSS it could not use. With the split a plugin window loads **19 KB**.
+
+**So: use `.tb-*` (see [Primitives](#primitives)) or inline styles.** A utility
+class fails SILENTLY — the element is simply unstyled, with no error anywhere,
+which is why `tests/window-options.test.mjs` asserts the host's own plugin-window
+code uses nothing but `.tb-*`.
+
+### The two stylesheets share one design system
+
+`assets/design-system.css` holds the tokens and the `.tb-*` vocabulary, and BOTH
+entries import it — one source, so the two windows cannot drift apart on what a
+token means. Only what surrounds it differs:
+
+```
+design-system.css   tokens (:root / @theme inline / @layer base) + @layer components { .tb-* }
+app.css             tailwindcss (theme + preflight + UTILITIES) + tw-animate-css + sonner + ↑
+plugin.css          tailwindcss/theme.css + preflight.css + ↑
+```
+
+A test asserts both entries import it and that neither defines tokens itself,
+because two copies of a token are two answers to the same question.
+
+### Why the split had to happen at the page level
+
+A window's stylesheet is a `<link>` in its HTML, and a `<link>` applies **before
+any module runs**. That is why `index.html` carries an inline theme script — and
+it is also why no branch in `main.js` could ever have kept the shell's CSS out of
+a plugin window. The only place to choose is the page, so there are two pages.
 
 The second row is the interesting one. A plugin window is a separate
 `WebviewWindow`, so it is a separate `document`: a `<style>` injected there
 **cannot reach the main window at all**. That is a structural guarantee, not a
 policy — which is why this path needs no sandbox, no shadow DOM, and no review.
 
-It also means the two mechanisms do not compete. `pluginwin-host.js` loads the
-app stylesheet like every other window, so a plugin window gets the tokens and
-`.tb-*` for free; a plugin that wants a completely different look simply writes
-its own CSS and wins, because **unlayered CSS beats anything in `@layer`**
+It also means the two mechanisms do not compete. A plugin window gets the tokens
+and `.tb-*` for free; a plugin that wants a completely different look simply
+writes its own CSS and wins, because **unlayered CSS beats anything in `@layer`**
 regardless of order — verified, not assumed:
 
 ```
-app.css        body { background: var(--color-canvas) }   /* @layer base */
-plugin <style> body { background: rgb(1, 2, 3) }          /* unlayered   */
+design-system.css  body { background: var(--color-canvas) }   /* @layer base */
+plugin <style>     body { background: rgb(1, 2, 3) }          /* unlayered   */
 -> computed body background is rgb(1, 2, 3)
 ```
 
@@ -111,20 +153,22 @@ What it could do is surprise. `url` in particular would replace the host page
 with arbitrary content and skip `pluginwin-host.js` — the documented loader that
 hands the plugin its `bridge`.
 
-So options are now validated against an allow-list, and `url` must be the app's
-own plugin-window page — the entry page AND `mode=pluginwin`, because a window
-without it would not mount the plugin:
+So options are now validated against an allow-list, and `url` must be the
+plugin-window PAGE — `pluginwin.html`, not the shell's `index.html`, because a
+window on the shell page never mounts the plugin:
 
 ```js
-ctx.windows.create('mywin', { url: 'index.html?mode=pluginwin&plugin=…' })  // ok
-ctx.windows.create('mywin', { url: 'index.html' })         // throws — no mode=pluginwin
-ctx.windows.create('mywin', { url: 'https://example.com' }) // throws
-ctx.windows.create('mywin', { someFutureOption: true })     // throws
+ctx.windows.create('mywin', { url: 'pluginwin.html?plugin=…' })  // ok
+ctx.windows.create('mywin', { url: 'index.html' })          // throws — that is the shell
+ctx.windows.create('mywin', { url: 'https://example.com' })  // throws
+ctx.windows.create('mywin', { someFutureOption: true })      // throws
 ```
 
-The dispatch itself is on the window LABEL, not on the URL: only the window
-labelled `main` boots the plugin host, so no URL can start a second one. See the
-note in `src/main.js` for what that used to cost.
+The two pages are two applications, not two modes of one: each links its own
+stylesheet and loads its own entry. That is what makes the stylesheet split
+possible at all — a page picks its `<link>` before any module runs, so no branch
+in JS could have kept the shell's CSS out of a plugin window. See the note in
+`src/main.js` for what the old shared page cost.
 
 Validation runs **before** the async window lookup, so a bad option fails the
 same way whether or not that window already exists.

@@ -39,7 +39,7 @@ Tauri 2 + Vue 3 桌面工具箱。宿主（host）实现插件**发现 / 加载 
 | `bridge.js` | `rpc()` = `invoke('plugin_rpc', {...})`；`hasPermission()` |
 | `events.js` | **纯 JS 的窗口内** pub/sub（`Map<event, Set<fn>>`）——没有任何 IPC |
 | `external.js` | 外部插件：`plugin_scan` → `plugin_read_entry` → `Blob URL` → 动态 `import()` |
-| `pluginwin-host.js` | 独立插件窗口页面（`?mode=pluginwin`）：Blob 导入插件入口并调用其 `mountWindow(bridge)` |
+| `pluginwin-host.js` | 独立插件窗口页面（由 `pluginwin.html` 加载）：Blob 导入插件入口并调用其 `mountWindow(bridge)` |
 | `store.js` / `debug.js` | Vue 响应式单一数据源 / `window.__toolbox` 调试命名空间 |
 
 ### 1.3 Rust 侧（`src-tauri/src/`）

@@ -18,6 +18,20 @@ export default defineConfig(() => ({
     },
   },
 
+  // Two pages, not one. `index.html` is the shell; `pluginwin.html` is a
+  // plugin's own window. They link DIFFERENT stylesheets, and a page's
+  // stylesheet is applied before any module runs — so keeping 122 KB of Tailwind
+  // utilities out of a plugin window has to happen here, at the page level. No
+  // branch in `main.js` could do it. See src/pluginwin.js.
+  build: {
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL('./index.html', import.meta.url)),
+        pluginwin: fileURLToPath(new URL('./pluginwin.html', import.meta.url)),
+      },
+    },
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

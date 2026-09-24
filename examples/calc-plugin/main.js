@@ -138,7 +138,7 @@ export async function activate(ctx) {
     $('.cx-open').addEventListener('click', async () => {
       try {
         const how = await ctx.windows.create(WIN_LABEL, {
-          url: `index.html?mode=pluginwin&plugin=${encodeURIComponent(ctx.id)}&label=${WIN_LABEL}`,
+          url: `pluginwin.html?plugin=${encodeURIComponent(ctx.id)}&label=${WIN_LABEL}`,
           title: '计算器 — calc.demo',
           width: 300,
           height: 440,
@@ -183,9 +183,13 @@ export async function deactivate(ctx) {
 /* ------------------------------ plugin window UI ------------------------------ */
 
 /**
- * Called by the host's pluginwin page: this window is already inside
- * `?mode=pluginwin`, and `bridge` exposes the same scheme helpers plus
- * `protocol`, `close()` and `drag()`.
+ * Called by the host's pluginwin page: this window IS `pluginwin.html`, and
+ * `bridge` exposes the same scheme helpers plus `protocol`, `close()` and
+ * `drag()`.
+ *
+ * ⚠️ No Tailwind utilities here — the page links `plugin.css` (tokens + `.tb-*`
+ * only), so a utility class would render nothing, silently. This plugin injects
+ * its own stylesheet instead, which is the other supported route.
  */
 export async function mountWindow(bridge) {
   const calc = makeCalc(bridge, 'calc-win');

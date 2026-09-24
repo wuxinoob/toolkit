@@ -1,8 +1,16 @@
 /**
  * Generic plugin-window host page — runs inside a `plugin-*` WebviewWindow,
- * NOT in the main window. `src/main.js` routes here when the URL carries
- * `?mode=pluginwin&plugin=<id>&label=<label>`, so this window skips the plugin
- * host entirely (a second host would double-register shortcuts and selftests).
+ * NOT in the main window.
+ *
+ * It is loaded by `pluginwin.html` → `src/pluginwin.js`, which is a PAGE of its
+ * own rather than a mode of the shell's page. That matters twice over:
+ *
+ *   - the shell never boots here. This window does not load `src/main.js` at all,
+ *     so a second plugin host (double-registered shortcuts, every plugin
+ *     activated twice, a second selftest) is not something a URL can cause.
+ *   - the plugin stylesheet is linked by that page, not the shell's. This window
+ *     gets the tokens and the `.tb-*` vocabulary and nothing else — see
+ *     `src/assets/plugin.css` for why that is the right set.
  *
  * The window Blob-imports the plugin's entry module (single-file ESM, the same
  * constraint as the main-window loader) and calls its `mountWindow(bridge)`
@@ -18,12 +26,19 @@
  *
  * ## Styles: this window belongs to the plugin
  *
- * The app stylesheet is loaded here like in any window, so the design tokens and
- * `.tb-*` classes work and a plugin can look native for free. But a plugin that
- * wants its own look just injects a `<style>` and wins — unlayered CSS beats
- * anything in `@layer`, and this is a separate `document`, so it **cannot reach
- * the main window**. That is a structural guarantee rather than a policy, which
- * is why self-styling needs no sandbox and no review.
+ * The plugin stylesheet is loaded here like in any window, so the design tokens
+ * and `.tb-*` classes work and a plugin can look native for free. But a plugin
+ * that wants its own look just injects a `<style>` and wins — unlayered CSS
+ * beats anything in `@layer`, and this is a separate `document`, so it **cannot
+ * reach the main window**. That is a structural guarantee rather than a policy,
+ * which is why self-styling needs no sandbox and no review.
+ *
+ * ⚠️ **This window has no Tailwind utilities.** `flex`, `gap-2`, `text-sm` and
+ * friends produce no CSS here — Tailwind never scans a plugin's source, and the
+ * page does not link the utilities layer. Use `.tb-*` (see `docs/UI.md`) or
+ * inline styles. A utility class fails SILENTLY: the element is simply unstyled,
+ * and `tests/plugin-window-css.test.mjs` fails the build rather than let that
+ * reach a plugin author.
  *
  * See `docs/UI.md` → "Where each half of the app gets its styles", and
  * `examples/calc-plugin` for a window that takes this path.
@@ -200,16 +215,16 @@ export async function mountPluginWindow() {
         /* window is going away regardless */
       }
     });
-    // `index.html` ships a `<div id="app">` for the MAIN window, and `app.css`
-    // gives it `height: 100%`. In a plugin window nothing uses it — but it still
-    // occupies the full viewport, so a plugin that appends its own container to
-    // `document.body` lands BELOW the fold and the window looks blank (the DOM
-    // is all there, just off-screen).
+    // This page has no `<div id="app">` — that node belongs to `index.html` (the
+    // main window), where `app.css` gives it `height: 100%`. It used to be here
+    // too, because both windows shared one page, and the leftover occupied the
+    // full viewport: a plugin appending its own container to `document.body`
+    // landed BELOW the fold and the window looked blank (the DOM was all there,
+    // just off-screen). Reported by a plugin author who spent hours on it.
     //
-    // Reported by a plugin author who spent hours on it. Removing the unused
-    // node fixes every plugin at once, and needs nothing from them — which is
-    // the point: a pitfall that the host can make impossible should not be a
-    // line in a manual.
+    // Now that the two windows are two pages, the node is simply absent and the
+    // pitfall cannot recur. Kept as a no-op so a future edit that adds the node
+    // back does not silently reintroduce it.
     document.getElementById('app')?.remove();
 
     const bridge = makeBridge(pluginId, label, item.manifest);

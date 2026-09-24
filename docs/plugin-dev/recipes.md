@@ -155,7 +155,7 @@ export async function activate(ctx) {
   ctx.onHotkey('open', async () => {
     // 窗口可能已经关了 —— create 在已存在时是 no-op
     await ctx.windows.create(LABEL, {
-      url: `index.html?mode=pluginwin&plugin=${encodeURIComponent(ctx.id)}&label=${LABEL}`,
+      url: `pluginwin.html?plugin=${encodeURIComponent(ctx.id)}&label=${LABEL}`,
       title: '便签', width: 420, height: 560, center: true,
     });
     // 「呼出」用 raise，不是 focus
@@ -233,7 +233,7 @@ async activate(ctx) {
         class: 'tb-btn tb-btn-primary',
         onClick: async () => {
           const how = await ctx.windows.create('plugin-my-win', {
-            url: `index.html?mode=pluginwin&plugin=${encodeURIComponent(ctx.id)}&label=plugin-my-win`,
+            url: `pluginwin.html?plugin=${encodeURIComponent(ctx.id)}&label=plugin-my-win`,
             title: 'My Window', width: 320, height: 420, center: true,
           });
           ctx.log.info('window', how);   // 'created' | 'exists'
@@ -244,9 +244,15 @@ async activate(ctx) {
 }
 ```
 
-**要点**：`url` 的**三个参数一个都不能少**（`mode` / `plugin` / `label`）。
-窗口里跑的是 `pluginwin-host.js`，它会 Blob-import 你的入口并调用
-`mountWindow(bridge)` —— 参考 `examples/calc-plugin/`。
+**要点**：
+- `url` 必须是 **`pluginwin.html?plugin=<你的 id>&label=<你的 label>`** ——
+  不是 `index.html`。两个页面是两个应用：`index.html` 是外壳，`pluginwin.html`
+  才会加载你的 `mountWindow(bridge)`。传错会在 `create()` 当场被拒。
+- 窗口里跑的是 `pluginwin-host.js`，它会 Blob-import 你的入口 —— 参考 `examples/calc-plugin/`。
+- ⚠️ **窗口里没有 Tailwind 工具类。** `pluginwin.html` 引的是 `plugin.css`
+  （只有令牌 + `.tb-*`），`flex` / `gap-2` 这类类名**不产生任何 CSS**，而且**不报错** ——
+  元素就是没样式。用 `.tb-*`（见 [UI.md](../UI.md#primitives)）或内联 `style`，
+  想彻底自绘就在窗口里注入自己的 `<style>`。
 
 ---
 
@@ -257,7 +263,7 @@ async activate(ctx) {
 const label = `plugin-${ctx.id.replace(/[^a-zA-Z0-9_-]/g, '-')}-widget`;
 
 const win = await ctx.windows.create(label, {
-  url: `index.html?mode=pluginwin&plugin=${encodeURIComponent(ctx.id)}&label=${label}`,
+  url: `pluginwin.html?plugin=${encodeURIComponent(ctx.id)}&label=${label}`,
   width: 260, height: 120,
   transparent: true,
   decorations: false,                // ← 自绘的前提
@@ -279,6 +285,8 @@ bar.addEventListener('mousedown', (e) => {
 **要点**：
 - 插件窗口的 capability 恰好给两个权限：`start-dragging` + `close`
 - **尺寸/位置/置顶/透传归创建它的窗口**（主窗口），不在插件窗口自己的权限里
+- ⚠️ **窗口里没有 Tailwind 工具类**（同上）—— 自绘就用 `.tb-*`、内联 `style`、
+  或自己注入 `<style>`
 - 完整参考 `examples/plugins/eyecare/`（创建方 + 窗口页都在一个文件里）
 
 ---

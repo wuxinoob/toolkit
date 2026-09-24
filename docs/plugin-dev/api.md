@@ -579,7 +579,7 @@ ctx.registerView('main', (root) => {
 const LABEL = `plugin-${ctx.id.replace(/[^a-zA-Z0-9_-]/g, '-')}-main`;
 
 const how = await ctx.windows.create(LABEL, {
-  url: `index.html?mode=pluginwin&plugin=${encodeURIComponent(ctx.id)}&label=${LABEL}`,
+  url: `pluginwin.html?plugin=${encodeURIComponent(ctx.id)}&label=${LABEL}`,
   title: 'My Window', width: 400, height: 300,
   decorations: false,        // 自绘标题栏
   transparent: true, alwaysOnTop: true, skipTaskbar: true,
@@ -656,18 +656,40 @@ ctx.windows.onCloseRequested(async () => { /* 清理 */ });
 
    推荐写法：`` `plugin-${ctx.id.replace(/[^a-zA-Z0-9_-]/g, '-')}-main` ``
 
-2. **`url` 必须是应用自己的插件窗口页**：`index.html?mode=pluginwin&plugin=<id>&label=<label>`。
-   **两个条件都要满足，而且理由不同**：
-   - **不是 `index.html…`** → 会替换掉宿主页、跳过 `pluginwin-host.js`
-     （那个把 `bridge` 交给你的加载器）
-   - **是 `index.html…` 但没有 `mode=pluginwin`** → 那个窗口不会加载你的插件。
-     以前这种 URL 更糟：宿主会在**插件窗口里再跑一个完整宿主** —— 重复注册热键、
-     每个插件再激活一次（`procman` 会再 auto-start 一套真实进程）、
-     窗口显示的是应用外壳而不是你的界面。
-     现在 `main.js` 按**窗口 label** 分发，第二个宿主不可能出现了；
-     但错误仍然在 `create()` 当场被拒，报错里带着正确写法 —— 在你看得见的地方失败。
+2. **`url` 必须是插件窗口那一页**：`pluginwin.html?plugin=<id>&label=<label>`。
+   宿主会拒绝其他任何值，报错里带着正确写法。
+
+   `pluginwin.html` 和 `index.html` 现在是**两个不同的应用**，不是同一个页面的两种模式：
+
+   | 页面 | 是什么 |
+   |---|---|
+   | `index.html` | **外壳**。挂载 `App.vue`、启动插件宿主、引外壳样式表。它不知道 `mountWindow` 是什么。 |
+   | `pluginwin.html` | **你的窗口**。引插件样式表（只有令牌 + `.tb-*`），加载 `pluginwin-host.js`，调用你的 `mountWindow(bridge)`。 |
+
+   传 `index.html` 曾经更糟：宿主会在**插件窗口里再跑一个完整宿主** ——
+   重复注册热键、每个插件再激活一次（`procman` 会再 auto-start 一套真实进程）、
+   窗口显示的是应用外壳而不是你的界面，而 `mountWindow` 从来没被调用。
+   现在插件窗口根本不会加载外壳那一页，所以第二个宿主不可能出现；
+   但错误仍然在 `create()` 当场被拒 —— 在你看得见的地方失败。
+
+   也**不接受外部地址或路径**（`https://…`、`/pluginwin.html`、`../pluginwin.html`）：
+   那会替换掉宿主页、跳过把 `bridge` 交给你的加载器。
 
 3. **窗口选项走白名单**。不在名单上的会被拒绝**并告诉你名字**，不会静默忽略
+
+### ⚠️ 你的窗口里**没有** Tailwind 工具类
+
+插件窗口引的是 `plugin.css`，它只含**令牌 + `.tb-*` 词汇表** —— 不含 Tailwind 的
+工具类层，也不含 toaster 的样式。理由有两条，互相印证：
+
+- 你的插件是 Blob URL 单文件 ESM，源码在项目之外，**Tailwind 根本扫不到它** ——
+  写 `flex gap-2` 本来就产生不了任何 CSS；
+- 而那 122 KB 的工具类 + 22 KB 的 sonner 样式，是每个插件窗口都在白付的钱。
+  拆开之后插件窗口只加载 **19 KB**（原来 166 KB）。
+
+**所以：用 `.tb-*`（见 `docs/UI.md`）、内联 `style`，或者自己注入 `<style>`。**
+工具类**不会报错** —— 元素就是没样式。`tests/window-options.test.mjs` 盯着宿主自己的
+插件窗口代码不许出现 `.tb-*` 以外的类名。
 
 ### `transparent: true` 只在真的需要异形窗口时用
 

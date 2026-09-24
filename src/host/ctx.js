@@ -75,37 +75,34 @@ export function buildCtx(plugin, disposer) {
   ]);
 
   /**
-   * A plugin window may only load the app's own plugin-window page.
+   * A plugin window may only load the plugin-window PAGE.
    *
-   * Two halves, and they are not the same check:
+   * `pluginwin.html` and `index.html` are now two different applications, not two
+   * modes of one:
    *
-   *   `index.html…`     — the app's own entry page. Anything else replaces the
-   *                       host page with content no capability covers, and skips
-   *                       `pluginwin-host.js` — the documented loader that hands
-   *                       the plugin its `bridge`. The window would carry no IPC
-   *                       (no capability declares a remote origin, so Tauri
-   *                       denies it by default), so this is not an escalation;
-   *                       it is an undeclared capability that breaks the one
-   *                       contract the window host has.
+   *   index.html      the SHELL. Links the shell's stylesheet (Tailwind
+   *                   utilities + sonner), boots the plugin host, mounts
+   *                   `App.vue`. It knows nothing about `mountWindow`.
+   *   pluginwin.html  a plugin's OWN window. Links the plugin stylesheet (tokens
+   *                   + `.tb-*` only), imports the plugin host page, and calls
+   *                   the plugin's `mountWindow(bridge)`.
    *
-   *   `mode=pluginwin`  — the page that actually mounts the plugin. Without it
-   *                       the window renders something else entirely. This used
-   *                       to be accepted, and the `else` arm in `main.js` booted
-   *                       a whole second plugin host inside the plugin window
-   *                       (see `main.js` for the blast radius). `main.js` now
-   *                       routes on the window LABEL, so a second host is
-   *                       unreachable either way — but the mistake should fail
-   *                       HERE, at the call site the author is looking at, with
-   *                       the correct shape in the message.
+   * Handing the shell page to a plugin window is what used to boot a whole second
+   * plugin host inside it — see `src/main.js` for the blast radius. That is
+   * unreachable now, but the mistake should still fail HERE, at the call site the
+   * author is looking at, with the correct shape in the message.
+   *
+   * The pattern also refuses anything that is not a LOCAL page: no scheme
+   * (`https:`), no root-relative path (`/x`), no traversal (`../x`). A remote
+   * page would carry no IPC (no capability declares a remote origin, so Tauri
+   * denies it by default), but it would still replace the host page and skip the
+   * loader that hands the plugin its `bridge`.
    */
   function assertPluginWindowUrl(url) {
-    const q = url.indexOf('?');
-    const ok = url.startsWith('index.html') && q >= 0 &&
-      new URLSearchParams(url.slice(q + 1).split('#')[0]).get('mode') === 'pluginwin';
-    if (!ok) {
+    if (!/^pluginwin\.html(\?|#|$)/.test(url)) {
       throw new Error(
-        `${prefix} window url must be the app's plugin-window page ` +
-          `(index.html?mode=pluginwin&plugin=<id>&label=<label>), got "${url}"`,
+        `${prefix} window url must be the plugin-window page ` +
+          `(pluginwin.html?plugin=<id>&label=<label>), got "${url}"`,
       );
     }
     return url;

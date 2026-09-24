@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Toolbox</title>
+  </head>
+
+  <body>
+    <!--
+      A plugin's own window. Deliberately NOT `index.html`: this page links
+      `plugin.css` (tokens + `.tb-*`) instead of the shell's stylesheet, because
+      a plugin cannot use Tailwind utilities and shipping them cost 147 KB per
+      window. See src/pluginwin.js.
+
+      There is no `<div id="app">` here — nothing mounts into it on this page.
+    -->
+    <!--
+      Set the theme before the first paint. The bundled stylesheet is a separate
+      <link> that applies before any module runs, so without this a light-theme
+      user sees one dark frame on every window open. The key and the values are
+      duplicated from src/host/theme.js on purpose — this has to run inline,
+      before the module graph loads. Keep the three copies in sync:
+      index.html, pluginwin.html, src/host/theme.js.
+
+      (tests/window-options.test.mjs asserts the two inline scripts are identical
+      and that they read the same storage key, because a divergence here is
+      invisible until someone notices a dark frame.)
+    -->
+    <script>
+      (function () {
+        try {
+          var p = localStorage.getItem('toolbox.theme');
+          var dark = p === 'dark' || (p !== 'light' && !matchMedia('(prefers-color-scheme: light)').matches);
+          var t = dark ? 'dark' : 'light';
+          document.documentElement.dataset.theme = t;
+          document.documentElement.style.colorScheme = t;
+        } catch (e) {
+          document.documentElement.dataset.theme = 'dark';
+        }
+      })();
+    </script>
+    <script type="module" src="/src/pluginwin.js"></script>
+  </body>
+</html>
