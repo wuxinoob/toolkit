@@ -26,8 +26,13 @@ use protocol::envelope::Envelope;
 /// Declare a plugin's manifest permissions. Called once per plugin at load
 /// time; the registry is fail-closed, so an unregistered plugin can reach
 /// nothing.
+///
+/// `async` for the same reason as `plugin_rpc`: **no command in this app is
+/// allowed to run on the main thread.** The failure mode of getting that wrong
+/// is invisible — a stalled message pump looks like "the UI is laggy", not like
+/// "a command blocked" — so the rule is uniform rather than judged per command.
 #[tauri::command]
-fn plugin_register(plugin_id: String, permissions: Vec<String>) -> Result<(), String> {
+async fn plugin_register(plugin_id: String, permissions: Vec<String>) -> Result<(), String> {
     services::storage::validate_plugin_id(&plugin_id).map_err(|e| e.msg)?;
     host::registry::register(&plugin_id, &permissions);
     Ok(())
@@ -39,8 +44,36 @@ fn plugin_register(plugin_id: String, permissions: Vec<String>) -> Result<(), St
 /// `err` envelope), so the caller always has one shape to switch on. The
 /// `Err(String)` channel is reserved for protocol breakage — a malformed
 /// envelope or an unknown service — which no well-behaved caller can hit.
+///
+/// ## Why this is `async` and then `spawn_blocking`
+///
+/// It used to be a plain `fn`. Tauri runs a command without the `async` keyword
+/// **on the main thread** — the same thread that pumps window messages for every
+/// webview in the process. So the gateway, which every plugin call goes
+/// through, was doing blocking file I/O on the UI thread:
+///
+///   storage/get           `create_dir_all` + read whole file + parse
+///   storage/set           `create_dir_all` + rewrite whole file
+///   host/write_debug_log  metadata + open + write + close, once per line
+///   bus/publish           `app.emit`, which posts to EVERY window
+///
+/// A window that cannot be pumped cannot be dragged, resized or repainted, and
+/// it takes the OTHER windows down with it because the thread is shared. That is
+/// why a plugin chattering over the gateway made the main window feel stuck.
+///
+/// `async` alone already lifts this off the main thread. The extra
+/// `spawn_blocking` is because the work is genuinely blocking: a blocking call
+/// inside an async task parks a runtime WORKER, and there are only as many of
+/// those as there are CPU cores — a burst of storage calls would then stall
+/// every other async task in the app, which is the same bug wearing a different
+/// hat. The blocking pool is the right home for it, and it is unbounded-ish by
+/// design so a burst queues instead of starving.
 #[tauri::command]
-fn plugin_rpc(app: tauri::AppHandle, plugin_id: String, msg: Envelope) -> Result<Envelope, String> {
+async fn plugin_rpc(
+    app: tauri::AppHandle,
+    plugin_id: String,
+    msg: Envelope,
+) -> Result<Envelope, String> {
     services::storage::validate_plugin_id(&plugin_id).map_err(|e| e.msg)?;
     msg.validate()?;
     if !msg.kind.is_uplink() {
@@ -52,6 +85,7 @@ fn plugin_rpc(app: tauri::AppHandle, plugin_id: String, msg: Envelope) -> Result
     let id = msg.id.unwrap_or(0);
     let svc = msg.svc.clone().unwrap_or_default();
     let act = msg.act.clone().unwrap_or_default();
+    let params = msg.p;
 
     // The authoritative permission gate. The JS `ctx` gate is a convenience
     // check; this one cannot be bypassed by reaching invoke() directly.
@@ -59,17 +93,21 @@ fn plugin_rpc(app: tauri::AppHandle, plugin_id: String, msg: Envelope) -> Result
         return Ok(Envelope::err(Some(id), "denied", e));
     }
 
-    match services::route(&app, &plugin_id, &svc, &act, msg.p) {
-        Ok(v) => Ok(Envelope::res(id, v)),
-        // The service classified it; the caller gets that code, not a
-        // synthesized `svc/act` string it cannot branch on.
-        Err(e) => Ok(Envelope::err(Some(id), e.code, e.msg)),
-    }
+    tauri::async_runtime::spawn_blocking(move || {
+        match services::route(&app, &plugin_id, &svc, &act, params) {
+            Ok(v) => Ok(Envelope::res(id, v)),
+            // The service classified it; the caller gets that code, not a
+            // synthesized `svc/act` string it cannot branch on.
+            Err(e) => Ok(Envelope::err(Some(id), e.code, e.msg)),
+        }
+    })
+    .await
+    .map_err(|e| format!("rpc task failed: {e}"))?
 }
 
 /// Open a push stream framed as `json-envelope` (one `Channel<Envelope>`).
 #[tauri::command]
-fn plugin_stream_open(
+async fn plugin_stream_open(
     plugin_id: String,
     provider: String,
     ch: String,
@@ -82,7 +120,7 @@ fn plugin_stream_open(
 
 /// Open a push stream framed as `raw-binary` (1 kind byte + payload).
 #[tauri::command]
-fn plugin_stream_open_raw(
+async fn plugin_stream_open_raw(
     plugin_id: String,
     provider: String,
     ch: String,
@@ -95,7 +133,7 @@ fn plugin_stream_open_raw(
 
 /// Cancel an open stream (cooperative, through the unified session registry).
 #[tauri::command]
-fn plugin_stream_close(plugin_id: String, ch: String) -> Result<Value, String> {
+async fn plugin_stream_close(plugin_id: String, ch: String) -> Result<Value, String> {
     host::registry::is_allowed(&plugin_id, "rpc:stream")?;
     Ok(json!({ "stopped": services::session::stop_one(&plugin_id, &ch) }))
 }
@@ -152,9 +190,13 @@ mod console_exit {
 /// business ending sessions it did not open, and app commands are not ACL-gated,
 /// so the label check is the gate.
 #[tauri::command]
-fn plugin_reap_orphans(window: tauri::WebviewWindow) -> Result<usize, String> {
+async fn plugin_reap_orphans(window: tauri::WebviewWindow) -> Result<usize, String> {
     require_main(&window)?;
-    Ok(crate::services::session::kill_all())
+    // Killing a process tree waits on children, so it is blocking work — and it
+    // runs on the path that reveals the window at boot.
+    tauri::async_runtime::spawn_blocking(crate::services::session::kill_all)
+        .await
+        .map_err(|e| format!("reap task failed: {e}"))
 }
 
 /// Native file picker / save dialog / message box, on a plugin's behalf.
@@ -279,12 +321,21 @@ async fn plugin_dialog(
 /// Main window only — see `plugin_reap_orphans` for why app commands need a
 /// label check.
 #[tauri::command]
-fn host_autostart_get(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<bool, String> {
+async fn host_autostart_get(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<bool, String> {
     require_main(&window)?;
-    use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch()
-        .is_enabled()
-        .map_err(|e| format!("autostart query: {e}"))
+    // The autostart plugin reads the registry, and a registry read on the
+    // message thread is the same class of mistake as a file read there.
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_autostart::ManagerExt;
+        app.autolaunch()
+            .is_enabled()
+            .map_err(|e| format!("autostart query: {e}"))
+    })
+    .await
+    .map_err(|e| format!("autostart task failed: {e}"))?
 }
 
 /// Turn autostart on or off, and report the state the OS ended up in.
@@ -293,21 +344,25 @@ fn host_autostart_get(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Re
 /// silently on some Windows policies, and the UI should show what actually
 /// happened, not what was asked for.
 #[tauri::command]
-fn host_autostart_set(
+async fn host_autostart_set(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     enabled: bool,
 ) -> Result<bool, String> {
     require_main(&window)?;
-    use tauri_plugin_autostart::ManagerExt;
-    let mgr = app.autolaunch();
-    if enabled {
-        mgr.enable().map_err(|e| format!("autostart enable: {e}"))?;
-    } else {
-        mgr.disable().map_err(|e| format!("autostart disable: {e}"))?;
-    }
-    mgr.is_enabled()
-        .map_err(|e| format!("autostart query after set: {e}"))
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_autostart::ManagerExt;
+        let mgr = app.autolaunch();
+        if enabled {
+            mgr.enable().map_err(|e| format!("autostart enable: {e}"))?;
+        } else {
+            mgr.disable().map_err(|e| format!("autostart disable: {e}"))?;
+        }
+        mgr.is_enabled()
+            .map_err(|e| format!("autostart query after set: {e}"))
+    })
+    .await
+    .map_err(|e| format!("autostart task failed: {e}"))?
 }
 
 /// App commands are not ACL-gated, so the window label is the gate.

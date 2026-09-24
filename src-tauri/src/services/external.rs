@@ -120,27 +120,47 @@ pub fn read_entry_at(root: &Path, dir: &str, entry_file: &str) -> Result<String,
     fs::read_to_string(&file).map_err(|e| format!("read entry: {e}"))
 }
 
+/// Scan the plugins root.
+///
+/// `async` + `spawn_blocking`, not a plain `fn`: this walks the whole plugins
+/// directory and, per plugin, reads `plugin.json` AND the **entire entry file**
+/// (the digest needs the bytes). That is megabytes of blocking I/O, and as a
+/// plain command it ran on the main thread — the window-message thread. It is
+/// called at boot AND every time a plugin window opens, so the cost landed
+/// exactly when the user was waiting for a window to appear.
 #[tauri::command]
-pub fn plugin_scan(app: tauri::AppHandle) -> Result<Vec<ExternalPlugin>, String> {
+pub async fn plugin_scan(app: tauri::AppHandle) -> Result<Vec<ExternalPlugin>, String> {
     let root = plugins_root(&app)?;
-    scan_at(&root)
+    tauri::async_runtime::spawn_blocking(move || scan_at(&root))
+        .await
+        .map_err(|e| format!("scan task failed: {e}"))?
 }
 
+/// Read a plugin's entry source. Same reasoning as `plugin_scan` — it is a file
+/// read, and a file read on the message thread is a stalled window.
 #[tauri::command]
-pub fn plugin_read_entry(
+pub async fn plugin_read_entry(
     app: tauri::AppHandle,
     dir: String,
     entry_file: String,
 ) -> Result<String, String> {
     let root = plugins_root(&app)?;
-    read_entry_at(&root, &dir, &entry_file)
+    tauri::async_runtime::spawn_blocking(move || read_entry_at(&root, &dir, &entry_file))
+        .await
+        .map_err(|e| format!("read entry task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn plugin_open_dir(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn plugin_open_dir(app: tauri::AppHandle) -> Result<(), String> {
     let root = plugins_root(&app)?;
-    tauri_plugin_opener::open_path(root, None::<&str>)
-        .map_err(|e| format!("open plugins dir: {e}"))
+    // Shelling out to Explorer is a process launch; it does not belong on the
+    // message thread either.
+    tauri::async_runtime::spawn_blocking(move || {
+        tauri_plugin_opener::open_path(root, None::<&str>)
+            .map_err(|e| format!("open plugins dir: {e}"))
+    })
+    .await
+    .map_err(|e| format!("open dir task failed: {e}"))?
 }
 
 #[cfg(test)]

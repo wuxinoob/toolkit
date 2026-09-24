@@ -280,6 +280,77 @@ bar.addEventListener('mousedown', (e) => {
 
 ---
 
+## 移动/缩放窗口：**绝不要每条系统消息过一次 IPC**
+
+这是本项目最容易踩、也最难查的性能坑，因为它不报错、不掉帧警告，**只是整台机器发涩**。
+
+### 坑长什么样
+
+```js
+// ❌ 每条 WM_SIZE 都跑一遍完整回路
+window.addEventListener('resize', () => {
+  reportSize();      // 内部：getBoundingClientRect() + publish
+  reportLockRect();  // 内部：getBoundingClientRect() + publish
+});
+```
+
+**Windows 在拖拽/缩放期间是连续发 `WM_SIZE` 的**，不是发一次。所以上面的写法
+在用户拖窗口的那一秒里跑了**几十遍**，每一遍：
+
+1. `getBoundingClientRect()` —— **强制同步布局**（`examples/plugins/eyecare/main.js` 里
+   关于这点的注释是真的：它当场触发布局计算）
+2. 一次 `publish` —— 广播到**每一个**窗口
+3. 创建方窗口收到后调 `ctx.windows.control(label, 'size')` → 一次 `plugin_rpc`
+4. 那是**原生 `SetWindowPos`** → 于是又产生一个 `resize` → **回到第 1 步**
+
+**这是一个跨两个窗口加原生侧的自放大回路。** 它同时占住三样东西：插件窗口的
+JS 线程（强制布局）、主线程（`SetWindowPos` + 同步网关）、以及所有窗口的事件处理
+（广播扇出）。主窗口跟着一起卡，因为**这三样里有一样是全局的**。
+
+### 怎么写才对
+
+```js
+// ✅ 一帧最多一次，且值没变就不发
+let raf = 0;
+const scheduleReports = () => {
+  if (raf) return;
+  raf = requestAnimationFrame(() => { raf = 0; reportSize(); reportLockRect(); });
+};
+window.addEventListener('resize', scheduleReports);
+```
+
+两层保护各管一件事，**都要有**：
+
+- **rAF 合并** —— 挡住"值还在变的时候跑得比有用更快"。下一帧再量一次也是同样的像素。
+- **去重**（记住上次的值，相同就 return）—— 挡住"值已经停了但事件还在来"，
+  也就是回路的收敛。`examples/plugins/eyecare/main.js` 的 `sizeReporter` 就是这一层。
+
+同理，**拖拽**也要按帧合并（`pointermove` 本身每帧可能来好几次）：
+
+```js
+pill.addEventListener('pointermove', (e) => {
+  /* 更新本地位置 */
+  queueMove();          // rAF 合并后才 publish
+});
+```
+
+### 更好的做法：让系统自己拖
+
+如果只是"用户按住拖这个窗口"，**不要**用 `publish` + `control('position')` 模拟 ——
+那是 60 次/秒的 IPC 往返加 60 次 `SetWindowPos`。插件窗口的 bridge 有原生的：
+
+```js
+bridge.drag();   // 等于 getCurrentWindow().startDragging()
+```
+
+交给操作系统的拖拽循环，零 IPC。**需要落盘最终位置**时，拖完读一次窗口位置即可，
+而不是每帧同步一次。
+
+> 只有"窗口大小由内容决定"这种系统算不出来的情况，才需要上面那套测量+上报 ——
+> 而且那时它**必须**是合并的。
+
+---
+
 ## 让插件出问题时**启动日志直接变红**
 
 把接口自检放进 `activate()`，失败就抛：

@@ -33,6 +33,34 @@
 
 > 原先还有第 9 个 `plugin_registry`，核查时发现**没有任何调用方**（Settings 页走网关的 `host/plugins`），已删除，避免留一个无人使用、无人校验的入口。
 
+### 1.1 全部命令都是 `async fn` —— 这不是风格，是硬要求
+
+**Tauri 把没有 `async` 关键字的命令跑在主线程上**，而主线程就是给**所有**窗口泵消息的那一条：
+
+> "Async commands are executed on a separate async task using `async_runtime::spawn`.
+> Commands without the *async* keyword are executed on the main thread unless
+> defined with `#[tauri::command(async)]`." —— Tauri v2 文档
+
+所以一个同步命令只要做了阻塞 I/O，卡住的不只是调用它的那个窗口，而是**整个应用**：
+不能拖拽、不能重绘、不能处理输入。**而症状永远不是"某个命令阻塞了"，是"界面卡"** ——
+和十几种别的原因长得一模一样。
+
+**真实事故**：`plugin_rpc`（每个插件调用都过的网关）原本是普通 `fn`，而它背后的服务
+做的是阻塞文件 I/O —— `storage/*` 读写整个 store、`host/write_debug_log` 每行开关一次
+文件、`bus/publish` 向每个窗口投递。结果是主窗口发涩、插件窗口一起发涩，因为**是同一个
+线程在做这些**。`plugin_scan` 更重：它遍历插件目录并读**每个插件的完整入口文件**
+（算 digest 要字节），在启动时和**每次开插件窗口时**各跑一遍。
+
+现在的规则是统一的，不逐条判断"这个够不够便宜"：
+
+1. **每个 `#[tauri::command]` 都必须是 `async fn`**（或 `#[tauri::command(async)]`）。
+2. **做 I/O 的命令再走一层 `spawn_blocking`** —— `async` 只是把工作挪出主线程，
+   而阻塞调用会占住一个 runtime worker，worker 数量等于核数：一串 storage 调用
+   就会饿死应用里其他 async 任务，那是同一个 bug 换顶帽子。阻塞池才是它该待的地方。
+
+两条都由 `tests/main-thread.test.mjs` 机器把关（第 1 条扫全部命令，第 2 条盯
+`plugin_rpc` / `plugin_scan` / `plugin_read_entry`）。**加新命令时它会替你记住这件事。**
+
 ## 2. 网关背后的服务：6 个服务 / 29 个动作
 
 | 服务 | 动作 | 说明 |
