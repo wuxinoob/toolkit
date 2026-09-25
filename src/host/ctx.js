@@ -775,11 +775,15 @@ export function buildCtx(plugin, disposer) {
     },
   };
 
-  /**
-   * React to changes made in the host Settings page for this plugin's form.
-   * Async, like every other subscription.
-   */
-  ctx.onSettingsChanged = (cb) => ctx.events.on(`settings:changed:${id}`, cb);
+  // `ctx.onSettingsChanged` used to live here: it subscribed to a
+  // `settings:changed:<id>` event that the host's "Plugin settings" card emitted
+  // after saving a `contributes.settings` form. Both are gone — see the note in
+  // `views/SettingsView.vue` — and nothing emitted the event, so the method was
+  // a subscription that could never fire.
+  //
+  // A plugin that wants configurable settings owns them: `ctx.storage` is
+  // namespaced per plugin and always available, so the plugin renders its own
+  // controls and persists them itself.
 
   /** Register an arbitrary cleanup fn that runs on deactivate. */
   ctx.cleanup = (fn) => disposer.track(fn);

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 
 import { store, saveSettings, toast } from '../host/store.js';
@@ -8,7 +8,6 @@ import { applySummonShortcut } from '../host/boot.js';
 import { activate, deactivate, saveEnabled } from '../host/lifecycle.js';
 import { resolveBuiltin } from '../host/registry.js';
 import { scanExternalPlugins, getExternal } from '../host/external.js';
-import { events } from '../host/events.js';
 import { hub } from '../protocol/hub.js';
 import { getResolvedTheme, getThemePref, onThemeChange, setTheme } from '../host/theme.js';
 
@@ -16,17 +15,7 @@ import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { Separator } from '@/components/ui/separator';
 import {
   Table,
   TableBody,
@@ -175,51 +164,30 @@ async function stopSession(s) {
   }
 }
 
-/* ---------- contributed settings forms (manifest.contributes.settings) ---------- */
+/* ---------- contributed settings forms: REMOVED ---------- */
 
-const forms = ref({}); // pluginId -> { schema, values }
-
-async function loadForms() {
-  for (const p of store.plugins) {
-    const schema = p.manifest?.contributes?.settings;
-    if (!schema?.length || forms.value[p.manifest.id]) continue;
-    let current = null;
-    try {
-      current = await hub.request(p.manifest.id, 'storage', 'get', { key: 'settings' });
-    } catch {
-      /* plugin storage may not exist yet */
-    }
-    const values = {};
-    for (const f of schema) values[f.key] = current?.[f.key] ?? f.default ?? null;
-    forms.value[p.manifest.id] = { schema, values };
-  }
-}
-
-function saveField(pluginId, field, value) {
-  const form = forms.value[pluginId];
-  form.values[field.key] = value;
-  hub
-    .request(pluginId, 'storage', 'set', { key: 'settings', value: { ...form.values } })
-    .then(() => events.emit(`settings:changed:${pluginId}`))
-    .catch((e) => toast(`Settings save failed: ${e}`, 'error'));
-}
-
-const pluginsWithForms = computed(() =>
-  store.plugins.filter((p) => p.manifest?.contributes?.settings?.length),
-);
-
-function optionValue(opt) {
-  return typeof opt === 'string' ? opt : opt.value;
-}
-function optionLabel(opt) {
-  return typeof opt === 'string' ? opt : opt.label;
-}
+/*
+ * There used to be a "Plugin settings" card here that rendered a form from a
+ * plugin's `contributes.settings` declaration, and saved the values into that
+ * plugin's own `storage` under `settings`.
+ *
+ * It is gone because it was never a feature — it was a demo. Checked before
+ * removing: no plugin in this repo declares `contributes.settings`, no doc
+ * mentions it, and the plugin-facing half (`ctx.onSettingsChanged`, which
+ * listened for the `settings:changed:<id>` event this file emitted) had zero
+ * users. The only declaration anywhere was in an installed `hello.demo` — a
+ * leftover from an earlier round whose source is no longer in the repo — so the
+ * card existed to render a form for a plugin that no longer ships.
+ *
+ * A plugin's own settings belong to the plugin: `ctx.storage` is namespaced per
+ * plugin and always available, so a plugin that wants configurable settings
+ * renders its own controls in its own view and persists them itself. That is
+ * what `eyecare` does, and it needs nothing from the host.
+ */
 
 onMounted(() => {
-  loadForms();
   refreshSessions();
 });
-watch(() => store.plugins.length, loadForms);
 
 /**
  * Every hotkey any plugin has DECLARED, with the user's state for it.
@@ -590,77 +558,6 @@ onMounted(loadAutostart);
           {{ scanning ? 'Scanning…' : 'Rescan plugins' }}
         </Button>
         <Button variant="outline" @click="openPluginsDir">Open plugins directory</Button>
-      </CardContent>
-    </Card>
-
-    <Card v-if="pluginsWithForms.length">
-      <CardHeader>
-        <CardTitle>Plugin settings</CardTitle>
-        <CardDescription>
-          Forms declared by plugins via <code class="font-mono text-xs">contributes.settings</code>.
-        </CardDescription>
-      </CardHeader>
-      <CardContent class="flex flex-col gap-4">
-        <template v-for="(p, i) in pluginsWithForms" :key="p.manifest.id">
-          <Separator v-if="i > 0" />
-          <div class="flex flex-col gap-2">
-            <div class="text-[12.5px] font-medium">{{ p.manifest.name }}</div>
-            <template v-if="p.status === 'active'">
-              <div
-                v-for="f in forms[p.manifest.id]?.schema || []"
-                :key="f.key"
-                class="flex max-w-[420px] flex-col gap-1.5"
-              >
-                <Label :for="`${p.manifest.id}-${f.key}`">{{ f.label }}</Label>
-
-                <Select
-                  v-if="f.type === 'select'"
-                  :model-value="forms[p.manifest.id].values[f.key]"
-                  @update:model-value="saveField(p.manifest.id, f, $event)"
-                >
-                  <SelectTrigger :id="`${p.manifest.id}-${f.key}`" class="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem
-                      v-for="opt in f.options || []"
-                      :key="optionValue(opt)"
-                      :value="optionValue(opt)"
-                    >
-                      {{ optionLabel(opt) }}
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-
-                <div v-else-if="f.type === 'boolean'" class="flex items-center gap-2">
-                  <Checkbox
-                    :id="`${p.manifest.id}-${f.key}`"
-                    :model-value="!!forms[p.manifest.id].values[f.key]"
-                    @update:model-value="saveField(p.manifest.id, f, $event)"
-                  />
-                  <span class="text-xs text-muted-foreground">
-                    {{ forms[p.manifest.id].values[f.key] ? 'on' : 'off' }}
-                  </span>
-                </div>
-
-                <Input
-                  v-else
-                  :id="`${p.manifest.id}-${f.key}`"
-                  :type="f.type === 'number' ? 'number' : 'text'"
-                  :model-value="forms[p.manifest.id].values[f.key]"
-                  :min="f.min"
-                  :max="f.max"
-                  @update:model-value="
-                    saveField(p.manifest.id, f, f.type === 'number' ? Number($event) : $event)
-                  "
-                />
-              </div>
-            </template>
-            <p v-else class="m-0 text-xs text-muted-foreground">
-              Enable this plugin to edit its settings.
-            </p>
-          </div>
-        </template>
       </CardContent>
     </Card>
 
