@@ -108,12 +108,12 @@
 **这三条都不是"优化"，是"别做无关的事"** —— 把不属于插件窗口的模块/样式/文件排除出它的路径。
 **判断标准是「这个窗口真的需要它吗」**，不是「快一点」。
 
-## 2. 网关背后的服务：7 个服务 / 30 个动作
+## 2. 网关背后的服务：7 个服务 / 31 个动作
 
 | 服务 | 动作 | 说明 |
 |---|---|---|
 | `storage` | `get` `set` `remove` `keys` | 每插件独立的磁盘 JSON KV（`plugin-data/<id>/data.json`） |
-| `host` | `info` `write_debug_log` `sessions` `plugins` `schema` `unregister` | 路径/元数据、调试落盘、**统一会话表**、已授权插件、**能力协商面**、**撤销授权**（仅宿主可调） |
+| `host` | `info` `write_debug_log` `sessions` **`stop_session`** `plugins` `schema` `unregister` | 路径/元数据、调试落盘、**统一会话表**、**按会话停止（仅宿主）**、已授权插件、**能力协商面**、**撤销授权**（仅宿主可调） |
 | `proc` | `spawn` `send` `recv` `kill` `kill_all` `list` | sidecar 行 JSON 管道（`stdio-line` 方案的底层） |
 | `stream` | `close` `providers` `list` `session_open` `session_close` `open_in` `write_in` `close_in` | 推送流生命周期 + 第三方进程的会话登记 + **上行流**（插件按批把帧推给宿主侧 sink） |
 | `bus` | `publish` | 跨窗口广播（宿主 `app.emit` 扇出到所有窗口） |
@@ -125,6 +125,17 @@
 
 > 动作清单是**权威**的而不是文档：`host/schema` 直接由同一份 `actions()` 生成，所以
 > "告诉插件存在什么"与"网关实际接受什么"不可能漂移。
+
+### 为什么 `host/stop_session` 必须另开一个门
+
+`stream/close` 是按**调用者的插件 id** 定位会话的（`session::stop_one(plugin, ch)`）。
+对插件来说这是对的默认值 —— 一个插件不该停掉别人的活。但设置页是以 `__host__` 的身份
+问的，**永远匹配不到插件的会话**，所以「停掉这一条」需要一个宿主侧的门。
+
+`rpc:host` 是**发给插件**的，而 `host` 服务此前只有读动作（`info`/`sessions`/`plugins`/
+`schema`）加一个日志写。`stop_session` 会杀掉别的插件的进程 —— 所以它和 `unregister`
+一样按**宿主身份**门禁。**一个读授权悄悄变成写权力，正是权限模型腐烂的方式。**
+`tests/host-kernel.test.mjs` 盯着这两个动作的门禁。
 
 ## 3. 方案表：8 个方案 + 2 个流提供者
 

@@ -559,6 +559,23 @@ export function buildCtx(plugin, disposer) {
             return 'exists';
           }
           const win = new WebviewWindow(label, clean);
+          /**
+           * Closing it is the HOST's job from here on.
+           *
+           * Every other resource a plugin acquires is tracked for teardown —
+           * streams, sidecars, ptys, subscriptions, hotkeys, views — and windows
+           * were the one that was not. So disabling a plugin left its windows on
+           * screen with nobody able to close them: the plugin's JS context is
+           * gone, and the tray only knows about `main`. A plugin that closes its
+           * own windows in `deactivate()` still does; this is the backstop for
+           * one that forgets, and it makes "disable" mean the same thing for
+           * every resource.
+           *
+           * Only what THIS call created is tracked. A label that already existed
+           * may belong to another plugin, and closing someone else's window on
+           * teardown would be a bug in the other direction.
+           */
+          disposer.track(() => win.close().catch(() => {}));
           return new Promise((resolve, reject) => {
             win.once('tauri://created', () => resolve('created'));
             win.once('tauri://error', (e) =>

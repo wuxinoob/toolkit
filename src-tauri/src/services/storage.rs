@@ -118,7 +118,15 @@ impl Service for HostService {
         "host"
     }
     fn actions(&self) -> &'static [&'static str] {
-        &["info", "write_debug_log", "sessions", "plugins", "schema", "unregister"]
+        &[
+            "info",
+            "write_debug_log",
+            "sessions",
+            "stop_session",
+            "plugins",
+            "schema",
+            "unregister",
+        ]
     }
     fn dispatch(
         &self,
@@ -143,6 +151,28 @@ impl Service for HostService {
             // stream providers. The negotiation surface — a plugin asks instead
             // of discovering the surface by failing.
             "schema" => Ok(crate::services::schema()),
+            // Stop ONE session, whoever owns it.
+            //
+            // `stream/close` cannot do this: it is keyed by the CALLER's plugin
+            // id, so the host asking as `__host__` never matches a plugin's
+            // session. That is the right default for plugins — one plugin must
+            // not stop another's work — and the wrong one for the Settings page,
+            // which is looking at the whole table.
+            //
+            // Host-only for the same reason `unregister` is: `rpc:host` is
+            // granted to plugins, and a read-only grant must not quietly become
+            // the power to kill someone else's process.
+            "stop_session" => {
+                if plugin_id != crate::host::registry::HOST_IDENTITY {
+                    return Err(ServiceError::new(
+                        code::DENIED,
+                        format!("plugin `{plugin_id}` may not stop another plugin's session"),
+                    ));
+                }
+                let target = params_str(&params, "plugin")?;
+                let ch = params_str(&params, "ch")?;
+                Ok(serde_json::json!({ "stopped": session::stop_one(&target, &ch) }))
+            }
             // Revoke a plugin's native grant. Called when a plugin disappears
             // from disk: without it the permission registry keeps the grant
             // forever, so a plugin that is uninstalled stays authorised.

@@ -8,6 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { register } from 'node:module';
+import { readFileSync } from 'node:fs';
 
 // `lifecycle.js` now pulls in the component factory (host/ui.js -> Vue SFCs +
 // `import.meta.glob`), none of which Node can resolve. The stub loader fakes the
@@ -661,4 +662,33 @@ test('close-to-tray survives a save/reload round trip', () => {
   const stored = JSON.parse(localStorage.getItem('toolbox.settings'));
   assert.equal(stored.closeToTray, false, 'saveSettings must carry closeToTray');
   store.settings.closeToTray = original;
+});
+
+/* --------------------------- host-only actions ------------------------------ */
+
+test('the host service keeps its write actions host-only', () => {
+  // `rpc:host` is granted to plugins, and everything on the `host` service used
+  // to be a READ (`info`, `sessions`, `plugins`, `schema`) plus a log write. Two
+  // actions are not: `unregister` drops another plugin's permissions, and
+  // `stop_session` kills another plugin's process. A read grant quietly becoming
+  // the power to do either is how a permission model rots, so both are gated on
+  // the host identity — and both are checked here, because the guard is inside a
+  // function that needs a live `AppHandle` and so cannot be reached from
+  // `host-checks`.
+  const rs = readFileSync(
+    new URL('../src-tauri/src/services/storage.rs', import.meta.url),
+    'utf8',
+  );
+
+  for (const action of ['stop_session', 'unregister']) {
+    const at = rs.indexOf(`"${action}" =>`);
+    assert.ok(at > 0, `${action} must exist in the host service`);
+    const body = rs.slice(at, rs.indexOf('\n            }', at));
+    assert.match(body, /HOST_IDENTITY/, `${action} must check the caller is the host`);
+    assert.match(body, /code::DENIED/, `${action} must deny everyone else`);
+  }
+
+  // And the action is actually declared, or the gateway rejects it before the
+  // guard is ever reached.
+  assert.match(rs, /"stop_session",/, 'stop_session must be in host actions()');
 });

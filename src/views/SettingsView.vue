@@ -77,6 +77,16 @@ const pluginRows = computed(() =>
     error: p.error,
     enabled: p.status === 'active',
     permissions: (p.manifest.permissions || []).join(', ') || '—',
+    /**
+     * How many endpoints this plugin currently has open — sidecars, streams and
+     * ptys alike, from the host's unified registry.
+     *
+     * `active` says the plugin's code is running; this says what it is RUNNING.
+     * A plugin can be active with nothing open, and a plugin that was just
+     * disabled should read zero here — which is also how a leak becomes visible:
+     * disable it, and anything still listed belongs to a teardown that missed.
+     */
+    sessions: liveSessions.value.filter((s) => s.plugin === p.manifest.id).length,
   })),
 );
 
@@ -96,6 +106,10 @@ async function togglePlugin(row) {
   if (row.enabled) await deactivate(mod);
   else await activate(mod);
   saveEnabled(store.plugins.filter((p) => p.status === 'active').map((p) => p.manifest.id));
+  // The session list is the evidence that teardown actually happened: disabling a
+  // plugin should take its row's "Running" count to zero, and a count that stays
+  // put is how a leak becomes visible instead of invisible.
+  await refreshSessions();
 }
 
 async function rescan() {
@@ -127,6 +141,37 @@ async function refreshSessions() {
   } catch (e) {
     liveSessions.value = [];
     console.error('[settings] session list failed', e);
+  }
+}
+
+const stopping = ref('');
+
+/**
+ * Stop ONE session, whoever owns it.
+ *
+ * The host action, not `stream/close`: that one is keyed by the CALLER's plugin
+ * id, so this page (asking as `__host__`) would never match a plugin's session.
+ * That keying is the right default for plugins — one plugin must not stop
+ * another's work — which is exactly why the host needs its own door, and why
+ * `host/stop_session` is host-only.
+ *
+ * A miss is reported rather than swallowed: "already gone" is normal (the plugin
+ * closed it between the list and the click) and saying so beats a button that
+ * appears to do nothing.
+ */
+async function stopSession(s) {
+  stopping.value = s.id;
+  try {
+    const r = await hub.request('__host__', 'host', 'stop_session', {
+      plugin: s.plugin,
+      ch: s.ch,
+    });
+    if (!r?.stopped) toast(`${s.id} was already gone`, 'info', 2000);
+    await refreshSessions();
+  } catch (e) {
+    toast(`Could not stop ${s.id}: ${e.message ?? e}`, 'error');
+  } finally {
+    stopping.value = '';
   }
 }
 
@@ -508,14 +553,26 @@ onMounted(loadAutostart);
           </Table>
         </div>
 
-        <div v-if="liveSessions.length" class="flex flex-col rounded-md border p-2">
+        <div v-if="liveSessions.length" class="flex flex-col gap-1 rounded-md border p-2">
           <div v-for="s in liveSessions" :key="s.id" class="flex items-center gap-3 text-xs">
-            <code class="font-mono">{{ s.id }}</code>
             <Badge variant="outline">{{ s.kind }}</Badge>
+            <code class="font-mono">{{ s.id }}</code>
             <span class="text-muted-foreground">pid {{ s.pid ?? '—' }}</span>
             <span class="text-muted-foreground">{{ s.bytesOut }} B</span>
+            <Button
+              variant="outline"
+              size="sm"
+              class="ml-auto"
+              :disabled="stopping === s.id"
+              @click="stopSession(s)"
+            >
+              Stop
+            </Button>
           </div>
         </div>
+        <p v-else class="text-xs text-muted-foreground">
+          Nothing running. A live sidecar, stream or pty appears here, whichever transport opened it.
+        </p>
       </CardContent>
     </Card>
 
@@ -624,6 +681,7 @@ onMounted(loadAutostart);
                 <TableHead>Version</TableHead>
                 <TableHead>Type</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Running</TableHead>
                 <TableHead>Permissions</TableHead>
                 <TableHead />
               </TableRow>
@@ -640,6 +698,9 @@ onMounted(loadAutostart);
                 </TableCell>
                 <TableCell>
                   <Badge :variant="statusVariant(row.status)">{{ row.status }}</Badge>
+                </TableCell>
+                <TableCell class="text-xs text-muted-foreground">
+                  {{ row.sessions ? `${row.sessions} live` : '—' }}
                 </TableCell>
                 <TableCell class="text-xs text-muted-foreground">{{ row.permissions }}</TableCell>
                 <TableCell class="text-right">
