@@ -37,6 +37,7 @@
 - **停用插件 = 宿主强制回收一切**：订阅 / 热键 / 主题 / 视图 / streams / sidecars / ptys / **窗口**。窗口是最后补上的那一块（`ctx.windows.create` 曾是唯一没有 `disposer.track` 的资源获取点）。**新增任何「插件获得一个句柄」的 API，都必须同时 `disposer.track` 它的释放** —— 否则停用会留下没人能关的东西（插件的 JS 上下文已经没了）。复用（label 已存在）的窗口**不**回收：那可能是别的插件建的。
 - **`host` 服务的写动作必须 host-only**（`unregister` / `stop_session`）：`rpc:host` 是发给插件的，读授权悄悄变成写权力是权限模型腐烂的方式。守卫在 `tests/host-kernel.test.mjs`。
 - **`stream/close` 按调用者插件 id 定位** → 宿主（`__host__`）匹配不到别人的会话。宿主想停一条得走 `host/stop_session {plugin, ch}`。
+- **任何含反引号 / `$` 的文本都要先写进文件，再用 `-F` 读** —— bash 在双引号里会做命令替换，`git commit -m "…\`x\`…"` 会把消息吃掉（本仓库已踩两次：`python -c` 与 `git commit -m`）。判断标准：**这段文本会不会经过 bash？** 会 → 用文件。
 - **用对象当查找表要防原型链**：`NEEDS[m]` 对 `toString`/`constructor`/`valueOf` 会取到 `Object.prototype` 上的函数 → 假失败。用 `Object.hasOwn`。
 - **断言只匹配「你期望的那种错误」，就会把「另一种错误」当成成功** —— 本仓库已两次踩到（URL 校验的文案改了，而测试只查旧文案 → 被拒绝了却算通过）。**报错类断言要覆盖整个校验面。**
 - **`cargo test` 在本机跑不起来**（Windows：`tauri-build` 只给 bin 目标嵌 manifest，测试二进制加载即 `STATUS_ENTRYPOINT_NOT_FOUND`）。Rust 侧用 `cargo run --example host-checks`（现 27 项）。README 曾写「cargo test 39 项」，是不实的。
