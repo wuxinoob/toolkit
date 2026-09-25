@@ -34,6 +34,9 @@
 - **⚠️ 插件窗口里没有 Tailwind 工具类**（`plugin.css` 只有令牌 + `.tb-*`）。写了**静默失效** —— 元素就是没样式、不报错。用 `.tb-*` / 内联 `style` / 自己的 `<style>`。守卫在 `tests/window-options.test.mjs`（断言插件窗口路径的类名全是 `.tb-*`）。
 - **改契约必须留迁移路径** —— 判断依据不是「仓库里还有谁在用」，而是「**用户机器上已装的是什么**」。本仓库踩过：把插件窗口 URL 从 `index.html?mode=pluginwin&…` 改成 `pluginwin.html?…` 时直接拒绝旧写法 → **所有已装插件开不出窗口**（第三方插件改不到，插件目录里那份是副本），而症状是「什么都没有」（每个调用方都套了 `catch`，插件照常激活，只有窗口不出现）。**做法：在边界处翻译而不是拒绝**（`normalizePluginWindowUrl` 返回规范形状，用返回值创建窗口，旧写法零成本）。
 - **托盘与关闭到托盘**：主窗口 ✕ = 隐藏（`boot.js` 的 `installCloseToTray`），退出只在托盘右键菜单（`app.exit(0)` → `RunEvent::Exit` → `kill_all()`）。**托盘建不起来是致命错误**（否则应用无法从自己界面退出）。`store.settings.closeToTray` 持久化 —— 注意 `saveSettings` 只写手挑的子集。**主窗口上插件的 `onCloseRequested` 不触发**（窗口没关），所以那条 API 必须由宿主中转。
+- **停用插件 = 宿主强制回收一切**：订阅 / 热键 / 主题 / 视图 / streams / sidecars / ptys / **窗口**。窗口是最后补上的那一块（`ctx.windows.create` 曾是唯一没有 `disposer.track` 的资源获取点）。**新增任何「插件获得一个句柄」的 API，都必须同时 `disposer.track` 它的释放** —— 否则停用会留下没人能关的东西（插件的 JS 上下文已经没了）。复用（label 已存在）的窗口**不**回收：那可能是别的插件建的。
+- **`host` 服务的写动作必须 host-only**（`unregister` / `stop_session`）：`rpc:host` 是发给插件的，读授权悄悄变成写权力是权限模型腐烂的方式。守卫在 `tests/host-kernel.test.mjs`。
+- **`stream/close` 按调用者插件 id 定位** → 宿主（`__host__`）匹配不到别人的会话。宿主想停一条得走 `host/stop_session {plugin, ch}`。
 - **用对象当查找表要防原型链**：`NEEDS[m]` 对 `toString`/`constructor`/`valueOf` 会取到 `Object.prototype` 上的函数 → 假失败。用 `Object.hasOwn`。
 - **断言只匹配「你期望的那种错误」，就会把「另一种错误」当成成功** —— 本仓库已两次踩到（URL 校验的文案改了，而测试只查旧文案 → 被拒绝了却算通过）。**报错类断言要覆盖整个校验面。**
 - **`cargo test` 在本机跑不起来**（Windows：`tauri-build` 只给 bin 目标嵌 manifest，测试二进制加载即 `STATUS_ENTRYPOINT_NOT_FOUND`）。Rust 侧用 `cargo run --example host-checks`（现 27 项）。README 曾写「cargo test 39 项」，是不实的。
