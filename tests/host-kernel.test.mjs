@@ -467,67 +467,6 @@ test('lifecycle: a failing hotkey registration does not fail the activation', as
   );
 });
 
-test('lifecycle: declared hotkeys are registered by the host on the plugin\'s behalf', async () => {
-  ls.clear();
-  resetEvents();
-  store.plugins.length = 0;
-  store.views.length = 0;
-  invokeCalls.length = 0;
-  invokeImpl = async (cmd, { msg }) => ({ v: 1, kind: 'res', id: msg?.id ?? 1, p: true });
-
-  const plugin = await loadPlugin({
-    manifest: {
-      id: 'hk.plugin',
-      name: 'Hotkeyed',
-      permissions: [],
-      contributes: { views: [{ id: 'v', title: 'V' }], hotkeys: [{ key: 'ctrl+alt+shift+k', action: 'go' }] },
-    },
-    activate: (ctx) => ctx.registerView('v', () => {}),
-  });
-  await activate(plugin, { silent: true });
-
-  const reg = invokeCalls.find((c) => c.args?.msg?.svc === 'hotkey' && c.args.msg.act === 'register');
-  assert.ok(reg, 'the declared hotkey was never registered');
-  // the host acts for the plugin, and says so explicitly
-  assert.equal(reg.args.pluginId, '__host__');
-  assert.deepEqual(reg.args.msg.p, { key: 'ctrl+alt+shift+k', action: 'go', owner: 'hk.plugin' });
-
-  invokeCalls.length = 0;
-  await deactivate(plugin, { silent: true });
-  const rel = invokeCalls.find((c) => c.args?.msg?.svc === 'hotkey' && c.args.msg.act === 'unregister_all');
-  assert.ok(rel, 'deactivate must release the hotkeys');
-  assert.deepEqual(rel.args.msg.p, { owner: 'hk.plugin' });
-});
-
-test('lifecycle: a failing hotkey registration does not fail the activation', async () => {
-  ls.clear();
-  resetEvents();
-  store.plugins.length = 0;
-  store.views.length = 0;
-  invokeImpl = async (cmd, { msg }) => {
-    if (msg?.svc === 'hotkey') {
-      return { v: 1, kind: 'err', id: msg.id, code: 'hotkey/register', msg: 'shortcut already taken' };
-    }
-    return { v: 1, kind: 'res', id: msg?.id ?? 1, p: true };
-  };
-
-  const plugin = await loadPlugin({
-    manifest: {
-      id: 'hk.conflict',
-      name: 'Conflict',
-      permissions: [],
-      contributes: { views: [{ id: 'v', title: 'V' }], hotkeys: [{ key: 'ctrl+alt+shift+k', action: 'go' }] },
-    },
-    activate: (ctx) => ctx.registerView('v', () => {}),
-  });
-  await activate(plugin, { silent: true });
-  assert.equal(
-    store.plugins.find((p) => p.manifest.id === 'hk.conflict')?.status,
-    'active',
-    'a taken shortcut must not stop the plugin from activating',
-  );
-});
-
 test('lifecycle: loading a plugin declares its permissions to the native host', async () => {
   invokeCalls.length = 0;
   invokeImpl = async () => null;

@@ -80,6 +80,25 @@ const { builtinSources } = await import('../src/host/registry.js');
 const { deactivate } = await import('../src/host/lifecycle.js');
 const { descriptors } = await import('../src/protocol/registry.js');
 const { hub } = await import('../src/protocol/hub.js');
+const { selftestCases } = await import('../src/core/selftest.js');
+
+/**
+ * Run ONE in-app selftest case by id and report it the way `runSelftest` does.
+ *
+ * The suite's own doc says its pure-JS parts run under `node --test`; this is
+ * what makes that true for the cases that only look at `store`. Without it the
+ * app-side checks have no test at all, and the ones that assert a PROPERTY
+ * (rather than a fixed list) can rot into "always passes" without anyone seeing.
+ */
+async function runSelftestCase(id) {
+  const entry = selftestCases.find(([key]) => key === id);
+  assert.ok(entry, `no such selftest case: ${id}`);
+  try {
+    return { ok: true, detail: (await entry[1]()) || 'ok' };
+  } catch (e) {
+    return { ok: false, detail: String(e?.message || e) };
+  }
+}
 
 /**
  * Full host reset between tests.
@@ -326,4 +345,47 @@ test('deactivate: the user IS moved off a page that belonged to the disabled plu
     store.views.some((v) => v.viewId === store.activeViewId),
     'the fallback must be a view that actually exists',
   );
+});
+
+// ------------------- t13: what "a missing view" is allowed to mean -------------------
+
+test('t13: a built-in the user DISABLED is not a failure — it is named as skipped', async () => {
+  installGateway();
+  await resetHost();
+  await boot();
+
+  // Turn one built-in off the way the Settings toggle does. Its views go away,
+  // and that is correct behaviour, not a defect. This is the exact shape that
+  // produced `view missing: builtin.streamlab/streamlab` and a 14/15 report for
+  // a user who had simply switched a plugin off.
+  const victim = builtinSources().find((m) => (m.manifest.contributes?.views ?? []).length > 0);
+  assert.ok(victim, 'need a built-in that declares a view, or this test proves nothing');
+  await deactivate(victim, { silent: true });
+
+  const r = await runSelftestCase('t13-registry-views');
+  assert.ok(r.ok, `t13 must tolerate a plugin the user turned off, got: ${r.detail}`);
+  assert.match(r.detail, /skipped/, 'the disabled plugin must be NAMED, not silently dropped');
+  assert.ok(
+    r.detail.includes(victim.manifest.id),
+    `the skip list must name ${victim.manifest.id}, got: ${r.detail}`,
+  );
+});
+
+test('t13: an ACTIVE built-in with a missing view is still a failure', async () => {
+  installGateway();
+  await resetHost();
+  await boot();
+
+  // The same shape as the test above, except the plugin is still active — so now
+  // the missing view IS a defect. Without this, "tolerate a disabled plugin"
+  // could have been implemented as "stop checking" and nothing would notice.
+  const victim = builtinSources().find((m) => (m.manifest.contributes?.views ?? []).length > 0);
+  assert.ok(victim, 'need a built-in that declares a view');
+  const at = store.views.findIndex((v) => v.pluginId === victim.manifest.id);
+  assert.ok(at >= 0, 'the victim must have a registered view for this to remove');
+  store.views.splice(at, 1);
+
+  const r = await runSelftestCase('t13-registry-views');
+  assert.equal(r.ok, false, "removing a live plugin's view must still fail t13");
+  assert.match(r.detail, /view missing/, `expected a "view missing" failure, got: ${r.detail}`);
 });

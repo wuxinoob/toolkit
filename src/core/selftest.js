@@ -266,18 +266,40 @@ const tests = [
       // failure modes and this check had both: it kept passing after the plugin
       // it named was deleted (so it stopped covering anything), and it silently
       // did not cover a plugin added later. Reading the registry means the
-      // assertion is "every shipped built-in registered its declared view",
-      // which is the property worth having and never needs editing.
+      // assertion never needs editing.
+      //
+      // The property is about plugins that are actually RUNNING. It used to
+      // demand a view from every shipped built-in, so switching one off — a
+      // thing the Settings UI offers and the user is entitled to do — produced
+      // `view missing: builtin.streamlab/streamlab` and a 14/15 report. A check
+      // that goes red because the user used the product correctly teaches people
+      // to ignore the whole suite, which costs more than the check is worth.
+      //
+      // Skipped plugins are NAMED rather than silently dropped, so "not
+      // exercised" stays distinguishable from "verified" — the same rule t15
+      // follows for its missing sidecar.
+      const skipped = [];
+      let covered = 0;
       for (const mod of builtinSources()) {
-        const declared = mod.manifest.contributes?.views ?? [];
-        for (const v of declared) {
-          const expected = `${mod.manifest.id}/${v.id}`;
+        const id = mod.manifest.id;
+        const entry = store.plugins.find((p) => p.manifest?.id === id);
+        // `error` is already reported as a plugin failure by the boot log, with
+        // the reason. Failing here too would report one defect twice and hide
+        // which one it is.
+        if (entry?.status !== 'active') {
+          skipped.push(`${id}=${entry?.status ?? 'not-loaded'}`);
+          continue;
+        }
+        covered += 1;
+        for (const v of mod.manifest.contributes?.views ?? []) {
+          const expected = `${id}/${v.id}`;
           if (!ids.includes(expected)) {
             throw new Error(`view missing: ${expected} (have: ${ids.join(', ')})`);
           }
         }
       }
-      return `views registered: ${ids.length}, covering ${builtinSources().length} built-in(s)`;
+      const tail = skipped.length ? ` — skipped ${skipped.join(', ')}` : '';
+      return `views registered: ${ids.length}, ${covered} active built-in(s)${tail}`;
     },
   ],
   [

@@ -195,3 +195,17 @@ npm run build / npm run deploy:examples / npm run preview:theme / npm run bench
 - **同一个编辑失误会同时污染文档与代码**：`src/host/ctx.js` 里 `focusView` 曾被**粘贴两遍**（后一份**静默覆盖**前一份），同时 `api.md` / `recipes.md` / `debugging.md` 各有整节逐字节重复（共 6 节）。守卫：`tests/docs.test.mjs`（文档不许有重复的 `##`）+ `tests/sdk-parity.test.mjs`（提取器自带重复检测）。
 - **`ctx` 与 `bridge` 是同一契约的两个视图**，差异必须登记在案。`tests/sdk-parity.test.mjs` 从**源码解析**两边的接口面（不是手抄清单），双向断言：SHARED 两边都要有，只在一边的**必须**在例外表里。**把「缺」变成记录在案的决定，而不是没人注意的意外。** 已知改名：`ctx.rpc` ≡ `bridge.request`；仍缺：`files` / `log` / `ui` / `closeStream`。
 - **写「提取源码」的守卫时，`\s` 会匹配换行** → `^\s*name\s*:` 会跨行匹配到下一行的名字，于是**每个键报两次**。用 `[ \t]`。另：锚点选错（`function makeBridge` 会落到**函数体**的 `{`）会让提取器返回空集 → **必须断言解析结果的规模**，否则守卫在空集上永远报绿。
+
+### 14.11 「粘贴两遍」的完整扩散范围（本轮清查）
+- **同一个编辑失误一共污染了 7 处**：`ctx.js` 的 `focusView`（静默覆盖）、3 份文档（api/recipes/debugging 共 6 节）、**4 个测试文件**（host-kernel 2 个、protocol 一整段 32 行含 4 个测试、file-access 1 个、plugin-interfaces 2 行断言）。
+- **重复测试名值得当成缺陷，不是噪音**：`host-kernel` 里同名两份，**后一份断言的是相反的行为**（「声明即注册」vs 正确的「声明是请求，用户打开才注册」）。
+- **⚠️ `ls.clear()` 不清 `store.settings`** → 测试之间通过 store 泄漏状态。上面那个错版本的测试**只因为前一个测试把热键设成 enabled 才通过**（清掉那一项立刻红：`the declared hotkey was never registered`）。**依赖什么状态就要清什么状态**，否则**测试顺序决定它是否通过，而它看起来是绿的**。
+- **「找相邻重复块」会漏掉隔着一段的重复** → 用「**同名声明**」去找，而不是「相邻文本相同」。`protocol.test.mjs` 的两份之间隔着一个别的测试。
+- **文档里的头条计数没有编译器**：`INTERFACES.md` 说「9 个命令」，实际 **13**（`lib.rs` 9 + `services/external.rs` 4）。**能被代码算出来的数字就交给测试比对。**
+- **守卫：`tests/hygiene.test.mjs`**（原 `docs.test.mjs`）—— 文档不许重复的 `##`、测试文件不许重复测试名、`INTERFACES.md` 的命令数必须等于源码里的 `#[tauri::command]` 数（含 §1 表格行数）、**`lib.rs` 不许对服务名特判**（`svc ==` / `match svc`；正则刻意不匹配 `match services::route(...)`，那是对查表**结果**的 match）。四条都注入过违规确认会变红。
+
+### 14.12 自检的性质要写成「运行中的东西」，不是「发布的东西」
+- `t13-registry-views` 曾要求**每个随仓库发布的**内置插件都注册了视图 → 用户**合法地关掉**一个就得到 `view missing: builtin.streamlab/streamlab` 和 14/15。**一个因为用户正确使用产品而变红的检查，会教人忽略整个套件。**
+- 正确性质：**每个 `status === 'active'` 的插件都注册了它声明的视图**，且跳过的要**点名**（`skipped builtin.procman=inactive`）—— 沿用 t15 的 `SKIPPED` 约定，让「没验证」和「验证过」可区分。
+- `status === 'error'` 的插件**不**在这里失败：启动日志已经报过它和原因，再报一次会把一个缺陷报成两个、并掩盖是哪一个。
+- 纯 JS 的自检用例可以在 `node --test` 里跑：`selftestCases` 是导出的，`tests/boot.test.mjs` 有 `runSelftestCase(id)` 帮手 + 完整 boot 夹具。

@@ -14,7 +14,7 @@
 - **`win:self` 做不到**：Tauri 窗口命令**不校验调用者身份**（目标由调用者传的 `label` 决定，ACL 只按调用窗口授权、**没有 scope**）。插件窗口动自己的正解是 `bridge.drag()`；「限自己」要放**宿主层**（`control` 归属校验，**当前缺失**）。
 
 ## 接口（权威：`docs/INTERFACES.md`）
-- **9 个原生命令 · 9 服务 / 35 动作 · 8 方案 · 3 流提供者**（ticker / blob / clipboard）。
+- **13 个原生命令 · 9 服务 / 35 动作 · 8 方案 · 3 流提供者**（ticker / blob / clipboard）。命令分布在 `lib.rs`（9）与 `services/external.rs`（4）；**数据面 5 条**（`plugin_rpc` + 2 个 `stream_open` + `stream_close` + `plugin_dialog`）走 `host/registry.rs` 的权威闸口，**其余 8 条是宿主管理操作**，闸口是 `require_main`（仅 3 条）。
 - **服务权限是派生的**：`plugin_rpc` 做 `is_allowed(id, &format!("rpc:{svc}"))` → 注册服务即得权限，白名单也由 `serviceNames()` 派生。**只有非服务型权限（`rpc:dialog` / `win:manage`）才手写。**
 - **规律：拉取 → 服务，推送 → 流提供者**（剪贴板读/写 = `clipboard/*` 服务，变化 = 提供者 `clipboard` 流；截屏 = `screen/*` 服务，无流）。**`StreamProvider::permission()` 默认 `None`**，`open_json`/`open_raw` 检查它；名单在 `host/schema` 的 `providerPermissions`。
 - **形状规则**：方案差异只能体现在**默认值**上，不能体现在形状上。`rpc` 超时在**传输层**强制（默认 45s，0=不限），**不要在信封加 `deadline`**。
@@ -45,6 +45,9 @@
 - **插件列表顺序只在 `store.js` 一处**（`sortPluginList`/`sortViewList`，键 = 内置优先 + **显示名**字母序）。**作用在数组上而非渲染时**，5 个写入点都接了 —— 新增写入点必须同时接。
 - **断言只匹配「期望的那种错误」会把「另一种错误」当成成功** → 报错类断言要覆盖整个校验面。
 - **审计没扫的命名空间 = 静默失效的承诺**：`requiredPermissions` 曾漏看 `ctx.clipboard`/`ctx.screen`，于是 `senses` 漏声明 `rpc:screen` 被放过去、运行时才炸。**新增能力命名空间必须同时加审计规则**。
+- **⚠️ `ls.clear()` 不清 `store.settings`** → 测试之间通过 store 泄漏状态，**顺序决定它是否通过而它看起来是绿的**。**依赖什么状态就要清什么状态**。同名重复测试里，后一份常是**过时版本、断言相反行为**，靠泄漏才通过 —— 当成缺陷查。
+- **文档里的头条计数没有编译器**：`INTERFACES.md` 曾说「9 个命令」而实际 13。**能被代码算出来的数字交给测试比对**（`tests/hygiene.test.mjs` 现在也管：文档不许重复 `##`、测试不许重名、命令数=源码 `#[tauri::command]` 数、`lib.rs` 不许对服务名特判）。
+- **自检/断言的性质要写「运行中的东西」，不是「发布的东西」**：`t13` 曾要求每个**随仓库发布的**内置插件都有视图 → 用户合法关掉一个就 14/15。改成「每个 `active` 的插件都有它声明的视图」+ **跳过的点名**（同 t15 的 SKIPPED）。
 - **`ctx` 与 `bridge` 是同一契约的两个视图**，差异必须登记在案（`tests/sdk-parity.test.mjs` 双向断言；含 `ctx.rpc` ≡ `bridge.request`）。**把「缺」变成记录在案的决定。**
 - **同一编辑失误会同时污染文档与代码**：`ctx.focusView` 曾被粘贴两遍（**后一份静默覆盖**），三份文档各有整节重复。守卫 `tests/docs.test.mjs`。
 - **写「提取源码」的守卫：`\s` 匹配换行** → `^\s*name\s*:` 会跨行、每个键报两次（用 `[ \t]`）；锚点选错返回空集 → **必须断言解析规模**，否则守卫在空集上永远报绿。

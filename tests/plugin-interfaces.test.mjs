@@ -242,7 +242,7 @@ test('a new plugin can drive every existing interface with no host changes', asy
   const ctx = buildCtx({ manifest: probe.manifest }, { track() {} });
 
   // The plugin runs its whole sweep inside activate() and throws if any step
-  // failed, so a clean resolve means all eight interface checks passed.
+  // failed, so a clean resolve means every interface check passed.
   await probe.activate(ctx);
 
   assert.equal(seen.info, 1, 'rpc (host/info) not exercised');
@@ -252,11 +252,13 @@ test('a new plugin can drive every existing interface with no host changes', asy
   assert.equal(seen.publish, 1, 'event-bus was not exercised');
   assert.equal(seen.schema, 1, 'the negotiation surface (host/schema) was not exercised');
   assert.equal(seen.hotkeys, 1, 'the declared hotkey was not readable back');
-  assert.equal(seen.schema, 1, 'the negotiation surface (host/schema) was not exercised');
-  assert.equal(seen.hotkeys, 1, 'the declared hotkey was not readable back');
   assert.ok(kv.has('probe'), 'storage round trip did not persist');
   assert.ok(kv.has('lastSweep'), 'the sweep result was not persisted');
   const sweep = kv.get('lastSweep');
+  // A FLOOR, not the exact count. `passed === total` below is satisfied
+  // trivially by a sweep that stopped after one step, so something has to say
+  // "enough steps ran" — and a floor is the version of that which does not need
+  // editing every time a step is added.
   assert.ok(sweep.total >= 8, `expected at least 8 interface checks, got ${sweep.total}`);
   assert.equal(sweep.passed, sweep.total, `failed checks: ${JSON.stringify(sweep.results.filter((r) => !r.ok))}`);
   // every scheme in the table should be covered by at least one step

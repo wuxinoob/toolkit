@@ -9,34 +9,46 @@
 
 | 问题 | 结论 |
 |---|---|
-| **1. 协议是否统一了？** | **插件侧完全统一**；宿主侧有 4 个命令在网关之外（插件发现 + 权限上报），属于有理由的例外；窗口控制不在协议内（热键已收敛进 `hotkey` 服务）。 |
+| **1. 协议是否统一了？** | **插件侧完全统一**；13 个命令里只有 `plugin_rpc` 是网关，另外 4 个是**插件可调但必须裸命令**的（3 个流 + 原生对话框，各自设闸），其余 8 个是宿主自己的管理操作；窗口控制不在协议内（热键已收敛进 `hotkey` 服务）。 |
 | **2. 新插件能否直接调用已有接口？** | **能，且已验证**。`examples/plugins/probe` 不 import 任何模块、不碰 Tauri API，一次调用覆盖 11 项接口全部通过。 |
-| **3. 接口有哪些？** | 9 个原生命令 · 9 个服务 / 35 个动作 · 8 个方案 · 3 个流提供者。见 §1–§4。 |
+| **3. 接口有哪些？** | 13 个原生命令 · 9 个服务 / 35 个动作 · 8 个方案 · 3 个流提供者。见 §1–§4。 |
 | **4. 有改进空间吗？** | 有。**P1、P2 与 P0 两项均已完成**（见 §8）。剩余的是结构性例外与后续增强，不再是缺口。 |
 
 ---
 
-## 1. 原生入口：9 个命令
+## 1. 原生入口：13 个命令
 
-| # | 命令 | 用途 | 谁调用 | 在网关内 |
-|---|---|---|---|---|
-| 1 | `plugin_rpc` | **唯一请求/响应网关**（信封进、信封出） | `rpc` 方案 | — 它本身就是网关 |
-| 2 | `plugin_stream_open` | 开一条 json-envelope 推送流 | `channel-json` 方案 | ✗ 需携带 `Channel` 句柄 |
-| 3 | `plugin_stream_open_raw` | 开一条 raw-binary 推送流 | `channel-raw` 方案 | ✗ 同上 |
-| 4 | `plugin_stream_close` | 取消一条流 | 两个 channel 方案的 `close()` | ✗ 同上 |
-| 5 | `plugin_register` | 上报插件声明的权限 | `lifecycle.loadPlugin` | ✗ 加载期引导 |
-| 6 | `plugin_scan` | 扫描磁盘插件目录（读 manifest **+ 每个入口文件**算 digest） | `host/external.js` | ✗ 宿主内部操作 |
-| 7 | `plugin_info` | 按 id 查**一个**插件的位置（只读 manifest） | `pluginwin-host.js` | ✗ 同上 |
-| 8 | `plugin_read_entry` | 读插件入口源码 | 同上 | ✗ 同上 |
-| 9 | `plugin_open_dir` | 打开插件目录 | `SettingsView` | ✗ 同上 |
+| # | 命令 | 用途 | 谁调用 | 在网关内 | 闸口 |
+|---|---|---|---|---|---|
+| 1 | `plugin_rpc` | **唯一请求/响应网关**（信封进、信封出） | `rpc` 方案 | — 它本身就是网关 | `rpc:<svc>` |
+| 2 | `plugin_stream_open` | 开一条 json-envelope 推送流 | `channel-json` 方案 | ✗ 需携带 `Channel` 句柄 | `rpc:stream` + 提供者自己的 |
+| 3 | `plugin_stream_open_raw` | 开一条 raw-binary 推送流 | `channel-raw` 方案 | ✗ 同上 | 同上 |
+| 4 | `plugin_stream_close` | 取消一条流 | 两个 channel 方案的 `close()` | ✗ 同上 | `rpc:stream` |
+| 5 | `plugin_dialog` | 原生对话框（`ctx.files.pick/save/message`） | `ctx.js` | ✗ 不是网关动作 | `rpc:dialog`（**自设**） |
+| 6 | `plugin_register` | 上报插件声明的权限 | `lifecycle.loadPlugin` | ✗ 加载期引导 | — |
+| 7 | `plugin_reap_orphans` | 杀掉上一次前端上下文遗留的宿主侧会话 | `boot()` | ✗ 宿主内部操作 | 仅主窗口 |
+| 8 | `plugin_scan` | 扫描磁盘插件目录（读 manifest **+ 每个入口文件**算 digest） | `host/external.js` | ✗ 同上 | — |
+| 9 | `plugin_info` | 按 id 查**一个**插件的位置（只读 manifest） | `pluginwin-host.js` | ✗ 同上 | — |
+| 10 | `plugin_read_entry` | 读插件入口源码 | 同上 | ✗ 同上 | — |
+| 11 | `plugin_open_dir` | 打开插件目录 | `SettingsView` | ✗ 同上 | — |
+| 12 | `host_autostart_get` | 读开机自启状态 | `SettingsView` | ✗ 同上 | 仅主窗口 |
+| 13 | `host_autostart_set` | 设置开机自启（返回 OS 的**实际**状态，不是请求值） | `SettingsView` | ✗ 同上 | 仅主窗口 |
 
-**1–4 是数据面**（必须携带 IPC `Channel`，塞不进 JSON 请求/响应信封），**5–9 是宿主自身的管理操作**，不是插件能力。两类都不经过权限闸口——插件也调用不到它们（5 由宿主调用、6–9 只在宿主内部用）。
+**1–5 是数据面**（要携带 IPC `Channel`，或必须在同步网关上做异步的事），**6–13 是宿主自身的管理操作**，不是插件能力 —— 插件也调用不到它们。
+
+**两类用的不是同一种闸口，这是刻意的**：数据面的闸口是**权威**的（Rust `host/registry.rs`，fail-closed），因为插件能绕过 `ctx` 直接 `invoke`；管理操作只由宿主自己的代码调用，用的是 `require_main`（窗口 label 检查）—— 防的不是恶意插件，而是**第二个前端上下文**（窗口分发的规则见 `src/main.js`）。
+
+**「仅主窗口」的 3 条**（`plugin_reap_orphans` / `host_autostart_get` / `host_autostart_set`）共用同一个 `require_main`：它们的后果都是**全局**的（杀会话、改注册表的自启项），而 `pluginwin.html` 里如果跑起了宿主就会再调一次。
 
 > `plugin_info` 存在的唯一理由是**成本**：插件窗口以前调 `plugin_scan` 再 `.find()` 自己要的那个，
 > 于是开一个窗口要读遍插件目录里**所有** manifest **和所有入口文件**（本仓库实测 ~900KB），
 > 只为拿一个 `dir` + `entry_file` —— 而主窗口启动时早就知道。见 §1.2。
 
-> 原先还有第 9 个 `plugin_registry`，核查时发现**没有任何调用方**（Settings 页走网关的 `host/plugins`），已删除，避免留一个无人使用、无人校验的入口。
+> `plugin_dialog` 之所以是**裸命令**而不是网关动作：`blocking_pick_file()` 需要主线程的消息循环
+> 来泵消息，而同步命令就在那条线程上 —— 在那里等一个模态框会**死锁**。所以它自己用同一句
+> `host::registry::is_allowed(&plugin_id, "rpc:dialog")` 设闸，和其他入口一样 fail-closed。
+
+> 原先还有一个 `plugin_registry`，核查时发现**没有任何调用方**（Settings 页走网关的 `host/plugins`），已删除，避免留一个无人使用、无人校验的入口。
 
 ### 1.1 全部命令都是 `async fn` —— 这不是风格，是硬要求
 
@@ -101,8 +113,8 @@
 不可能有分歧。
 
 **③ 这个窗口要读多少磁盘。** 插件窗口曾调 `plugin_scan` 再 `.find()` 自己要的那个 ——
-而 `plugin_scan` 为了算 digest 会读**每个插件的完整入口文件**。本仓库 8 个插件、
-入口合计 ~896 KB（`moment-notes` 一个就 686 KB），全读一遍只为拿一个 `dir`。
+而 `plugin_scan` 为了算 digest 会读**每个插件的完整入口文件**。本机装的 10 个插件
+入口合计 **918 KB**（`moment-notes` 一个就 674 KB），全读一遍只为拿一个 `dir`。
 `plugin_info` 只读 manifest（每个 ~300 字节）并在命中处停下。
 
 **这三条都不是"优化"，是"别做无关的事"** —— 把不属于插件窗口的模块/样式/文件排除出它的路径。
@@ -213,32 +225,44 @@
 - **一个信封**：上行 `req → res|err`，下行 `evt` / `data|end|exit|err`，两侧共用同一套构造器与校验规则。
 - **加方案不改宿主**：`transports/index.js` 启动时断言"声明的方案都有实现"；`registry.js` 是唯一把方案 id 绑到实现的地方。
 
-**例外（3 处，都已明确边界）**
+**例外（都已明确边界）**
 
 | 例外 | 为什么 | 风险 |
 |---|---|---|
-| 插件发现 3 命令（`plugin_scan`/`read_entry`/`open_dir`） | 宿主要在"还没有插件"时读取插件目录，无法走插件网关 | 低：仅宿主调用，含路径逃逸防护 |
-| 窗口控制（`ctx.windows`） | Tauri 的 `WebviewWindow` 是命令式 API，套进 req/res 信封只会更绕 | 中：有 `win:manage` 闸口 + Tauri ACL 两层，但不在信封体系内，无法被统一日志/测试覆盖 |
-| 全局热键 | 目前只有"唤出主窗口"一个，由前端直接注册 | 中：**插件无法声明自己的热键**（原设计的 `contributes.hotkeys` 未实现） |
+| 插件发现 4 命令（`plugin_scan`/`plugin_info`/`plugin_read_entry`/`plugin_open_dir`） | 宿主要在"还没有插件"时读取插件目录，无法走插件网关 | 低：仅宿主调用，含路径逃逸防护 |
+| 原生对话框（`plugin_dialog`） | 模态框需要主线程泵消息，而同步命令就在那条线程上 → 走网关会**死锁** | 低：自己设 `rpc:dialog` 闸；拿到的只是用户在看得见的对话框里选中的路径 |
+| 窗口控制（`ctx.windows`） | Tauri 的 `WebviewWindow` 是命令式 API，套进 req/res 信封只会更绕 | 中：有 `win:manage` 闸口 + Tauri ACL 两层，但不在信封体系内，无法被统一日志/测试覆盖。**另有一处已知缺口：`control` 不校验窗口归属**（插件 A 能改插件 B 的窗口） |
+| 开机自启 2 命令（`host_autostart_get/set`） | 写的是 OS 注册表，不是插件能力 | 低：仅主窗口 + 仅 `SettingsView` 调用 |
+| 遗留会话回收（`plugin_reap_orphans`） | 前端重载后宿主还活着，上次 boot 的会话仍握着真实进程 | 低：仅主窗口，且在任何东西开会话**之前**调用 |
+
+> **全局热键已不在例外里。** 它曾经是：「只有唤出主窗口一个，由前端直接注册，插件无法声明自己的热键」。
+> 现在 `contributes.hotkeys` + `hotkey` 服务 + `ctx.onHotkey` 都在，宿主在 `activate()` **之前**代插件注册、
+> `deactivate()` 时释放，按键以 `evt` 信封投递到 `hotkey:<action>`，宿主自己那一条也走同一个服务。
+> 见 §8 的 P1-3。
 
 ---
 
 ## 7. 新插件能否直接调用已有接口？
 
-**能。** 新写了 `examples/plugins/probe` 作为证据——它**不 import 任何模块**、不碰 Tauri API，只用 `ctx.*` 与 `ctx.protocol`，在 `activate()` 里依次跑完 9 项检查：
+**能。** 新写了 `examples/plugins/probe` 作为证据——它**不 import 任何模块**、不碰 Tauri API，只用 `ctx.*` 与 `ctx.protocol`，在 `activate()` 里依次跑完 **11 项**检查：
 
 ```
-rpc(host/info) · storage set/get/keys · 方案表 · 会话表
+rpc(host/info) · storage set/get/keys · 方案表 · 会话表 · host/schema（协商面）
 channel-json 流（3 帧 + end）· channel-raw 流（8 字节 LE + end）
-event-bus 广播往返 · in-process 同步投递 · 权限闸口拒绝未声明服务
+event-bus 广播往返 · in-process 同步投递
+热键：声明的那条能读回来 · 权限闸口拒绝未声明服务
 ```
 
 任一项失败 → `activate()` 抛错 → 该插件在启动日志里显示 `error` 而不是 `active`。所以**启动日志本身就是结论**。
 
 验证方式（两条，互为补充）：
 
-1. **确定性**：`tests/plugin-interfaces.test.mjs` 加载真实的 `probe/main.js`，用真实的 `buildCtx` + 真实 hub/transports（只在 `invoke` 边界打桩）跑 `activate()`，并断言 9 项全过、权限声明恰好 4 个、视图按同一契约注册。
+1. **确定性**：`tests/plugin-interfaces.test.mjs` 加载真实的 `probe/main.js`，用真实的 `buildCtx` + 真实 hub/transports（只在 `invoke` 边界打桩）跑 `activate()`，并断言每一项接口都被走到、权限声明恰好 5 个（`rpc:storage` / `rpc:host` / `rpc:stream` / `rpc:bus` / `rpc:hotkey`）、视图按同一契约注册。
 2. **真实环境**：把目录复制进 `{appData}/plugins/probe.demo`，Rescan/重启后看启动日志。
+
+> 步骤数刻意写成**下界**（`total >= 8`）而不是精确值：`passed === total` 对「只跑了一步就停下」的
+> sweep 是**平凡成立**的，所以需要一句话说明「步骤够多」，而下界是那个不需要每次加步骤就改的版本。
+> （它已经悄悄落后过一次：这里曾写「9 项」，而插件跑的是 11 项。）
 
 > 本次真实运行受限于本机 WebView2 环境（见文末），未能在 GUI 里复跑；确定性那条已通过。
 
