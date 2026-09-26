@@ -28,7 +28,6 @@
 - **分发改按窗口 label，不按 URL 参数**：只有 label=`main` boot 宿主，其余走 `pluginwin-host.js`。`else` 分支会让插件窗口跑起**第二个完整宿主**。守卫 `tests/window-options.test.mjs`。
 - **两个窗口 = 两个页面**（`index.html`→`app.css`；`pluginwin.html`→`plugin.css`），共享 `design-system.css`。样式表是 `<link>`、在模块之前生效 → **只能在页面层选**。插件窗口 948 KB → **61 KB**。
 - **插件窗口里没有 Tailwind 工具类**（写了**静默失效**）→ 用 `.tb-*` / 内联 `style`。**不要给插件加 safelist**（外部插件是 Blob URL 单文件 ESM，import 不了任何东西）。
-- **插件窗口一律 `visible:false` 创建，等 UI 报 `hello` 再 `show()`**。
 - **`ctx.windows.control` 每次 = 2 次 IPC 往返** → 拖动时逐帧连带动多窗口 = 卡顿。**几何上报必须 rAF 合并 + 去重**（拖拽期 `resize` 与 `SetWindowPos` 会成**自放大回路**）；拖窗口用原生 `bridge.drag()`。
 - **渲染细节见 `NOTES.md` §6–§7**：透明窗口别用 `backdrop-filter`、别留无限动画；尺寸由内容**实测上报**（去重、单轴不清零）；`setIgnoreCursorEvents(true)` 是窗口级（透传窗口收不到**任何**鼠标事件）；`ctx.log` 只到 webview console → 插件失败原因必须显示在界面上。
 
@@ -41,14 +40,14 @@
 ## 契约 / 测试
 - **改契约必须留迁移路径** —— 判据是「**用户机器上已装的是什么**」，不是「仓库里还有谁在用」。**在边界处翻译而不是拒绝**（`normalizePluginWindowUrl`）。踩过：URL 契约改严 → **所有已装插件开不出窗口**，症状是「什么都没有」（调用方都套了 `catch`）。
 - **断言只匹配「期望的那种错误」会把「另一种错误」当成成功** → 报错类断言要覆盖整个校验面。
+- **正则断言实现 = 把 bug 钉死成期望值**（`tests/file-access.test.mjs` 曾 `assert.match(/mine.has(...)/)`，于是 file drop 整个坏掉的期间它一直是绿的 —— **本仓库第三次同类错误**）。判据：**这条断言在功能完全坏掉时会变红吗？** 不会 → 改写成行为测试。
+- **⚠️ 「现在是什么」要在使用时求值，不能在初始化时快照**：`ctx.onDrop` 曾在**订阅时**快照自己视图 id 的集合，而插件靠 `ctx.registerView` 注册视图、**「先接输入后挂视图」是自然写法** → 快照是**空集** → **每个 drop 静默被拒一辈子**。判据：被判断的东西是不是**之后才会被创建**的（视图/句柄/注册项）？
 - **审计没扫的命名空间 = 静默失效的承诺**：`requiredPermissions` 曾漏看 `ctx.clipboard`/`ctx.screen`，于是 `senses` 漏声明 `rpc:screen` 被放过去、运行时才炸。**新增能力命名空间必须同时加审计规则**。
 - **⚠️ `ls.clear()` 不清 `store.settings`** → 测试之间通过 store 泄漏状态，**顺序决定它是否通过而它看起来是绿的**。**依赖什么状态就要清什么状态**。同名重复测试里后一份常是**过时版本、断言相反行为**，靠泄漏才通过 —— 当成缺陷查。
 - **断言的性质要写「运行中的东西」，不是「发布的东西」**：`t13` 曾要求每个**随仓库发布的**内置插件都有视图 → 用户合法关掉一个就 14/15。改成「每个 `active` 的插件都有它声明的视图」+ **跳过的点名**（同 t15 的 SKIPPED）。
 - **`tests/hygiene.test.mjs` 管住「没有编译器的东西」**：文档不许重复 `##`、测试不许重名、`INTERFACES.md` 的命令数 = 源码 `#[tauri::command]` 数、`lib.rs` 不许对服务名特判。**能被代码算出来的数字交给测试比对。**
 - **`ctx` 与 `bridge` 是同一契约的两个视图**，差异必须登记在案（`tests/sdk-parity.test.mjs` 双向断言；含 `ctx.rpc` ≡ `bridge.request`）。行为也要测，不只是接口面（`tests/plugin-bridge.test.mjs`）。
-- **写「提取源码」的守卫：`\s` 匹配换行** → `^\s*name\s*:` 会跨行、每个键报两次（用 `[ \t]`）；锚点选错返回空集 → **必须断言解析规模**，否则守卫在空集上永远报绿。
 - **`arr.reverse()` / `arr.sort()` 原地改并返回同一个数组** → `const f = arr.reverse(); arr.length = 0;` 会把 `f` 也清空（`bridge.dispose()` 曾因此变成**彻底的空操作**）。先 `[...arr]`。
-- **用对象当查找表要防原型链** → `Object.hasOwn`。
 - **⚠️ 绝对不要硬杀 Tauri 应用**（累积孤儿 `msedgewebview2`、弄坏 WebView2 profile → 窗口全白）。**应用内验证必须由用户在交互终端做。**
 - **任何含反引号 / `$` 的文本先写进文件再用 `-F` 读**（bash 会做命令替换）。
 - **`git restore <path>` 会连工作区未提交的修改一起回滚**；**`git add <已删除的路径>` 会整条失败**（重命名后别再把旧路径传进去）。
