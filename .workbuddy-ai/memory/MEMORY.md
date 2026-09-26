@@ -1,6 +1,7 @@
 # toolbox — 项目长期笔记（索引）
 
 > **细节/原因读同目录 `NOTES.md`（14 节）**；设计文档 `docs/{PROTOCOL,INTERFACES,UI,MESSAGE-FRAMEWORK}.md`、`docs/plugin-dev/`。
+> ⚠️ **本文件已接近自动注入上限（约 10 KB）** —— 加规则前先想：能不能并进已有条目，或者搬去 `NOTES.md`。
 > `D:\code\rust\toolkit`（目录名保留），应用名 **Toolbox**，identifier `com.tan18.toolbox`。旧 `ARCHITECTURE.md` 与代码不符，**以代码为准**。主题：统一前后端插件消息传递框架，**不增加主程序复杂度**。
 
 ## 架构（不要倒退）
@@ -14,7 +15,7 @@
 - **`win:self` 做不到**：Tauri 窗口命令**不校验调用者身份**（目标由调用者传的 `label` 决定，ACL 只按调用窗口授权、**没有 scope**）。插件窗口动自己的正解是 `bridge.drag()`；「限自己」要放**宿主层**（`control` 归属校验，**当前缺失**）。
 
 ## 接口（权威：`docs/INTERFACES.md`）
-- **13 个原生命令 · 9 服务 / 35 动作 · 8 方案 · 3 流提供者**（ticker / blob / clipboard）。命令分布在 `lib.rs`（9）与 `services/external.rs`（4）；**数据面 5 条**（`plugin_rpc` + 2 个 `stream_open` + `stream_close` + `plugin_dialog`）走 `host/registry.rs` 的权威闸口，**其余 8 条是宿主管理操作**，闸口是 `require_main`（仅 3 条）。
+- **13 个原生命令 · 9 服务 / 35 动作 · 8 方案 · 3 流提供者**（ticker / blob / clipboard）。命令在 `lib.rs`（9）+ `services/external.rs`（4）；**数据面 5 条**（`plugin_rpc` + 2 个 `stream_open` + `stream_close` + `plugin_dialog`）走 `host/registry.rs` 权威闸口，**其余 8 条是宿主管理操作**（闸口 `require_main`，仅 3 条）。
 - **服务权限是派生的**：`plugin_rpc` 做 `is_allowed(id, &format!("rpc:{svc}"))` → 注册服务即得权限，白名单也由 `serviceNames()` 派生。**只有非服务型权限（`rpc:dialog` / `win:manage`）才手写。**
 - **规律：拉取 → 服务，推送 → 流提供者**（剪贴板读/写 = `clipboard/*` 服务，变化 = 提供者 `clipboard` 流；截屏 = `screen/*` 服务，无流）。**`StreamProvider::permission()` 默认 `None`**，`open_json`/`open_raw` 检查它；名单在 `host/schema` 的 `providerPermissions`。
 - **形状规则**：方案差异只能体现在**默认值**上，不能体现在形状上。`rpc` 超时在**传输层**强制（默认 45s，0=不限），**不要在信封加 `deadline`**。
@@ -29,9 +30,7 @@
 - **插件窗口里没有 Tailwind 工具类**（写了**静默失效**）→ 用 `.tb-*` / 内联 `style`。**不要给插件加 safelist**（外部插件是 Blob URL 单文件 ESM，import 不了任何东西）。
 - **插件窗口一律 `visible:false` 创建，等 UI 报 `hello` 再 `show()`**。
 - **`ctx.windows.control` 每次 = 2 次 IPC 往返** → 拖动时逐帧连带动多窗口 = 卡顿。**几何上报必须 rAF 合并 + 去重**（拖拽期 `resize` 与 `SetWindowPos` 会成**自放大回路**）；拖窗口用原生 `bridge.drag()`。
-- **透明置顶窗口上不要 `backdrop-filter: blur()`，也不要留无限动画**。
-- **窗口尺寸尽量由内容实测上报**（`max-content` + 同步 `getBoundingClientRect()`）；**上报必须去重**；**单轴上报不许把另一轴清零**。
-- **`setIgnoreCursorEvents(true)` 是窗口级标志** → 透传窗口收不到**任何**鼠标事件（含 `pointermove`）。**`ctx.log` 只到 webview console，不写 `debug.log`** → 插件的失败原因必须显示在界面上。
+- **渲染细节见 `NOTES.md` §6–§7**：透明窗口别用 `backdrop-filter`、别留无限动画；尺寸由内容**实测上报**（去重、单轴不清零）；`setIgnoreCursorEvents(true)` 是窗口级（透传窗口收不到**任何**鼠标事件）；`ctx.log` 只到 webview console → 插件失败原因必须显示在界面上。
 
 ## 生命周期 / 权限
 - **停用插件 = 宿主强制回收一切**：订阅 / 热键 / 主题 / 视图 / streams / sidecars / ptys / **窗口**。**新增任何「插件获得一个句柄」的 API，都必须同时 `disposer.track` 它的释放**。复用（label 已存在）的窗口**不**回收。
@@ -45,17 +44,16 @@
 - **插件列表顺序只在 `store.js` 一处**（`sortPluginList`/`sortViewList`，键 = 内置优先 + **显示名**字母序）。**作用在数组上而非渲染时**，5 个写入点都接了 —— 新增写入点必须同时接。
 - **断言只匹配「期望的那种错误」会把「另一种错误」当成成功** → 报错类断言要覆盖整个校验面。
 - **审计没扫的命名空间 = 静默失效的承诺**：`requiredPermissions` 曾漏看 `ctx.clipboard`/`ctx.screen`，于是 `senses` 漏声明 `rpc:screen` 被放过去、运行时才炸。**新增能力命名空间必须同时加审计规则**。
-- **⚠️ `ls.clear()` 不清 `store.settings`** → 测试之间通过 store 泄漏状态，**顺序决定它是否通过而它看起来是绿的**。**依赖什么状态就要清什么状态**。同名重复测试里，后一份常是**过时版本、断言相反行为**，靠泄漏才通过 —— 当成缺陷查。
-- **文档里的头条计数没有编译器**：`INTERFACES.md` 曾说「9 个命令」而实际 13。**能被代码算出来的数字交给测试比对**（`tests/hygiene.test.mjs` 现在也管：文档不许重复 `##`、测试不许重名、命令数=源码 `#[tauri::command]` 数、`lib.rs` 不许对服务名特判）。
-- **自检/断言的性质要写「运行中的东西」，不是「发布的东西」**：`t13` 曾要求每个**随仓库发布的**内置插件都有视图 → 用户合法关掉一个就 14/15。改成「每个 `active` 的插件都有它声明的视图」+ **跳过的点名**（同 t15 的 SKIPPED）。
-- **`ctx` 与 `bridge` 是同一契约的两个视图**，差异必须登记在案（`tests/sdk-parity.test.mjs` 双向断言；含 `ctx.rpc` ≡ `bridge.request`）。**把「缺」变成记录在案的决定。**
-- **同一编辑失误会同时污染文档与代码**：`ctx.focusView` 曾被粘贴两遍（**后一份静默覆盖**），三份文档各有整节重复。守卫 `tests/docs.test.mjs`。
+- **⚠️ `ls.clear()` 不清 `store.settings`** → 测试之间通过 store 泄漏状态，**顺序决定它是否通过而它看起来是绿的**。**依赖什么状态就要清什么状态**。同名重复测试里后一份常是**过时版本、断言相反行为**，靠泄漏才通过 —— 当成缺陷查。
+- **断言的性质要写「运行中的东西」，不是「发布的东西」**：`t13` 曾要求每个**随仓库发布的**内置插件都有视图 → 用户合法关掉一个就 14/15。改成「每个 `active` 的插件都有它声明的视图」+ **跳过的点名**（同 t15 的 SKIPPED）。
+- **`tests/hygiene.test.mjs` 管住「没有编译器的东西」**：文档不许重复 `##`、测试不许重名、`INTERFACES.md` 的命令数 = 源码 `#[tauri::command]` 数、`lib.rs` 不许对服务名特判。**能被代码算出来的数字交给测试比对。**
+- **`ctx` 与 `bridge` 是同一契约的两个视图**，差异必须登记在案（`tests/sdk-parity.test.mjs` 双向断言；含 `ctx.rpc` ≡ `bridge.request`）。
 - **写「提取源码」的守卫：`\s` 匹配换行** → `^\s*name\s*:` 会跨行、每个键报两次（用 `[ \t]`）；锚点选错返回空集 → **必须断言解析规模**，否则守卫在空集上永远报绿。
 - **用对象当查找表要防原型链** → `Object.hasOwn`。
 - **⚠️ 绝对不要硬杀 Tauri 应用**（累积孤儿 `msedgewebview2`、弄坏 WebView2 profile → 窗口全白）。**应用内验证必须由用户在交互终端做。**
-- **任何含反引号 / `$` 的文本先写进文件再用 `-F` 读**（bash 会做命令替换，`git commit -m "…\`x\`…"` 会把消息吃掉）。
-- **`git restore <path>` 会连工作区未提交的修改一起回滚**（多会话同仓库）；**`git add <已删除的路径>` 会整条失败**。
+- **任何含反引号 / `$` 的文本先写进文件再用 `-F` 读**（bash 会做命令替换）。
+- **`git restore <path>` 会连工作区未提交的修改一起回滚**；**`git add <已删除的路径>` 会整条失败**（重命名后别再把旧路径传进去）。
 - **示例部署用 `npm run deploy:examples`**（手工 `cp -r` 已两次导致"应用里跑的还是旧插件"）。
 
 ## 验证
-`cd src-tauri && cargo check --all-targets`（零警告）· `cargo run --example host-checks`（Rust 侧自检，**`cargo test` 在本机跑不起来**）· `npm test` · `npm run build|deploy:examples|preview:theme|bench`。应用内：`npm run tauri dev` 后看 `debug.log` 的 15/15。
+`cd src-tauri && cargo check --all-targets`（零警告；`拒绝访问 os error 5` = 杀软损坏增量缓存 → `rm -rf target/debug/incremental` + `CARGO_INCREMENTAL=0`）· `cargo run --example host-checks`（Rust 侧自检，**`cargo test` 在本机跑不起来**）· `npm test` · `npm run build|deploy:examples|preview:theme|bench`。应用内：`npm run tauri dev` 后看 `debug.log` 的 15/15。
