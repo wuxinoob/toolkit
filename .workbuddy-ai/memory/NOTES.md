@@ -188,3 +188,10 @@ npm run build / npm run deploy:examples / npm run preview:theme / npm run bench
 - **`StreamProvider::permission()` 默认 `None`**；`open_json`/`open_raw` 检查它 → 提供者可以要求自己的权限（提供者 **`clipboard`** → `rpc:clipboard`），名单在 `host/schema` 的 `providerPermissions`。守卫在 `examples/host-checks.rs` 的 `provider-permissions-are-published`。
 - **规律：拉取 → 服务（service），推送 → 流提供者（stream provider）**。剪贴板读/写是服务（`clipboard/read`、`clipboard/write`），剪贴板**变化**是流（提供者 `clipboard`）。截屏是服务（`screen/monitors`、`screen/capture`），**没有**对应的流。
 - **服务权限是派生的**：`plugin_rpc` 里 `is_allowed(plugin_id, &format!("rpc:{svc}"))` → 注册一个服务就自动得到 `rpc:<服务名>`。所以 `rpc:screen` 在源码里搜不到字符串，但**确实被强制**；`tests/plugins.test.mjs` 的白名单也是 `serviceNames().map(n => \`rpc:${n}\`)` 派生的，不会漂移。**只有非服务型权限（`rpc:dialog` / `win:manage`）才需要手写进白名单。**
+
+### 14.10 审计与守卫的边界（本轮新增）
+- **审计没扫的命名空间 = 静默失效的承诺。** `tests/plugins.test.mjs` 的 `requiredPermissions` 承诺「源码里用到的每个能力都已声明」，但它**没看** `ctx.clipboard` / `ctx.screen` —— 于是 `senses` 用了 `ctx.screen.*` 却没声明 `rpc:screen`，**审计放它过去了**，最后在**运行时**才炸。**新增一个能力命名空间，必须同时给审计加规则** —— 否则那句承诺比不检查更糟（它看起来是绿的）。
+- **`plugin_register` 拿到的是 `plugin.json` 里那串字面量** —— 「派生」不等于「已声明」。网关按**成员资格**查，所以派生出来的权限也得手写进 manifest。
+- **同一个编辑失误会同时污染文档与代码**：`src/host/ctx.js` 里 `focusView` 曾被**粘贴两遍**（后一份**静默覆盖**前一份），同时 `api.md` / `recipes.md` / `debugging.md` 各有整节逐字节重复（共 6 节）。守卫：`tests/docs.test.mjs`（文档不许有重复的 `##`）+ `tests/sdk-parity.test.mjs`（提取器自带重复检测）。
+- **`ctx` 与 `bridge` 是同一契约的两个视图**，差异必须登记在案。`tests/sdk-parity.test.mjs` 从**源码解析**两边的接口面（不是手抄清单），双向断言：SHARED 两边都要有，只在一边的**必须**在例外表里。**把「缺」变成记录在案的决定，而不是没人注意的意外。** 已知改名：`ctx.rpc` ≡ `bridge.request`；仍缺：`files` / `log` / `ui` / `closeStream`。
+- **写「提取源码」的守卫时，`\s` 会匹配换行** → `^\s*name\s*:` 会跨行匹配到下一行的名字，于是**每个键报两次**。用 `[ \t]`。另：锚点选错（`function makeBridge` 会落到**函数体**的 `{`）会让提取器返回空集 → **必须断言解析结果的规模**，否则守卫在空集上永远报绿。

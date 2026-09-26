@@ -28,7 +28,7 @@
 - **两个窗口 = 两个页面**（`index.html`→`app.css`；`pluginwin.html`→`plugin.css`），共享 `design-system.css`。样式表是 `<link>`、在模块之前生效 → **只能在页面层选**。插件窗口 948 KB → **61 KB**。
 - **插件窗口里没有 Tailwind 工具类**（写了**静默失效**）→ 用 `.tb-*` / 内联 `style`。**不要给插件加 safelist**（外部插件是 Blob URL 单文件 ESM，import 不了任何东西）。
 - **插件窗口一律 `visible:false` 创建，等 UI 报 `hello` 再 `show()`**。
-- **`ctx.windows.control` 每次 = 2 次 IPC 往返** → 拖动时逐帧连带动多窗口 = 卡顿。**几何上报必须 rAF 合并 + 去重**；拖拽期 `resize` 与 `SetWindowPos` 会成**自放大回路**。拖窗口用原生 `bridge.drag()`。
+- **`ctx.windows.control` 每次 = 2 次 IPC 往返** → 拖动时逐帧连带动多窗口 = 卡顿。**几何上报必须 rAF 合并 + 去重**（拖拽期 `resize` 与 `SetWindowPos` 会成**自放大回路**）；拖窗口用原生 `bridge.drag()`。
 - **透明置顶窗口上不要 `backdrop-filter: blur()`，也不要留无限动画**。
 - **窗口尺寸尽量由内容实测上报**（`max-content` + 同步 `getBoundingClientRect()`）；**上报必须去重**；**单轴上报不许把另一轴清零**。
 - **`setIgnoreCursorEvents(true)` 是窗口级标志** → 透传窗口收不到**任何**鼠标事件（含 `pointermove`）。**`ctx.log` 只到 webview console，不写 `debug.log`** → 插件的失败原因必须显示在界面上。
@@ -44,6 +44,10 @@
 - **测试里不要硬编码内置插件名单**：`src/host/registry.js` 是权威清单，从注册表派生。已有 4 处犯过。
 - **插件列表顺序只在 `store.js` 一处**（`sortPluginList`/`sortViewList`，键 = 内置优先 + **显示名**字母序）。**作用在数组上而非渲染时**，5 个写入点都接了 —— 新增写入点必须同时接。
 - **断言只匹配「期望的那种错误」会把「另一种错误」当成成功** → 报错类断言要覆盖整个校验面。
+- **审计没扫的命名空间 = 静默失效的承诺**：`requiredPermissions` 曾漏看 `ctx.clipboard`/`ctx.screen`，于是 `senses` 漏声明 `rpc:screen` 被放过去、运行时才炸。**新增能力命名空间必须同时加审计规则**。
+- **`ctx` 与 `bridge` 是同一契约的两个视图**，差异必须登记在案（`tests/sdk-parity.test.mjs` 双向断言；含 `ctx.rpc` ≡ `bridge.request`）。**把「缺」变成记录在案的决定。**
+- **同一编辑失误会同时污染文档与代码**：`ctx.focusView` 曾被粘贴两遍（**后一份静默覆盖**），三份文档各有整节重复。守卫 `tests/docs.test.mjs`。
+- **写「提取源码」的守卫：`\s` 匹配换行** → `^\s*name\s*:` 会跨行、每个键报两次（用 `[ \t]`）；锚点选错返回空集 → **必须断言解析规模**，否则守卫在空集上永远报绿。
 - **用对象当查找表要防原型链** → `Object.hasOwn`。
 - **⚠️ 绝对不要硬杀 Tauri 应用**（累积孤儿 `msedgewebview2`、弄坏 WebView2 profile → 窗口全白）。**应用内验证必须由用户在交互终端做。**
 - **任何含反引号 / `$` 的文本先写进文件再用 `-F` 读**（bash 会做命令替换，`git commit -m "…\`x\`…"` 会把消息吃掉）。
