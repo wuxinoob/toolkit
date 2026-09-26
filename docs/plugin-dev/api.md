@@ -370,6 +370,22 @@ off.then((un) => un());      // 取消订阅
 所以宿主只通知那个视图的插件 —— 这也是它**不需要权限**的原因：
 你只会看到用户**对着你的视图**做的动作，收不到别人的。
 
+**`ctx.onDrop` 和 `ctx.registerView` 的先后无所谓。** 所有权是在**投递时**判定的，
+所以「先接上输入、后面再挂视图」这种自然写法是对的。
+（曾经不是：所有权在**订阅时**快照，而那一刻你的视图还没注册 —— 于是集合是空的，
+**每一个 drop 都被静默拒绝**，一辈子。这条路径上有三个插件，全都踩了。）
+
+**丢在别人视图上不会有任何反应，这是设计。** 但日志会告诉你是怎么回事：
+
+```
+file drop: 1 path(s) → view senses.demo/senses (plugin senses.demo), 3 listener(s) called
+file drop: ignored — no listener at all for view msglog.demo/msglog (plugin msglog.demo)
+```
+
+注意 `N listener(s) called` 是**被调用的包装函数个数**，不是「有几个插件消费了」——
+每个插件都会按「这是不是我的视图」过滤。所以判断「有没有生效」要看**界面**，
+不是看这一行。**这一行真正的用处是告诉你：drop 到了，以及它被路由给了哪个插件。**
+
 ### 拿到路径之后怎么读？
 
 **自己起一个 sidecar 进程读**（`ctx.sidecar`，权限 `rpc:proc`）：

@@ -93,19 +93,75 @@ test('ctx.onDrop: a plugin without the permission can still subscribe', () => {
   assert.equal(typeof off?.then, 'function', 'onDrop should return a promise');
 });
 
-test('ctx.onDrop: it filters to the plugin\'s OWN views', () => {
+test('ctx.onDrop: a drop on the plugin\'s own view reaches the handler', async () => {
+  // THE bug this test exists for.
+  //
+  // Wiring up inputs in `activate` and mounting the view later is the natural
+  // order — every example plugin does `ctx.onDrop(...)` first and
+  // `ctx.registerView(...)` after. `ctx.onDrop` used to snapshot the plugin's
+  // view ids at SUBSCRIBE time, which at that moment is an EMPTY set, so the
+  // ownership filter rejected every drop for the plugin's whole lifetime.
+  //
+  // Silently, too: a drop declined on purpose and one declined by this bug look
+  // identical from outside. The log said "3 listener(s)" — it was counting the
+  // wrappers that ran, not the plugins that acted — and the drop really had
+  // arrived, so nothing looked wrong anywhere.
+  //
+  // The old version of this test asserted the IMPLEMENTATION by regex
+  // (`mine.has(payload.viewId)`) and therefore passed for the entire time the
+  // feature was broken. Behaviour, not shape.
+  const { store } = await import('../src/host/store.js');
+  const { events, DROP_TOPIC, resetEvents } = await import('../src/host/events.js');
+
+  resetEvents();
+  store.views.length = 0;
+
+  const seen = [];
+  const local = buildCtx(
+    {
+      manifest: {
+        id: 'test.drop',
+        permissions: [],
+        contributes: { views: [{ id: 'v', slot: 'tool', title: 'V' }] },
+      },
+    },
+    disposer,
+  );
+
+  const off = await local.onDrop((paths, info) => seen.push({ paths, info }));
+  local.registerView('v', () => {}); // AFTER subscribing — the natural order
+
+  const mine = 'test.drop/v';
+  store.activeViewId = mine;
+  events.emit(DROP_TOPIC, { paths: ['C:/a.txt'], viewId: mine });
+  assert.equal(seen.length, 1, 'a drop on the plugin\'s own view must reach the handler');
+  assert.deepEqual(seen[0].paths, ['C:/a.txt']);
+  assert.equal(seen[0].info.viewId, mine);
+
+  // …and a drop aimed at someone else's view is still refused. The routing rule
+  // is the whole reason this needs no permission.
+  store.views.push({ viewId: 'other.p/v', pluginId: 'other.p', title: 'O', icon: 'x', render() {} });
+  events.emit(DROP_TOPIC, { paths: ['C:/b.txt'], viewId: 'other.p/v' });
+  assert.equal(seen.length, 1, 'a drop on another plugin\'s view must NOT be delivered');
+
+  off();
+  resetEvents();
+  store.views.length = 0;
+});
+
+test('ctx.onDrop: ownership is decided at delivery time, not at subscribe time', () => {
+  // The one-line statement of the rule above, kept as a source guard so a future
+  // edit cannot reintroduce the snapshot without noticing.
   const source = readFileSync(new URL('../src/host/ctx.js', import.meta.url), 'utf8');
-  // The routing rule is the whole reason no permission is needed, so it is
-  // worth pinning rather than trusting.
-  assert.match(
+  assert.doesNotMatch(
     source,
-    /store\.views\.filter\(\(v\) => v\.pluginId === id\)/,
-    'onDrop must build its view set from its own pluginId',
+    /const mine = new Set\(/,
+    'onDrop must not capture the view set when it subscribes — a plugin registers its views later',
   );
   assert.match(
     source,
-    /if \(!payload \|\| !mine\.has\(payload\.viewId\)\) return;/,
-    'onDrop must ignore drops routed to another plugin\'s view',
+    /store\.views\.some\(\(v\) => v\.viewId === viewId && v\.pluginId === id\)/,
+    'onDrop must resolve ownership per delivery',
   );
 });
 
@@ -126,11 +182,13 @@ test('the host listens for drops once, in boot, on the shared topic', () => {
     assert.doesNotMatch(src, /'host:drop'/, `${name} must not spell the topic out`);
   }
 
-  // And the failure is diagnosable: the watcher reports every drag phase and the
-  // number of listeners the drop reached, so "it does not work" is answerable
-  // from the log instead of being a guess.
+  // And the failure is diagnosable: the watcher reports every drag phase, the
+  // view the drop was routed to, and WHO owns that view. Without the owner,
+  // "the drop arrived and every plugin declined it" reads exactly like "the drop
+  // never arrived" — which is what made the bug above take two reports to find.
   assert.match(boot, /file drop: \$\{type\}/, 'every drag phase is reported');
-  assert.match(boot, /no listener for view/, 'and a drop nobody heard says so');
+  assert.match(boot, /no listener at all for/, 'a drop nobody heard says so');
+  assert.match(boot, /\(plugin \$\{owner\}\)/, 'and the routed view names its owning plugin');
 
   // Not awaited: a window that cannot report drops is still usable.
   assert.match(boot, /^\s{4}watchDrops\(\);$/m, 'watchDrops must not be awaited');

@@ -501,16 +501,25 @@ export function buildCtx(plugin, disposer) {
      * Window-local (the `in-process` scheme) — plugin views live in the main
      * window, so a drop needs no IPC. The host listens once; see `watchDrops`
      * in `boot.js`.
+     *
+     * **Ownership is resolved when the drop arrives, not when this is called.**
+     * That distinction is the whole bug this used to have: a plugin's views are
+     * registered by `ctx.registerView`, and calling `ctx.onDrop` first is the
+     * natural order (wire up your inputs in `activate`, mount the view later).
+     * Snapshotting the view ids here therefore captured an EMPTY set, so the
+     * filter below rejected every drop for the lifetime of the plugin — silently,
+     * because a drop that is declined on purpose and one that is declined by a
+     * bug look identical from the outside. The drop really did arrive, and the
+     * log really did say "3 listener(s)": it was counting the wrappers that ran,
+     * not the plugins that acted.
      */
-    onDrop: (fn) => {
-      const mine = new Set(
-        store.views.filter((v) => v.pluginId === id).map((v) => v.viewId),
-      );
-      return subscribeWith('in-process', DROP_TOPIC, (payload) => {
-        if (!payload || !mine.has(payload.viewId)) return;
-        fn(payload.paths ?? [], { viewId: payload.viewId });
-      });
-    },
+    onDrop: (fn) =>
+      subscribeWith('in-process', DROP_TOPIC, (payload) => {
+        const viewId = payload?.viewId;
+        if (!viewId) return;
+        if (!store.views.some((v) => v.viewId === viewId && v.pluginId === id)) return;
+        fn(payload.paths ?? [], { viewId });
+      }),
 
     ui: {
       /**

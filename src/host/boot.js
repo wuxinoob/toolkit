@@ -192,16 +192,18 @@ async function watchDrops() {
         return;
       }
 
-      // The delivered count is the other half of the answer. 0 means the drop
-      // reached the host and no plugin was listening — which is what happens
-      // when the active view belongs to a plugin that never called
-      // `ctx.onDrop`, or when the user is looking at a host page (Settings).
-      // Both are silent by design, and silence is what reads as "broken".
+      // Naming the owner is what makes this answerable. "3 listener(s)" only
+      // says how many wrappers ran — every one of them may have declined,
+      // because a drop is routed to the ACTIVE view and a plugin only accepts
+      // drops aimed at its own. Without the owner in the line, "the drop
+      // arrived and was declined" is indistinguishable from "nothing arrived".
+      const owner = store.views.find((v) => v.viewId === viewId)?.pluginId;
       const delivered = events.emit(DROP_TOPIC, { paths: payload.paths ?? [], viewId });
+      const where = `view ${viewId}${owner ? ` (plugin ${owner})` : ' (host page)'}`;
       report(
         delivered === 0
-          ? `file drop: ignored — no listener for view ${viewId} (is that plugin's view active?)`
-          : `file drop: ${payload.paths?.length ?? 0} path(s) → ${delivered} listener(s)`,
+          ? `file drop: ignored — no listener at all for ${where}`
+          : `file drop: ${payload.paths?.length ?? 0} path(s) → ${where}, ${delivered} listener(s) called`,
       );
     });
     await report('file drops: watching');
