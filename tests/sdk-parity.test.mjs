@@ -119,9 +119,11 @@ const bridgeKeys = [...new Set(bridgeRaw)].sort();
 const SHARED = [
   'protocol',
   'request',
+  'log',
   'storage',
   'clipboard',
   'screen',
+  'files',
   'subscribe',
   'once',
   'publish',
@@ -133,6 +135,7 @@ const SHARED = [
   'uplink',
   'sidecar',
   'pty',
+  'closeStream',
   'sessions',
   'schemes',
   'schema',
@@ -146,11 +149,16 @@ const SHARED = [
 const INTENTIONAL_CTX_ONLY = ['focusView', 'onDrop', 'registerView', 'windows'];
 
 /**
- * Debt, not design. Nothing about these needs the main window — a plugin window
- * can open a dialog, write a log line, close its own stream. They are listed so
- * that "missing" is a recorded decision; move a name to SHARED once mirrored.
+ * Debt, not design. Nothing about this needs the main window — a plugin window
+ * can render the same components. It is listed so that "missing" is a recorded
+ * decision; move it to SHARED when the factory is mirrored.
+ *
+ * `files` / `log` / `closeStream` were here too until they were mirrored. They
+ * had no reason to be main-window-only: the same plugin code worked in a view
+ * and threw `undefined is not a function` in the plugin's own window. Mirroring
+ * them also surfaced a real leak — see `bridge.dispose()` in pluginwin-host.js.
  */
-const PENDING_CTX_ONLY = ['files', 'log', 'ui', 'closeStream'];
+const PENDING_CTX_ONLY = ['ui'];
 
 const CTX_ONLY = [...INTENTIONAL_CTX_ONLY, ...PENDING_CTX_ONLY];
 

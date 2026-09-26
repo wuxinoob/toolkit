@@ -1,7 +1,8 @@
 # toolbox — 项目长期笔记（索引）
 
-> **细节/原因读同目录 `NOTES.md`（14 节）**；设计文档 `docs/{PROTOCOL,INTERFACES,UI,MESSAGE-FRAMEWORK}.md`、`docs/plugin-dev/`。
-> ⚠️ **本文件已接近自动注入上限（约 10 KB）** —— 加规则前先想：能不能并进已有条目，或者搬去 `NOTES.md`。
+> **这是索引，不是手册**：只放**触发条件 + 规则**，原因/细节一律在 `NOTES.md`（14 节）。
+> 设计文档 `docs/{PROTOCOL,INTERFACES,UI,MESSAGE-FRAMEWORK}.md`、`docs/plugin-dev/`。
+> ⚠️ **约 10 KB 是自动注入上限，超过会被截断** → 加规则前先删或合并。
 > `D:\code\rust\toolkit`（目录名保留），应用名 **Toolbox**，identifier `com.tan18.toolbox`。旧 `ARCHITECTURE.md` 与代码不符，**以代码为准**。主题：统一前后端插件消息传递框架，**不增加主程序复杂度**。
 
 ## 架构（不要倒退）
@@ -11,11 +12,10 @@
 - **`Service::actions()` 是动作清单唯一权威**（同时供网关校验与 `host/schema`）；**能力声明必须为真**。
 - **外部插件**：`plugin.json` 权威（`mergeManifest` 逐键覆盖），代码内 `manifest` 只补缺，两者必须一致（有审计）。首次发现即启用，显式禁用持久。
 - **错误码是闭集**（14 个，`codes.rs` ↔ `codes.js` 有测试比对），服务错误用 `ServiceError`。**编译器抓不到**经 `From` 静默变 `internal` 的点 → 必须手工枚举定性。
-- **Tauri `Channel` 单向**（JS 没有 `send`）→ 插件→宿主上行靠**批量 invoke**。别再去找 Channel。
-- **`win:self` 做不到**：Tauri 窗口命令**不校验调用者身份**（目标由调用者传的 `label` 决定，ACL 只按调用窗口授权、**没有 scope**）。插件窗口动自己的正解是 `bridge.drag()`；「限自己」要放**宿主层**（`control` 归属校验，**当前缺失**）。
+- **`win:self` 做不到**：Tauri 窗口命令**不校验调用者身份** → 插件窗口动自己用 `bridge.drag()`；「限自己」要放**宿主层**（`control` 归属校验，**当前缺失**）。
 
 ## 接口（权威：`docs/INTERFACES.md`）
-- **13 个原生命令 · 9 服务 / 35 动作 · 8 方案 · 3 流提供者**（ticker / blob / clipboard）。命令在 `lib.rs`（9）+ `services/external.rs`（4）；**数据面 5 条**（`plugin_rpc` + 2 个 `stream_open` + `stream_close` + `plugin_dialog`）走 `host/registry.rs` 权威闸口，**其余 8 条是宿主管理操作**（闸口 `require_main`，仅 3 条）。
+- **13 个原生命令 · 9 服务 / 35 动作 · 8 方案 · 3 流提供者**（ticker / blob / clipboard）。命令在 `lib.rs`（9）+ `services/external.rs`（4）；**数据面 5 条**走 `host/registry.rs` 权威闸口，**其余 8 条是宿主管理操作**（闸口 `require_main`，仅 3 条）。
 - **服务权限是派生的**：`plugin_rpc` 做 `is_allowed(id, &format!("rpc:{svc}"))` → 注册服务即得权限，白名单也由 `serviceNames()` 派生。**只有非服务型权限（`rpc:dialog` / `win:manage`）才手写。**
 - **规律：拉取 → 服务，推送 → 流提供者**（剪贴板读/写 = `clipboard/*` 服务，变化 = 提供者 `clipboard` 流；截屏 = `screen/*` 服务，无流）。**`StreamProvider::permission()` 默认 `None`**，`open_json`/`open_raw` 检查它；名单在 `host/schema` 的 `providerPermissions`。
 - **形状规则**：方案差异只能体现在**默认值**上，不能体现在形状上。`rpc` 超时在**传输层**强制（默认 45s，0=不限），**不要在信封加 `deadline`**。
@@ -34,26 +34,24 @@
 
 ## 生命周期 / 权限
 - **停用插件 = 宿主强制回收一切**：订阅 / 热键 / 主题 / 视图 / streams / sidecars / ptys / **窗口**。**新增任何「插件获得一个句柄」的 API，都必须同时 `disposer.track` 它的释放**。复用（label 已存在）的窗口**不**回收。
+- **释放流用 `hub.close(pluginId, ch)`，不是 `handle.close()`** —— 传输层只「告诉宿主停」，hub 自己的注册表（`already open` 的判据）只有 `hub.close` 会清；**等终止 `end` 帧来清不算**（帧没到就永远占着，插件再也开不了那个 ch）。`bridge.dispose()` 曾完全不释放流 → **关插件窗口会留下跑着的 pty/sidecar**（那个窗口是唯一会关它们的东西）。
 - **`host` 服务的写动作必须 host-only**（`unregister` / `stop_session`）。守卫 `tests/host-kernel.test.mjs`。
-- **`stream/close` 按调用者插件 id 定位** → 宿主停别人的会话得走 `host/stop_session {plugin, ch}`。
 - **托盘**：主窗口 ✕ = 隐藏，退出只在托盘右键菜单。**托盘建不起来是致命错误**。**主窗口上插件的 `onCloseRequested` 不触发** → 必须由宿主中转。
 
 ## 契约 / 测试
 - **改契约必须留迁移路径** —— 判据是「**用户机器上已装的是什么**」，不是「仓库里还有谁在用」。**在边界处翻译而不是拒绝**（`normalizePluginWindowUrl`）。踩过：URL 契约改严 → **所有已装插件开不出窗口**，症状是「什么都没有」（调用方都套了 `catch`）。
-- **测试里不要硬编码内置插件名单**：`src/host/registry.js` 是权威清单，从注册表派生。已有 4 处犯过。
-- **插件列表顺序只在 `store.js` 一处**（`sortPluginList`/`sortViewList`，键 = 内置优先 + **显示名**字母序）。**作用在数组上而非渲染时**，5 个写入点都接了 —— 新增写入点必须同时接。
 - **断言只匹配「期望的那种错误」会把「另一种错误」当成成功** → 报错类断言要覆盖整个校验面。
 - **审计没扫的命名空间 = 静默失效的承诺**：`requiredPermissions` 曾漏看 `ctx.clipboard`/`ctx.screen`，于是 `senses` 漏声明 `rpc:screen` 被放过去、运行时才炸。**新增能力命名空间必须同时加审计规则**。
 - **⚠️ `ls.clear()` 不清 `store.settings`** → 测试之间通过 store 泄漏状态，**顺序决定它是否通过而它看起来是绿的**。**依赖什么状态就要清什么状态**。同名重复测试里后一份常是**过时版本、断言相反行为**，靠泄漏才通过 —— 当成缺陷查。
 - **断言的性质要写「运行中的东西」，不是「发布的东西」**：`t13` 曾要求每个**随仓库发布的**内置插件都有视图 → 用户合法关掉一个就 14/15。改成「每个 `active` 的插件都有它声明的视图」+ **跳过的点名**（同 t15 的 SKIPPED）。
 - **`tests/hygiene.test.mjs` 管住「没有编译器的东西」**：文档不许重复 `##`、测试不许重名、`INTERFACES.md` 的命令数 = 源码 `#[tauri::command]` 数、`lib.rs` 不许对服务名特判。**能被代码算出来的数字交给测试比对。**
-- **`ctx` 与 `bridge` 是同一契约的两个视图**，差异必须登记在案（`tests/sdk-parity.test.mjs` 双向断言；含 `ctx.rpc` ≡ `bridge.request`）。
+- **`ctx` 与 `bridge` 是同一契约的两个视图**，差异必须登记在案（`tests/sdk-parity.test.mjs` 双向断言；含 `ctx.rpc` ≡ `bridge.request`）。行为也要测，不只是接口面（`tests/plugin-bridge.test.mjs`）。
 - **写「提取源码」的守卫：`\s` 匹配换行** → `^\s*name\s*:` 会跨行、每个键报两次（用 `[ \t]`）；锚点选错返回空集 → **必须断言解析规模**，否则守卫在空集上永远报绿。
+- **`arr.reverse()` / `arr.sort()` 原地改并返回同一个数组** → `const f = arr.reverse(); arr.length = 0;` 会把 `f` 也清空（`bridge.dispose()` 曾因此变成**彻底的空操作**）。先 `[...arr]`。
 - **用对象当查找表要防原型链** → `Object.hasOwn`。
 - **⚠️ 绝对不要硬杀 Tauri 应用**（累积孤儿 `msedgewebview2`、弄坏 WebView2 profile → 窗口全白）。**应用内验证必须由用户在交互终端做。**
 - **任何含反引号 / `$` 的文本先写进文件再用 `-F` 读**（bash 会做命令替换）。
 - **`git restore <path>` 会连工作区未提交的修改一起回滚**；**`git add <已删除的路径>` 会整条失败**（重命名后别再把旧路径传进去）。
 - **示例部署用 `npm run deploy:examples`**（手工 `cp -r` 已两次导致"应用里跑的还是旧插件"）。
 
-## 验证
-`cd src-tauri && cargo check --all-targets`（零警告；`拒绝访问 os error 5` = 杀软损坏增量缓存 → `rm -rf target/debug/incremental` + `CARGO_INCREMENTAL=0`）· `cargo run --example host-checks`（Rust 侧自检，**`cargo test` 在本机跑不起来**）· `npm test` · `npm run build|deploy:examples|preview:theme|bench`。应用内：`npm run tauri dev` 后看 `debug.log` 的 15/15。
+> **验证命令、磁盘测量、codec 基准、`拒绝访问` 修法** → `NOTES.md` §12–§13；`README.md` 也有一份。

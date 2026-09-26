@@ -227,6 +227,19 @@ export function buildCtx(plugin, disposer) {
     return handle;
   };
 
+  /**
+   * Release a stream when the plugin goes away.
+   *
+   * `hub.close`, NOT `handle.close`. Both tell the host to stop, but only
+   * `hub.close` also clears the hub's own registry — the map that answers
+   * "stream `plugin/ch` is already open". Waiting for a terminal `end` frame to
+   * clear it is not the same thing: when that frame does not arrive (a producer
+   * that was killed, a shimmed host, a close during teardown), the slot stays
+   * taken and the plugin can never reopen that channel id — it gets
+   * "already open" for a stream that no longer exists.
+   */
+  const trackStreamClose = (ch) => disposer.track(() => hub.close(id, ch));
+
   // ------------------------------- events ------------------------------------
 
   /**
@@ -261,7 +274,7 @@ export function buildCtx(plugin, disposer) {
     gatedStream(async () => {
       assertSupports(scheme, Capability.PUSH, ...capabilities);
       const h = await hub.stream(id, scheme, { provider, ch, ...handlers });
-      disposer.track(() => h.close().catch(() => {}));
+      trackStreamClose(ch);
       return trackStream(h);
     });
 
@@ -704,7 +717,7 @@ export function buildCtx(plugin, disposer) {
       gatedStream(async () => {
         assertSupports('channel-in', Capability.UPLINK);
         const h = await hub.uplink(id, ch, { sink, params });
-        disposer.track(() => h.close().catch(() => {}));
+        trackStreamClose(ch);
         return trackStream(h);
       }),
 
@@ -718,7 +731,7 @@ export function buildCtx(plugin, disposer) {
     sidecar: (ch, { exe, args, pollMs, timeoutMs, onFrame, onEnd } = {}) =>
       gated(async () => {
         const h = await hub.sidecar(id, ch, { exe, args, pollMs, timeoutMs, onFrame, onEnd });
-        disposer.track(() => h.close().catch(() => {}));
+        trackStreamClose(ch);
         return trackStream(h);
       }, 'rpc:proc'),
 
@@ -726,7 +739,7 @@ export function buildCtx(plugin, disposer) {
     pty: (ch, { program, args, cwd, env, cols, rows, onFrame, onEnd } = {}) =>
       gatedStream(async () => {
         const h = await hub.pty(id, ch, { program, args, cwd, env, cols, rows, onFrame, onEnd });
-        disposer.track(() => h.close().catch(() => {}));
+        trackStreamClose(ch);
         return trackStream(h);
       }),
 

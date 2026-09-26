@@ -71,18 +71,37 @@ function renderError(title, detail) {
  * shapes, same permission rules — so `ctx.js` and this file stay two views of
  * one contract rather than two dialects.
  */
-function makeBridge(pluginId, label, manifest) {
+export function makeBridge(pluginId, label, manifest) {
+  const prefix = `[plugin:${pluginId}]`;
   const perms = manifest?.permissions ?? [];
   const has = (perm) => perms.includes(perm);
   const gate = (svc, fn) =>
-    has(`rpc:${svc}`)
-      ? fn()
-      : Promise.reject(new Error(`[plugin:${pluginId}] missing permission "rpc:${svc}"`));
+    has(`rpc:${svc}`) ? fn() : Promise.reject(new Error(`${prefix} missing permission "rpc:${svc}"`));
 
   const disposer = [];
   const track = (off) => {
     disposer.push(off);
     return off;
+  };
+
+  /**
+   * Streams this window opened.
+   *
+   * Same bookkeeping as `ctx`, and for the same two reasons:
+   *
+   *   - `closeStream(ch)` must be able to say "not mine" without asking the host.
+   *     Closing is deliberately ungated (it is strictly weaker than opening), so
+   *     the local set is what keeps it honest.
+   *   - `dispose()` has to release them. This window owns a real host-side
+   *     session for every `pty` / `sidecar` / `stream` it opened, and this window
+   *     is the only thing that will ever close them — the plugin's JS context is
+   *     gone the moment the window goes. Without this, closing a plugin window
+   *     left its helper PROCESSES running until the next app start.
+   */
+  const openStreams = new Set();
+  const trackStream = (handle) => {
+    openStreams.add(handle.ch);
+    return handle;
   };
 
   const subscribeWith = (scheme, topic, fn) => {
@@ -99,6 +118,20 @@ function makeBridge(pluginId, label, manifest) {
 
     /** The same wire contract `ctx.protocol` exposes. */
     protocol: protocolContract(),
+
+    /**
+     * Window-local logging. `console.*` in this window, with the plugin's id
+     * prefixed — the same shape as `ctx.log`.
+     *
+     * It does NOT reach `debug.log`: only the host's own logger writes that file.
+     * A plugin whose failure is only visible here is a plugin the user cannot
+     * debug, so surface anything that matters in the UI as well.
+     */
+    log: {
+      info: (...a) => console.info(prefix, ...a),
+      warn: (...a) => console.warn(prefix, ...a),
+      error: (...a) => console.error(prefix, ...a),
+    },
 
     request: (svc, act, params = null, opts = {}) =>
       gate(svc, () => hub.request(pluginId, svc, act, params, opts)),
@@ -146,14 +179,71 @@ function makeBridge(pluginId, label, manifest) {
       // `watch` is a stream, so it needs `rpc:stream`; the `clipboard` provider
       // then adds `rpc:clipboard` of its own, natively. Declare both.
       watch: (ch, handlers = {}) =>
-        gate('stream', () =>
-          hub.stream(pluginId, 'channel-json', { provider: 'clipboard', ch, ...handlers }),
-        ),
+        gate('stream', async () => {
+          const h = await hub.stream(pluginId, 'channel-json', {
+            provider: 'clipboard',
+            ch,
+            ...handlers,
+          });
+          track(() => hub.close(pluginId, ch));
+          return trackStream(h);
+        }),
     },
 
     screen: {
       monitors: () => gate('screen', () => hub.request(pluginId, 'screen', 'monitors', {})),
       capture: (opts = {}) => gate('screen', () => hub.request(pluginId, 'screen', 'capture', opts)),
+    },
+
+    /**
+     * Native dialogs, opened by the HOST on your behalf — same shape and the
+     * same `rpc:dialog` permission as `ctx.files`.
+     *
+     * A raw command, not a gateway action: the gateway is synchronous and would
+     * deadlock waiting on a modal. See `plugin_dialog` in `lib.rs`.
+     *
+     * **What you get back is a path the USER picked**, in a dialog they could see
+     * and cancel. That is the grant — there is no `bridge.fs`.
+     */
+    files: {
+      /** Pick file(s). Resolves `[]` when the user cancels — not an error. */
+      pick: (options = {}) =>
+        gate('dialog', () =>
+          invoke('plugin_dialog', {
+            pluginId,
+            action: 'open',
+            params: {
+              title: options.title ?? null,
+              multiple: !!options.multiple,
+              folder: !!options.folder,
+              directory: options.directory ?? null,
+              filters: options.filters ?? null,
+            },
+          }),
+        ).then((r) => r?.paths ?? []),
+
+      /** Ask where to save. Resolves `null` when the user cancels. */
+      save: (options = {}) =>
+        gate('dialog', () =>
+          invoke('plugin_dialog', {
+            pluginId,
+            action: 'save',
+            params: {
+              title: options.title ?? null,
+              defaultPath: options.defaultPath ?? null,
+            },
+          }),
+        ).then((r) => r?.path ?? null),
+
+      /** A native message box. */
+      message: (message, options = {}) =>
+        gate('dialog', () =>
+          invoke('plugin_dialog', {
+            pluginId,
+            action: 'message',
+            params: { message, title: options.title ?? null },
+          }),
+        ),
     },
 
     /** Hotkeys are registered by the host at activate; this only listens. */
@@ -163,15 +253,55 @@ function makeBridge(pluginId, label, manifest) {
         fn(env);
       }),
 
+    // Every stream creator registers the handle for teardown, exactly like
+    // `ctx` does. The close is fire-and-forget because `dispose()` runs on
+    // `beforeunload`, where nothing can be awaited — but it IS issued, which is
+    // what stops a plugin window from leaving a helper process behind.
     stream: (provider, ch, handlers = {}) =>
-      gate('stream', () => hub.stream(pluginId, 'channel-json', { provider, ch, ...handlers })),
+      gate('stream', async () => {
+        const h = await hub.stream(pluginId, 'channel-json', { provider, ch, ...handlers });
+        track(() => hub.close(pluginId, ch));
+        return trackStream(h);
+      }),
     streamRaw: (provider, ch, handlers = {}) =>
-      gate('stream', () => hub.stream(pluginId, 'channel-raw', { provider, ch, ...handlers })),
-    sidecar: (ch, opts) => gate('proc', () => hub.sidecar(pluginId, ch, opts)),
+      gate('stream', async () => {
+        const h = await hub.stream(pluginId, 'channel-raw', { provider, ch, ...handlers });
+        track(() => hub.close(pluginId, ch));
+        return trackStream(h);
+      }),
+    sidecar: (ch, opts) =>
+      gate('proc', async () => {
+        const h = await hub.sidecar(pluginId, ch, opts);
+        track(() => hub.close(pluginId, ch));
+        return trackStream(h);
+      }),
     /** Uplink: push frames to a host-side sink (same shape as ctx.uplink). */
     uplink: (ch, opts = {}) =>
-      gate('stream', () => hub.uplink(pluginId, ch, { sink: opts.sink, params: opts.params })),
-    pty: (ch, opts) => gate('stream', () => hub.pty(pluginId, ch, opts)),
+      gate('stream', async () => {
+        const h = await hub.uplink(pluginId, ch, { sink: opts.sink, params: opts.params });
+        track(() => hub.close(pluginId, ch));
+        return trackStream(h);
+      }),
+    pty: (ch, opts) =>
+      gate('stream', async () => {
+        const h = await hub.pty(pluginId, ch, opts);
+        track(() => hub.close(pluginId, ch));
+        return trackStream(h);
+      }),
+
+    /**
+     * Close a stream this window opened.
+     *
+     * Deliberately ungated, like `ctx.closeStream`: opening it already required
+     * the capability, and this can only touch streams this window registered.
+     * Closing is strictly weaker than opening, so a gate here would only make
+     * the permission model harder to reason about.
+     */
+    closeStream: (ch) => {
+      if (!openStreams.has(ch)) return Promise.resolve(false);
+      openStreams.delete(ch);
+      return hub.close(pluginId, ch);
+    },
 
     sessions: () => gate('host', () => hub.sessions(pluginId)),
     schemes: () => hub.schemes(),
@@ -180,15 +310,28 @@ function makeBridge(pluginId, label, manifest) {
     close: () => getCurrentWindow().close(),
     drag: () => getCurrentWindow().startDragging(),
     cleanup: (fn) => track(fn),
+    /**
+     * Release everything this window acquired.
+     *
+     * Returns a promise (it did not before) so a caller that CAN wait — a test,
+     * or a plugin that closes itself deliberately — can. `beforeunload` ignores
+     * the result, which is why the stream closes above are fire-and-forget.
+     */
     dispose: () => {
-      for (const off of disposer.reverse()) {
-        try {
-          off?.();
-        } catch {
-          /* already gone */
-        }
-      }
+      // `[...disposer]`, not `disposer`: `reverse()` returns the SAME array, so
+      // clearing `disposer.length` below would empty the list we are about to
+      // run and turn this whole method into a no-op. (It did exactly that until
+      // a test noticed nothing was being released.)
+      const fns = [...disposer].reverse();
       disposer.length = 0;
+      const results = fns.map((off) => {
+        try {
+          return off?.();
+        } catch {
+          return undefined; // already gone
+        }
+      });
+      return Promise.allSettled(results);
     },
   };
 }

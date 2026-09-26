@@ -209,3 +209,20 @@ npm run build / npm run deploy:examples / npm run preview:theme / npm run bench
 - 正确性质：**每个 `status === 'active'` 的插件都注册了它声明的视图**，且跳过的要**点名**（`skipped builtin.procman=inactive`）—— 沿用 t15 的 `SKIPPED` 约定，让「没验证」和「验证过」可区分。
 - `status === 'error'` 的插件**不**在这里失败：启动日志已经报过它和原因，再报一次会把一个缺陷报成两个、并掩盖是哪一个。
 - 纯 JS 的自检用例可以在 `node --test` 里跑：`selftestCases` 是导出的，`tests/boot.test.mjs` 有 `runSelftestCase(id)` 帮手 + 完整 boot 夹具。
+
+### 14.13 释放流要用 `hub.close`，不是 `handle.close`
+- **传输层的 `close()` 只「告诉宿主停」**；hub 自己的注册表（那句 `stream \`id/ch\` is already open` 的判据）**只有 `hub.close(pluginId, ch)` 会清**。
+- **等一个终止 `end` 帧来清不是同一件事** —— 帧没到（生产者被杀、宿主被桩掉、teardown 期间关闭）时槽位永远占着，**插件再也开不了那个 channel id**。
+- `ctx` 与 `bridge` 的所有流创建点现在都走 `trackStreamClose(ch)` / `track(() => hub.close(...))`。
+- **`bridge.dispose()` 曾完全不释放流** → 关掉插件窗口会留下**跑着的 helper 进程**（pty / sidecar）。**这个窗口是唯一会关它们的东西**（插件的 JS 上下文随窗口一起消失），一直留到下次启动被 `plugin_reap_orphans` 收掉。
+- **`bridge` 已补齐 `files` / `log` / `closeStream`**（只剩 `ui`）。为了能测，`makeBridge` 已 `export`。
+- 守卫 `tests/plugin-bridge.test.mjs`（7 条）驱动真实 `makeBridge` + 真实 hub，只桩 `invoke`。
+
+### 14.14 `arr.reverse()` / `arr.sort()` 返回同一个数组
+- 写 `const fns = arr.reverse(); arr.length = 0;` 会把 `fns` 也清空 —— 本仓库刚在 `bridge.dispose()` 上踩到：**`dispose()` 变成彻底的空操作**，被新写的测试当场抓住。
+- **先拷贝**：`[...arr].reverse()`。判据：**清空/改写一个数组之前，先确认没有别的名字指着它。**
+
+### 14.15 插件列表的显示顺序
+- 规则**只在 `src/host/store.js` 一处**：`sortPluginList` / `sortViewList`，键 = **内置优先 + 显示名字母序**（**不是 id**）。
+- **作用在数组上，而不是渲染时** —— 5 个写入点都接了排序调用（加/删/启用/禁用/重扫）。
+- **新增任何改变插件列表的写入点，必须同时接排序调用**，否则那一条路径出来的列表是乱序的，而且只在用户走到那条路径时才看得见。

@@ -695,14 +695,14 @@ async function closeMe() {
 | `storage` / `bus` / `events` / `onHotkey` | ✅ | ✅ |
 | `stream` / `streamRaw` / `uplink` / `sidecar` / `pty` | ✅ | ✅ |
 | `clipboard` / `screen` | ✅ | ✅ |
+| `files`（原生对话框） | ✅ | ✅ |
+| `log` | ✅ | ✅ |
+| `closeStream` | ✅ | ✅ |
 | `sessions` / `schemes` / `schema` / `protocol` | ✅ | ✅ |
 | `windows.create` / `windows.control` | ✅ | ❌ **没有** |
 | `registerView` / `focusView` | ✅ | ❌ **没有**（视图在主窗口里） |
 | `onDrop` | ✅ | ❌ **没有**（拖放只送给活动视图） |
-| `files`（原生对话框） | ✅ | ❌ **没有** |
 | `ui`（组件工厂 / toast） | ✅ | ❌ **没有** |
-| `log` | ✅ | ❌ **没有** |
-| `closeStream` | ✅ | ❌ **没有** |
 | `rpc(svc, act, p)` | ✅ | ⚠️ 叫 **`request(svc, act, p)`** —— 同一个东西，两个名字 |
 | `drag()` / `close()` | ❌ 不需要 | ✅ **独有** |
 | `cleanup()` / `dispose()` | ✅（`ctx.cleanup`） | ✅ |
@@ -712,9 +712,14 @@ async function closeMe() {
 **窗口的创建与尺寸控制权专属创建方**，这是刻意的。
 
 **表里 ❌ 的那几项不是「忘了做」，而是「主窗口才有的东西」**：视图、拖放路由、窗口所有权。
-但 `clipboard` / `screen` / `files` / `log` 曾经也在 ❌ 里 —— 那没有道理，
-同一段代码在视图里能用、在插件自己的窗口里就 `undefined`。**已经补上 `clipboard` 与 `screen`；
-`files` / `log` / `ui` / `closeStream` 仍在待办。**
+但 `clipboard` / `screen` / `files` / `log` / `closeStream` 曾经也在 ❌ 里 —— 那没有道理，
+同一段代码在视图里能用、在插件自己的窗口里就 `undefined is not a function`。**现在只剩 `ui` 待办。**
+
+> **⚠️ 关窗口会释放你开的一切，包括流。** `bridge.dispose()` 在 `beforeunload` 里被调用，
+> 它会关掉你开的 `stream` / `pty` / `sidecar` —— 这一条不是可有可无的清理：那些是宿主侧的
+> **真实进程**，而这个窗口是唯一会关它们的东西（你的 JS 上下文随窗口一起消失）。
+> 曾经它漏了这一半，于是关掉插件窗口会留下跑着的 helper，直到下次启动应用。
+> 用 `bridge.closeStream(ch)` 主动关，或者什么都不做交给 `dispose()`。
 
 ### 自绘标题栏：拖拽区会吃掉点击
 
