@@ -113,6 +113,20 @@ impl Sink {
 pub trait StreamProvider: Send + Sync {
     fn name(&self) -> &'static str;
 
+    /// The permission this provider needs ON TOP of `rpc:stream`.
+    ///
+    /// `rpc:stream` means "I can open a stream" — granted for a pty, a sidecar,
+    /// a ticker. A provider whose DATA is more sensitive than that says so here:
+    /// the `clipboard` provider returns `rpc:clipboard`, because watching the
+    /// clipboard means reading everything the user copies, and letting that ride
+    /// on `rpc:stream` would widen a permission nobody edited.
+    ///
+    /// `None` (the default) means the provider's data is what `rpc:stream`
+    /// already describes.
+    fn permission(&self) -> Option<&'static str> {
+        None
+    }
+
     fn open_json(&self, plugin_id: &str, ch: &str, params: Value, sink: JsonSink) -> Result<(), String> {
         let _ = (plugin_id, ch, params, sink);
         Err(format!("stream provider `{}` does not support the json-envelope codec", self.name()))
@@ -214,7 +228,16 @@ impl StreamProvider for BlobProvider {
 
 pub fn providers() -> &'static [Box<dyn StreamProvider>] {
     static TABLE: std::sync::OnceLock<Vec<Box<dyn StreamProvider>>> = std::sync::OnceLock::new();
-    TABLE.get_or_init(|| vec![Box::new(TickerProvider), Box::new(BlobProvider)])
+    TABLE.get_or_init(|| {
+        vec![
+            Box::new(TickerProvider),
+            Box::new(BlobProvider),
+            // Lives with its service (`clipboard.rs`) because the two halves share
+            // a permission and a library; the table is still the one place that
+            // decides which providers exist.
+            Box::new(super::clipboard::ClipboardWatch),
+        ]
+    })
 }
 
 fn provider_names() -> String {
@@ -246,7 +269,7 @@ fn validate_ch(ch: &str) -> Result<(), String> {
 /// thread, emits exactly one terminal frame, then deregisters. Cancellation is
 /// cooperative through the session's stop closure, so `kill_all()` on exit
 /// stops streams the same way it stops sidecars.
-fn run_stream<F>(plugin_id: &str, ch: &str, sink: Sink, body: F) -> Result<(), String>
+pub(super) fn run_stream<F>(plugin_id: &str, ch: &str, sink: Sink, body: F) -> Result<(), String>
 where
     F: FnOnce(&Sink, &Arc<AtomicBool>, &Arc<AtomicU64>) -> Result<Outcome, (String, String)> + Send + 'static,
 {
@@ -286,13 +309,24 @@ where
 // ------------------------------- dispatch -------------------------------------
 
 /// Open a JSON-codec stream (called by the `plugin_stream_open` command).
+///
+/// The provider's OWN permission is checked here, in addition to the `rpc:stream`
+/// the command already required. See `StreamProvider::permission`.
 pub fn open_json(plugin_id: &str, provider: &str, ch: &str, params: Value, sink: JsonSink) -> Result<(), String> {
-    find_provider(provider)?.open_json(plugin_id, ch, params, sink)
+    let p = find_provider(provider)?;
+    if let Some(perm) = p.permission() {
+        crate::host::registry::is_allowed(plugin_id, perm)?;
+    }
+    p.open_json(plugin_id, ch, params, sink)
 }
 
 /// Open a raw-binary-codec stream (called by `plugin_stream_open_raw`).
 pub fn open_raw(plugin_id: &str, provider: &str, ch: &str, params: Value, sink: RawSink) -> Result<(), String> {
-    find_provider(provider)?.open_raw(plugin_id, ch, params, sink)
+    let p = find_provider(provider)?;
+    if let Some(perm) = p.permission() {
+        crate::host::registry::is_allowed(plugin_id, perm)?;
+    }
+    p.open_raw(plugin_id, ch, params, sink)
 }
 
 /// `stream` service: lifecycle for streams that are already open.

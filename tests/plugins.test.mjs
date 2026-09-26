@@ -51,6 +51,10 @@ const EXAMPLES = [
   { id: 'calc.demo', dir: 'examples/calc-plugin' },
   { id: 'probe.demo', dir: 'examples/plugins/probe' },
   { id: 'gallery.demo', dir: 'examples/plugins/gallery' },
+  // The three interfaces that reach OUT of the app: clipboard, screen capture
+  // and OS file drops. Audited here like any other plugin, and the reason it
+  // exists is that none of them can be covered by the in-app selftest.
+  { id: 'senses.demo', dir: 'examples/plugins/senses' },
   // The widest example: five of its own windows, a shipped sidecar, and a
   // main-window view — so it is the one most worth auditing statically.
   { id: 'eyecare.demo', dir: 'examples/plugins/eyecare' },
@@ -207,6 +211,18 @@ function requiredPermissions(source) {
   recv(/\b(?:ctx|bridge)\.pty\(/g, () => 'rpc:stream');
   recv(/\b(?:ctx|bridge)\.sessions\(/g, () => 'rpc:host');
   recv(/\bctx\.windows\./g, () => 'win:manage');
+
+  // The sensing surface. These were missing here for exactly one release, and
+  // the gap was not theoretical: `examples/plugins/senses` used `ctx.screen.*`
+  // without declaring `rpc:screen`, passed this audit, and then failed its own
+  // activation with `missing permission "rpc:screen"`. The audit's whole promise
+  // is "every capability the source uses is declared" — a namespace it does not
+  // look at breaks that promise silently, which is worse than not checking.
+  recv(/\b(?:ctx|bridge)\.clipboard\./g, () => 'rpc:clipboard');
+  recv(/\b(?:ctx|bridge)\.screen\./g, () => 'rpc:screen');
+  // `watch` is a stream as well as a read: the `clipboard` provider requires
+  // `rpc:clipboard` ON TOP of `rpc:stream`, so a caller must declare both.
+  recv(/\b(?:ctx|bridge)\.clipboard\.watch\(/g, () => 'rpc:stream');
 
   // NOTE: `ctx.closeStream` is intentionally absent — it is ungated because it
   // can only close streams the plugin itself opened.

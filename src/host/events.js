@@ -12,6 +12,17 @@
 
 const listeners = new Map(); // topic -> Set<fn>
 
+/**
+ * The window-local topic OS file drops are published on.
+ *
+ * Here rather than in the two files that use it, because they are an emitter
+ * (`boot.js`, which watches the OS) and a subscriber (`ctx.js`, which filters by
+ * view) — and a topic spelled out in both places is one that stops matching the
+ * moment either copy is edited. The failure would be silent: a drop arrives,
+ * `emit` finds no listener, and the feature simply does nothing.
+ */
+export const DROP_TOPIC = 'host:drop';
+
 export const events = {
   on(topic, fn) {
     if (!listeners.has(topic)) listeners.set(topic, new Set());

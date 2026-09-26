@@ -160,54 +160,6 @@ OS 按下 → Rust handler → app.emit(BROADCAST_EVENT, topic="hotkey:<action>"
 > 能收到那个热键事件。action 名不该被当作秘密，但也不该依赖它来隔离。
 > 见 [COMMS-AUDIT](../../COMMS-AUDIT-2026-09-23.md)。
 
-### 热键能做什么？—— **`ctx` 能做的全部**
-
-热键**不是一个动作清单**，它只是一个**触发器**。处理函数是任意 JS：
-
-```js
-ctx.onHotkey('a', () => ctx.focusView('main'));            // 切视图
-ctx.onHotkey('b', () => ctx.windows.control(LABEL, 'raise', true));  // 呼出窗口
-ctx.onHotkey('c', () => launchProfile('dev'));              // 跑一个进程
-ctx.onHotkey('d', () => ctx.bus.publish('my:toggle'));      // 广播
-ctx.onHotkey('e', () => ctx.ui.notifyOS('跑完了'));          // 系统通知
-```
-
-**所以「拓展快捷键的调用功能」这件事没有可做的** —— 动作词汇表就是 `ctx`，
-而它已经在那儿了。要拓展的是 `ctx`（一个独立的话题），不是热键。
-
-**唯一的限制**：payload 只有 `{ key }`，**没有参数**。
-但你不需要参数 —— 一个 action 对应一个行为，需要区分就多声明几个 action。
-
-### 底层是统一的：热键**就是**事件总线上的一个保留 topic
-
-```
-OS 按下 → Rust handler → app.emit(BROADCAST_EVENT, topic="hotkey:<action>")
-        → 每个窗口的 listen(BROADCAST_EVENT)
-        → 按 topic 分发 → ctx.onHotkey
-```
-
-**`ctx.onHotkey(action, fn)` 是 `ctx.bus.subscribe('hotkey:' + action, fn)` 的薄包装**，
-只多了一层 owner 过滤（`env.svc` 带着谁注册的，忽略别人的同名 action）。
-
-**所以「呼出窗口」这件事不是热键专属的。** `ctx.windows.control(LABEL, 'raise')`
-是一个普通的 `ctx` 方法 —— **按钮点击、bus 消息、定时器、流的一帧，任何代码路径都能调它**。
-
-| 触发源 | 走哪条路 | 能呼出窗口吗 |
-|---|---|---|
-| 热键 | OS → `app.emit` → `hotkey:<action>` | ✅ |
-| 按钮 | 普通 DOM 事件 | ✅ |
-| bus 广播 | 网关 → `app.emit` | ✅ |
-| 定时器 | 普通 JS | ✅ |
-| 窗口内事件 | `in-process` Map（零 IPC） | ✅ |
-
-**热键和 bus 共用同一个载体**（`app.emit` + `listen(BROADCAST_EVENT)`），
-区别只在 topic 前缀和包装。
-
-> ⚠️ **一处不对称**：`ctx.onHotkey` 会按 owner 过滤，**但直接
-> `ctx.bus.subscribe('hotkey:x')` 不会** —— 所以一个插件如果猜到别人的 action 名，
-> 能收到那个热键事件。action 名不该被当作秘密，但也不该依赖它来隔离。
-> 见 [COMMS-AUDIT](../../COMMS-AUDIT-2026-09-23.md)。
-
 ### 命令式（运行时增删，**需要 `rpc:hotkey`**）
 
 ```js
@@ -374,144 +326,119 @@ ctx.onHotkey('open', async () => {
 
 需要 `win:manage`。
 
-## 我要用热键把插件「叫出来」
+## 我要让用户给我一个文件
+
+**两个入口，都只给你路径，都需要用户做一个动作。** 没有 `ctx.fs` —— 见
+[FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md)（fs 读写仍在待裁定）。
+
+### 原生选择器 —— `ctx.files`（权限 `rpc:dialog`）
+
+```js
+const paths = await ctx.files.pick({ title: '选个文件', multiple: true });
+if (!paths.length) return;                     // 用户取消了 —— 不是错误
+
+const target = await ctx.files.save({ defaultPath: 'notes.md' });   // → string | null
+await ctx.files.message('完成了', { title: '提示' });
+```
+
+| 方法 | 参数 | 返回 |
+|---|---|---|
+| `pick` | `{ title?, multiple?, folder?, directory?, filters? }` | `string[]`（取消 = `[]`） |
+| `save` | `{ title?, defaultPath? }` | `string \| null` |
+| `message` | `(message, { title? })` | — |
+
+`filters` 形如 `[{ name: '文本', extensions: ['txt', 'md'] }]`。
+
+**为什么 `pick` 取消返回 `[]` 而不是 `null`**：每个调用方都要为 `null` 加一层判断，
+而「没有文件」本来就该是空数组。
+
+### 拖拽 drop-in —— `ctx.onDrop`（**不需要权限**）
+
+```js
+const off = ctx.onDrop((paths, info) => {
+  console.log(paths);        // 用户拖进来的路径数组
+  console.log(info.viewId);  // 落在哪个视图上
+});
+off.then((un) => un());      // 取消订阅
+```
+
+**⚠️ 不要写 HTML5 的 `ondrop`** —— Tauri 的 `dragDropEnabled` **默认开启**，
+会**静默压制**浏览器的拖放事件。你会「什么都没发生，也不报错」。
+（见 [debugging.md](debugging.md#拖拽文件没反应--ondrop-从来不触发)）
+
+**只送给「当时正在显示的那个视图」。** 用户把文件拖到他看着的界面上，
+所以宿主只通知那个视图的插件 —— 这也是它**不需要权限**的原因：
+你只会看到用户**对着你的视图**做的动作，收不到别人的。
+
+### 拿到路径之后怎么读？
+
+**自己起一个 sidecar 进程读**（`ctx.sidecar`，权限 `rpc:proc`）：
+
+```js
+const s = await ctx.sidecar('read', { exe: 'my-reader.exe', args: paths });
+```
+
+**这是刻意的**：宿主不提供「读任意路径」的 API，因为那会绕过整个权限体系
+（插件共享主窗口，没有 per-plugin 的文件权限）。而**用户挑出来的路径** +
+**你自己声明的 `rpc:proc`**，两者合起来是一个说得清的授权链。
+
+## 我要读剪贴板 / 截屏 / 接文件拖放
+
+三个「伸手出应用」的接口。它们都需要**真机 + 真人**，所以**内置自检覆盖不了** ——
+`examples/plugins/senses/` 就是给它们准备的现场检查（启动时跑，失败即抛 → 启动日志变红）。
 
 ```json
-// plugin.json
-"hotkeys": [{ "key": "ctrl+alt+n", "action": "open" }]
+// plugin.json —— 用哪个就声明哪个，少一个会在调用处直接失败
+"permissions": ["rpc:clipboard", "rpc:stream", "rpc:screen"]
 ```
 
-```js
-ctx.onHotkey('open', () => ctx.focusView('main'));
-```
+**⚠️ 这三个权限都要手写。** `rpc:screen` 这类权限是**派生**的（`plugin_rpc` 按
+`rpc:<服务名>` 校验，注册了 `screen` 服务就有这条），但**派生 ≠ 已声明** ——
+`plugin_register` 交给宿主的是你 `plugin.json` 里那串字面量，网关再按成员资格查。
+第一版 `senses` 就是漏了 `rpc:screen`，静态审计也放它过去了，最后**在激活时报错**：
+`missing permission "rpc:screen" in manifest`。见下面的「现场验证」。
 
-**`ctx.focusView(viewId)` 把你自己注册的视图切到前台。** 这就是
-「按快捷键启动某个插件」的完整实现 —— 没有别的机制。
-
-**只能切你自己的视图。** 想切别人的表达不出来，这正是不用加权限的原因。
-
-**不需要权限**：这个动作是**你自己的界面变得可见** —— 用户看得见，且点一下侧栏就能撤销。
-真正该担心的情况是「插件启动时抢焦点」，而那个的答案不是权限：
-**热键必须先由用户打开才会触发**（见上面「声明不等于注册」），
-所以走得通的路径本来就是用户同意过的。
-
-**viewId 拼错会抛**，不会静默什么都不做 —— 否则看起来就像「热键突然失效了」。
-
-**一个做不到的事**：插件**读不到** `store.activeViewId`（宿主内部状态），
-所以「已经在前台就切走」这种开关行为写不出来。热键只能「总是切过去」——
-行为可预测，也够用。
-
-## 我要让用户给我一个文件
-
-**两个入口，都只给你路径，都需要用户做一个动作。** 没有 `ctx.fs` —— 见
-[FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md)（fs 读写仍在待裁定）。
-
-### 原生选择器 —— `ctx.files`（权限 `rpc:dialog`）
+**`ctx` 和 `bridge` 都有这套接口**（`bridge.clipboard` / `bridge.screen`，同样的形状、
+同样的权限）—— 插件窗口里的插件不该因为界面放哪儿而少一项能力。
 
 ```js
-const paths = await ctx.files.pick({ title: '选个文件', multiple: true });
-if (!paths.length) return;                     // 用户取消了 —— 不是错误
+// 读 / 写 —— 一次问答，所以是 service
+const { text } = await ctx.clipboard.read();   // text 可能是 null
+await ctx.clipboard.write('hello');
 
-const target = await ctx.files.save({ defaultPath: 'notes.md' });   // → string | null
-await ctx.files.message('完成了', { title: '提示' });
-```
-
-| 方法 | 参数 | 返回 |
-|---|---|---|
-| `pick` | `{ title?, multiple?, folder?, directory?, filters? }` | `string[]`（取消 = `[]`） |
-| `save` | `{ title?, defaultPath? }` | `string \| null` |
-| `message` | `(message, { title? })` | — |
-
-`filters` 形如 `[{ name: '文本', extensions: ['txt', 'md'] }]`。
-
-**为什么 `pick` 取消返回 `[]` 而不是 `null`**：每个调用方都要为 `null` 加一层判断，
-而「没有文件」本来就该是空数组。
-
-### 拖拽 drop-in —— `ctx.onDrop`（**不需要权限**）
-
-```js
-const off = ctx.onDrop((paths, info) => {
-  console.log(paths);        // 用户拖进来的路径数组
-  console.log(info.viewId);  // 落在哪个视图上
+// 监听变化 —— 宿主主动推，所以是 stream 提供者
+const handle = await ctx.clipboard.watch('clip', {
+  intervalMs: 400,                             // 默认 500，夹在 100–10000
+  onFrame: (env) => console.log(env.p.text),   // 只在真的变了才推
+  onEnd: () => {},
 });
-off.then((un) => un());      // 取消订阅
+// handle.close()，或者停用插件 —— 宿主 disposer 会关掉它
+
+// 截屏 —— 一次问答，同样是 service
+const monitors = await ctx.screen.monitors();  // [{index,name,width,height,scaleFactor,primary}]
+const shot = await ctx.screen.capture();       // 不传参数 = 主显示器
+// shot = { png: <base64>, width, height, monitor, name, bytes }
+img.src = `data:image/png;base64,${shot.png}`;
+
+// 文件拖放 —— 宿主监听一次，只发给**当前活动视图**
+ctx.onDrop((paths, info) => console.log(paths, info.viewId));
 ```
 
-**⚠️ 不要写 HTML5 的 `ondrop`** —— Tauri 的 `dragDropEnabled` **默认开启**，
-会**静默压制**浏览器的拖放事件。你会「什么都没发生，也不报错」。
-（见 [debugging.md](debugging.md#拖拽文件没反应--ondrop-从来不触发)）
+**要点**：
 
-**只送给「当时正在显示的那个视图」。** 用户把文件拖到他看着的界面上，
-所以宿主只通知那个视图的插件 —— 这也是它**不需要权限**的原因：
-你只会看到用户**对着你的视图**做的动作，收不到别人的。
+- **`read()` 返回 `text: null` 不是错误。** 剪贴板为空、或装着图片/别的格式时就是 `null`；
+  宿主只在**打不开剪贴板**（别的程序占着它）时才报错。这两种情况要分开处理。
+- **`write()` 是破坏性的** —— 它替换用户剪贴板里的东西。**不要为了自检随手写一次**：
+  先读、写、再写回去（`senses` 就是这么做的，而且只在用户按按钮时才做）。
+- **`watch()` 要 `rpc:clipboard` + `rpc:stream` 两个权限。** 监听剪贴板等于读取用户复制的
+  **一切**，这不是 `rpc:stream` 所描述的东西，所以提供者**有自己的权限**。
+- **`capture()` 是网关最重的载荷**（1080p PNG ≈ 0.5–2 MB，base64 再大三分之一）。
+  一次性可以，**别放进循环**。
+- **拖放只到活动视图。** 这是刻意的：否则一个插件能静默捡走本该给别人的路径。
+  也正因为如此 `onDrop` **不需要权限** —— 你只会看到用户**对着你的视图**丢下的东西。
+  丢在别的视图上时，`debug.log` 会写 `no listener for view …`，而不是保持沉默。
 
-### 拿到路径之后怎么读？
-
-**自己起一个 sidecar 进程读**（`ctx.sidecar`，权限 `rpc:proc`）：
-
-```js
-const s = await ctx.sidecar('read', { exe: 'my-reader.exe', args: paths });
-```
-
-**这是刻意的**：宿主不提供「读任意路径」的 API，因为那会绕过整个权限体系
-（插件共享主窗口，没有 per-plugin 的文件权限）。而**用户挑出来的路径** +
-**你自己声明的 `rpc:proc`**，两者合起来是一个说得清的授权链。
-
-## 我要让用户给我一个文件
-
-**两个入口，都只给你路径，都需要用户做一个动作。** 没有 `ctx.fs` —— 见
-[FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md)（fs 读写仍在待裁定）。
-
-### 原生选择器 —— `ctx.files`（权限 `rpc:dialog`）
-
-```js
-const paths = await ctx.files.pick({ title: '选个文件', multiple: true });
-if (!paths.length) return;                     // 用户取消了 —— 不是错误
-
-const target = await ctx.files.save({ defaultPath: 'notes.md' });   // → string | null
-await ctx.files.message('完成了', { title: '提示' });
-```
-
-| 方法 | 参数 | 返回 |
-|---|---|---|
-| `pick` | `{ title?, multiple?, folder?, directory?, filters? }` | `string[]`（取消 = `[]`） |
-| `save` | `{ title?, defaultPath? }` | `string \| null` |
-| `message` | `(message, { title? })` | — |
-
-`filters` 形如 `[{ name: '文本', extensions: ['txt', 'md'] }]`。
-
-**为什么 `pick` 取消返回 `[]` 而不是 `null`**：每个调用方都要为 `null` 加一层判断，
-而「没有文件」本来就该是空数组。
-
-### 拖拽 drop-in —— `ctx.onDrop`（**不需要权限**）
-
-```js
-const off = ctx.onDrop((paths, info) => {
-  console.log(paths);        // 用户拖进来的路径数组
-  console.log(info.viewId);  // 落在哪个视图上
-});
-off.then((un) => un());      // 取消订阅
-```
-
-**⚠️ 不要写 HTML5 的 `ondrop`** —— Tauri 的 `dragDropEnabled` **默认开启**，
-会**静默压制**浏览器的拖放事件。你会「什么都没发生，也不报错」。
-（见 [debugging.md](debugging.md#拖拽文件没反应--ondrop-从来不触发)）
-
-**只送给「当时正在显示的那个视图」。** 用户把文件拖到他看着的界面上，
-所以宿主只通知那个视图的插件 —— 这也是它**不需要权限**的原因：
-你只会看到用户**对着你的视图**做的动作，收不到别人的。
-
-### 拿到路径之后怎么读？
-
-**自己起一个 sidecar 进程读**（`ctx.sidecar`，权限 `rpc:proc`）：
-
-```js
-const s = await ctx.sidecar('read', { exe: 'my-reader.exe', args: paths });
-```
-
-**这是刻意的**：宿主不提供「读任意路径」的 API，因为那会绕过整个权限体系
-（插件共享主窗口，没有 per-plugin 的文件权限）。而**用户挑出来的路径** +
-**你自己声明的 `rpc:proc`**，两者合起来是一个说得清的授权链。
+---
 
 ## 我要通知用户（而且他不一定在看窗口）
 
@@ -765,16 +692,29 @@ async function closeMe() {
 
 | 能力 | 主窗口 `ctx` | 独立窗口 `bridge` |
 |---|---|---|
-| `storage` | ✅ | ✅ |
-| `bus`（订阅 / 发布 / once） | ✅ | ✅ |
-| `onHotkey` | ✅ | ✅ |
+| `storage` / `bus` / `events` / `onHotkey` | ✅ | ✅ |
+| `stream` / `streamRaw` / `uplink` / `sidecar` / `pty` | ✅ | ✅ |
+| `clipboard` / `screen` | ✅ | ✅ |
+| `sessions` / `schemes` / `schema` / `protocol` | ✅ | ✅ |
 | `windows.create` / `windows.control` | ✅ | ❌ **没有** |
-| `registerView` | ✅ | ❌ **没有** |
+| `registerView` / `focusView` | ✅ | ❌ **没有**（视图在主窗口里） |
+| `onDrop` | ✅ | ❌ **没有**（拖放只送给活动视图） |
+| `files`（原生对话框） | ✅ | ❌ **没有** |
+| `ui`（组件工厂 / toast） | ✅ | ❌ **没有** |
+| `log` | ✅ | ❌ **没有** |
+| `closeStream` | ✅ | ❌ **没有** |
+| `rpc(svc, act, p)` | ✅ | ⚠️ 叫 **`request(svc, act, p)`** —— 同一个东西，两个名字 |
 | `drag()` / `close()` | ❌ 不需要 | ✅ **独有** |
+| `cleanup()` / `dispose()` | ✅（`ctx.cleanup`） | ✅ |
 
 **所以独立窗口想再开一个窗口，要请主窗口代劳** ——
 `bridge.bus.publish('my.plugin:open-window', {...})`，主窗口订阅后 `ctx.windows.create(...)`。
 **窗口的创建与尺寸控制权专属创建方**，这是刻意的。
+
+**表里 ❌ 的那几项不是「忘了做」，而是「主窗口才有的东西」**：视图、拖放路由、窗口所有权。
+但 `clipboard` / `screen` / `files` / `log` 曾经也在 ❌ 里 —— 那没有道理，
+同一段代码在视图里能用、在插件自己的窗口里就 `undefined`。**已经补上 `clipboard` 与 `screen`；
+`files` / `log` / `ui` / `closeStream` 仍在待办。**
 
 ### 自绘标题栏：拖拽区会吃掉点击
 

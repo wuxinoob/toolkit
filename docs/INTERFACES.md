@@ -11,7 +11,7 @@
 |---|---|
 | **1. 协议是否统一了？** | **插件侧完全统一**；宿主侧有 4 个命令在网关之外（插件发现 + 权限上报），属于有理由的例外；窗口控制不在协议内（热键已收敛进 `hotkey` 服务）。 |
 | **2. 新插件能否直接调用已有接口？** | **能，且已验证**。`examples/plugins/probe` 不 import 任何模块、不碰 Tauri API，一次调用覆盖 11 项接口全部通过。 |
-| **3. 接口有哪些？** | 8 个原生命令 · 6 个服务 / 29 个动作 · 8 个方案 · 2 个流提供者。见 §1–§4。 |
+| **3. 接口有哪些？** | 9 个原生命令 · 9 个服务 / 35 个动作 · 8 个方案 · 3 个流提供者。见 §1–§4。 |
 | **4. 有改进空间吗？** | 有。**P1、P2 与 P0 两项均已完成**（见 §8）。剩余的是结构性例外与后续增强，不再是缺口。 |
 
 ---
@@ -108,7 +108,7 @@
 **这三条都不是"优化"，是"别做无关的事"** —— 把不属于插件窗口的模块/样式/文件排除出它的路径。
 **判断标准是「这个窗口真的需要它吗」**，不是「快一点」。
 
-## 2. 网关背后的服务：7 个服务 / 31 个动作
+## 2. 网关背后的服务：9 个服务 / 35 个动作
 
 | 服务 | 动作 | 说明 |
 |---|---|---|
@@ -119,6 +119,8 @@
 | `bus` | `publish` | 跨窗口广播（宿主 `app.emit` 扇出到所有窗口） |
 | `hotkey` | `register` `unregister` `unregister_all` `list` | 全局热键，**由宿主代插件注册**（`contributes.hotkeys`） |
 | `notify` | `send` | **操作系统**通知（动作中心/通知中心）。与 `ctx.ui.notify` 的站内 toast 是两回事：toast 只在用户看着这个窗口时有用 |
+| `clipboard` | `read` `write` | 系统剪贴板文本。**变化监听不是动作** —— 它是流（见 §3 的 `clipboard` 提供者） |
+| `screen` | `monitors` `capture` | 枚举显示器 + 截屏。`capture` 返回 base64 PNG（网关最重的载荷） |
 
 分发是**查表**的：`services::route` 按 `name()` 找 `Service` 实现，并用该服务自己声明的
 `actions()` 先校验动作，`lib.rs` 里没有任何 `if service == ...`。加一个能力 = 加一个表项。
@@ -137,7 +139,7 @@
 一样按**宿主身份**门禁。**一个读授权悄悄变成写权力，正是权限模型腐烂的方式。**
 `tests/host-kernel.test.mjs` 盯着这两个动作的门禁。
 
-## 3. 方案表：8 个方案 + 2 个流提供者
+## 3. 方案表：8 个方案 + 3 个流提供者
 
 | 方案 id | 载体 · 编码 | 方向 | 能力 |
 |---|---|---|---|
@@ -150,7 +152,21 @@
 | `pty-stream` | pty · raw-binary | ↕ | push, binary, ordered, requestResponse |
 | `in-process` | in-process · object | ↓ | push |
 
-流提供者（`stream` 服务的数据源）：`ticker`（支持两种编码）、`blob`（仅 raw，用于演示能力协商）。
+流提供者（`stream` 服务的数据源）：`ticker`（支持两种编码）、`blob`（仅 raw，用于演示能力协商）、
+`clipboard`（json，轮询检测剪贴板变化）。
+
+### 提供者可以要求自己的权限
+
+`rpc:stream` 的意思是「我能开一条流」—— 对 pty、sidecar、ticker 来说这就够了。
+但 `clipboard` 提供者的**数据**比这敏感得多：监听剪贴板等于读取用户复制的**一切**。
+让它搭 `rpc:stream` 的便车，就是**没人改过任何权限、权限却悄悄变宽了**。
+
+所以 `StreamProvider` 有一个 `permission()`：声明了就**额外**校验（`clipboard` → `rpc:clipboard`），
+没声明（默认）表示它的数据就是 `rpc:stream` 所描述的东西。
+`host/schema` 的 `providerPermissions` 公布这张表 —— 插件可以**问**，而不是靠被拒绝去发现。
+
+> **形状规则**：拉取用 service（一次问答），推送用 stream 提供者（宿主主动告知）。
+> 这就是为什么 `screen/capture` 是动作而 `clipboard` 的变化监听是流 —— 同一件事的两种方向。
 上行 sink（`channel-in` 的宿主侧消费者）：`proc`（每帧写成一行 line-json 送到 sidecar 的 stdin）。
 
 > `channel-json` 原先声明了 `backpressure`，核查发现**没有任何实现或消费方**——一个调用方无法依赖的声明比不声明更糟，已移除，并在 `registry.js` 里写明原因。

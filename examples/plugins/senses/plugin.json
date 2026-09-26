@@ -1,0 +1,29 @@
+{
+  "id": "senses.demo",
+  "name": "Senses",
+  "version": "0.1.0",
+  "api": 2,
+  "entry": "main.js",
+  "description": "Live check of the host's sensing surface: clipboard read/write/watch, screen enumeration and capture, and OS file drops. A live check, not a mock — it fails at activation rather than pretending.",
+  "contributes": {
+    "views": [
+      {
+        "slot": "tool",
+        "id": "senses",
+        "title": "Senses",
+        "icon": "lucide:eye"
+      }
+    ],
+    "theme": {
+      "dark": {
+        "--color-brand": "#c084fc",
+        "--color-brand-hover": "#d0a0ff"
+      },
+      "light": {
+        "--color-brand": "#7c3aed",
+        "--color-brand-hover": "#6d28d9"
+      }
+    }
+  },
+  "permissions": ["rpc:clipboard", "rpc:stream", "rpc:screen"]
+}

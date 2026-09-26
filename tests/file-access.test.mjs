@@ -109,10 +109,29 @@ test('ctx.onDrop: it filters to the plugin\'s OWN views', () => {
   );
 });
 
-test('the host listens for drops once, in boot', () => {
+test('the host listens for drops once, in boot, on the shared topic', () => {
   const boot = readFileSync(new URL('../src/host/boot.js', import.meta.url), 'utf8');
   assert.match(boot, /onDragDropEvent/, 'boot must register the drop listener');
-  assert.match(boot, /events\.emit\('host:drop'/, 'and republish on the window-local bus');
+  assert.match(boot, /events\.emit\(DROP_TOPIC/, 'and republish on the window-local bus');
+  assert.match(boot, /import \{ events, DROP_TOPIC \}/, 'the topic is imported, not re-spelled');
+
+  // The topic used to be a literal in BOTH files — `boot.js` (emitter) and
+  // `ctx.js` (subscriber) — which is one edit away from a silent break: a drop
+  // that finds no listener leaves exactly the same trace as a drop that never
+  // arrived, which is none. Now there is one constant, and neither file may
+  // spell it out.
+  const ctx = readFileSync(new URL('../src/host/ctx.js', import.meta.url), 'utf8');
+  assert.match(ctx, /subscribeWith\('in-process', DROP_TOPIC/, 'the subscriber uses the same constant');
+  for (const [name, src] of [['boot.js', boot], ['ctx.js', ctx]]) {
+    assert.doesNotMatch(src, /'host:drop'/, `${name} must not spell the topic out`);
+  }
+
+  // And the failure is diagnosable: the watcher reports every drag phase and the
+  // number of listeners the drop reached, so "it does not work" is answerable
+  // from the log instead of being a guess.
+  assert.match(boot, /file drop: \$\{type\}/, 'every drag phase is reported');
+  assert.match(boot, /no listener for view/, 'and a drop nobody heard says so');
+
   // Not awaited: a window that cannot report drops is still usable.
   assert.match(boot, /^\s{4}watchDrops\(\);$/m, 'watchDrops must not be awaited');
 });

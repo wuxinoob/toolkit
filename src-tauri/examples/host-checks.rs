@@ -89,7 +89,17 @@ fn main() {
     let names = table().iter().map(|s| s.name()).collect::<Vec<_>>();
     check(
         "service-table",
-        names == vec!["storage", "host", "proc", "stream", "bus", "hotkey", "notify"],
+        names == vec![
+            "storage",
+            "host",
+            "proc",
+            "stream",
+            "bus",
+            "hotkey",
+            "notify",
+            "clipboard",
+            "screen",
+        ],
         &format!("{names:?}"),
     );
     let all_declare = table().iter().all(|s| !s.actions().is_empty());
@@ -101,7 +111,7 @@ fn main() {
         .all(|s| sch["services"][s.name()] == json!(s.actions()));
     check(
         "schema-agrees-with-table",
-        agrees && sch["protocol"] == json!(1) && sch["providers"] == json!(["ticker", "blob"]),
+        agrees && sch["protocol"] == json!(1) && sch["providers"] == json!(["ticker", "blob", "clipboard"]),
         &format!(
             "protocol={} services={} providers={}",
             sch["protocol"],
@@ -117,7 +127,20 @@ fn main() {
 
     // ---- stream providers ----
     let providers = stream::providers().iter().map(|p| p.name()).collect::<Vec<_>>();
-    check("stream-providers", providers == vec!["ticker", "blob"], &format!("{providers:?}"));
+    check(
+        "stream-providers",
+        providers == vec!["ticker", "blob", "clipboard"],
+        &format!("{providers:?}"),
+    );
+    // A provider that reads something more sensitive than "a stream" declares
+    // its own permission, and the schema has to say so — otherwise a plugin
+    // discovers it by being denied.
+    check(
+        "provider-permissions-are-published",
+        sch["providerPermissions"]["clipboard"] == json!("rpc:clipboard")
+            && sch["providerPermissions"].get("ticker").is_none(),
+        "only providers that need one appear, and they name it",
+    );
 
     // ---- session registry ----
     session::kill_all();

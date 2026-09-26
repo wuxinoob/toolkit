@@ -7,6 +7,7 @@ import { hub } from '../protocol/hub.js';
 import { Capability, assertSupports } from '../protocol/registry.js';
 import { protocolContract } from '../protocol/contract.js';
 import { store, toast, sortViewList, closeToTray } from './store.js';
+import { DROP_TOPIC } from './events.js';
 import { PLUGIN_ATTR } from './pluginTheme.js';
 import { createUiKit } from './ui.js';
 
@@ -121,8 +122,6 @@ export function buildCtx(plugin, disposer) {
    * window LABEL and the only labels a plugin can reach (`plugin-*`) grant three
    * permissions each; so no option could escalate. What it could do is surprise.
    */
-  /** The window-local topic the host publishes OS file drops on. */
-  const DROP_TOPIC = 'host:drop';
 
   const PREFIX_NEEDS_LABEL = 'windows.create needs a non-empty label';
   const PREFIX_LABEL_DENIED =
@@ -301,6 +300,50 @@ export function buildCtx(plugin, disposer) {
       keys: () => ctx.rpc('storage', 'keys', {}),
     },
 
+    /**
+     * Clipboard: read, write, and watch for changes.
+     *
+     * Sugar over `ctx.rpc` / `ctx.stream`, exactly like `storage` — named so a
+     * plugin author does not have to know that "read" is a request and "watch"
+     * is a stream. The distinction is real, though, and worth knowing:
+     *
+     *   read / write   one answer to one question   → a service action
+     *   watch          the host pushes on change    → a stream provider
+     *
+     * `watch(ch, …)` polls on the host side (`intervalMs`, default 500, clamped
+     * to 100–10000) and pushes a `data` frame only when the text actually
+     * changes — so an idle clipboard costs nothing. The first frame is the
+     * CURRENT value, so a subscriber does not have to change the clipboard to
+     * learn what is on it.
+     *
+     * Needs `rpc:stream` (it is a stream) **and** `rpc:clipboard`: watching the
+     * clipboard means reading everything the user copies, which is not what
+     * `rpc:stream` says.
+     */
+    clipboard: {
+      read: () => ctx.rpc('clipboard', 'read', {}),
+      write: (text) => ctx.rpc('clipboard', 'write', { text }),
+      watch: (ch, handlers = {}) => ctx.stream('clipboard', ch, handlers),
+    },
+
+    /**
+     * Screen: enumerate monitors and capture one.
+     *
+     * Both are requests — a capture is one answer to one question, not a push —
+     * so this is `ctx.rpc` twice. `capture()` returns
+     * `{ png, width, height, monitor, name, bytes }` where `png` is base64: the
+     * heaviest payload the gateway carries, which is why it is a one-shot.
+     *
+     * `capture({ monitor })` picks by index from `monitors()`; with no argument
+     * it captures the PRIMARY monitor, because "capture the screen" almost
+     * always means the one the user is looking at, and the order of the OS's
+     * list is the OS's.
+     */
+    screen: {
+      monitors: () => ctx.rpc('screen', 'monitors', {}),
+      capture: (opts = {}) => ctx.rpc('screen', 'capture', opts),
+    },
+
     // ---------------- events: one shape, the scheme picks the wire ----------------
 
     /** Subscribe on the cross-window bus (default scheme `event-bus`). */
@@ -399,37 +442,6 @@ export function buildCtx(plugin, disposer) {
             }),
           'rpc:dialog',
         ),
-    },
-
-    /**
-     * Bring one of YOUR views to the front.
-     *
-     * This is what makes "a hotkey opens my plugin" work:
-     *
-     * ```js
-     * ctx.onHotkey('open', () => ctx.focusView('main'));
-     * ```
-     *
-     * **Only your own views.** Focusing someone else's is not a thing you can
-     * express here, which is what keeps this from being a way to hijack the UI.
-     *
-     * **No permission.** The action is the plugin's own view becoming visible —
-     * something the user sees and can undo with one click on the sidebar. The
-     * case worth worrying about is a plugin focusing itself at boot to grab
-     * attention, and the answer to that is not a permission: it is that a
-     * hotkey has to be enabled by the user before it can fire at all
-     * (see `contributes.hotkeys`), so the consented path is the normal one.
-     */
-    focusView: (viewId) => {
-      const full = `${id}/${viewId}`;
-      const own = store.views.some((v) => v.viewId === full);
-      if (!own) {
-        // Refuse rather than silently doing nothing: a typo here would look
-        // like "the hotkey stopped working".
-        throw new Error(`${prefix} focusView("${viewId}") — no such view of yours`);
-      }
-      store.activeViewId = full;
-      return full;
     },
 
     /**

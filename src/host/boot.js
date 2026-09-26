@@ -9,7 +9,7 @@ import { installDebug } from './debug.js';
 import { logger } from '../core/logger.js';
 import { runSelftest } from '../core/selftest.js';
 import { hub, setTraceSink } from '../protocol/hub.js';
-import { events } from './events.js';
+import { events, DROP_TOPIC } from './events.js';
 import { loadUiKit } from './ui.js';
 
 /** Global hotkey that summons (shows + focuses) the main window. */
@@ -169,16 +169,48 @@ async function watchDrops() {
     const { getCurrentWebview } = await import('@tauri-apps/api/webview');
     await getCurrentWebview().onDragDropEvent((event) => {
       const payload = event?.payload;
-      if (payload?.type !== 'drop') return;
+      const type = payload?.type ?? 'unknown';
+
+      // Every phase is reported, not just the drop.
+      //
+      // `enter` / `over` / `leave` used to be discarded silently, which made
+      // "drag and drop does not work" impossible to answer from the log: a drop
+      // that never arrived and a drop that arrived and found nobody listening
+      // left exactly the same trace — none. This feature has no other
+      // instrument: the in-app selftest cannot cover it, because it has no user
+      // to drag a file.
+      //
+      // `over` is the exception — it fires continuously while the pointer moves
+      // — so it would be a log flood rather than a signal.
+      if (type !== 'over') report(`file drop: ${type}`);
+
+      if (type !== 'drop') return;
+
       const viewId = store.activeViewId;
-      if (!viewId) return;
-      // `host:drop` — the topic `ctx.onDrop` subscribes to. See ctx.js.
-      events.emit('host:drop', { paths: payload.paths ?? [], viewId });
+      if (!viewId) {
+        report('file drop: ignored — no active view');
+        return;
+      }
+
+      // The delivered count is the other half of the answer. 0 means the drop
+      // reached the host and no plugin was listening — which is what happens
+      // when the active view belongs to a plugin that never called
+      // `ctx.onDrop`, or when the user is looking at a host page (Settings).
+      // Both are silent by design, and silence is what reads as "broken".
+      const delivered = events.emit(DROP_TOPIC, { paths: payload.paths ?? [], viewId });
+      report(
+        delivered === 0
+          ? `file drop: ignored — no listener for view ${viewId} (is that plugin's view active?)`
+          : `file drop: ${payload.paths?.length ?? 0} path(s) → ${delivered} listener(s)`,
+      );
     });
     await report('file drops: watching');
   } catch (e) {
     // No host (browser, node --test) or a platform without the event. Not fatal.
     logger.warn('boot', `file drop watch unavailable: ${e}`);
+    // …but not silent either: this is the one line that distinguishes "the
+    // watcher never started" from "the watcher started and no drop arrived".
+    await report(`file drops: UNAVAILABLE — ${e?.message ?? e}`);
   }
 }
 

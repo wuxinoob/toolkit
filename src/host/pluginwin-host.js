@@ -130,6 +130,32 @@ function makeBridge(pluginId, label, manifest) {
       publish: (topic, payload = null) => gate('bus', () => publishWith('event-bus', topic, payload)),
     },
 
+    /**
+     * The host's sensing surface — the same shapes and the same permissions as
+     * `ctx.clipboard` / `ctx.screen`.
+     *
+     * These reached the main window first, which made "read the clipboard" a
+     * capability that quietly depended on WHERE a plugin put its UI: the same
+     * code worked in a view and failed with `undefined is not a function` in the
+     * plugin's own window. A window-scoped plugin hits the same gateway and the
+     * same registry, so there is nothing to decide here — only to mirror.
+     */
+    clipboard: {
+      read: () => gate('clipboard', () => hub.request(pluginId, 'clipboard', 'read', {})),
+      write: (text) => gate('clipboard', () => hub.request(pluginId, 'clipboard', 'write', { text })),
+      // `watch` is a stream, so it needs `rpc:stream`; the `clipboard` provider
+      // then adds `rpc:clipboard` of its own, natively. Declare both.
+      watch: (ch, handlers = {}) =>
+        gate('stream', () =>
+          hub.stream(pluginId, 'channel-json', { provider: 'clipboard', ch, ...handlers }),
+        ),
+    },
+
+    screen: {
+      monitors: () => gate('screen', () => hub.request(pluginId, 'screen', 'monitors', {})),
+      capture: (opts = {}) => gate('screen', () => hub.request(pluginId, 'screen', 'capture', opts)),
+    },
+
     /** Hotkeys are registered by the host at activate; this only listens. */
     onHotkey: (action, fn) =>
       subscribeWith('event-bus', `hotkey:${action}`, (env) => {

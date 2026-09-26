@@ -16,10 +16,12 @@
 //! `host/schema`, which is how a plugin discovers what the host supports.
 
 pub mod bus;
+pub mod clipboard;
 pub mod external;
 pub mod hotkey;
 pub mod notify;
 pub mod proc;
+pub mod screen;
 pub mod session;
 pub mod storage;
 pub mod stream;
@@ -135,6 +137,8 @@ pub fn table() -> &'static [Box<dyn Service>] {
             Box::new(bus::BusService),
             Box::new(hotkey::HotkeyService),
             Box::new(notify::NotifyService),
+            Box::new(clipboard::ClipboardService),
+            Box::new(screen::ScreenService),
         ]
     })
 }
@@ -156,6 +160,16 @@ pub fn schema() -> Value {
         "protocol": crate::protocol::envelope::PROTOCOL_VERSION,
         "services": services,
         "providers": stream::providers().iter().map(|p| p.name()).collect::<Vec<_>>(),
+        // Which providers need a permission of their OWN, beyond `rpc:stream`.
+        //
+        // Additive rather than a change to `providers`: a caller that only wants
+        // the names should not have to restructure, and the extra detail is what
+        // lets a plugin ask "what does `clipboard` need?" instead of discovering
+        // it by failing. Only providers that declare one appear here.
+        "providerPermissions": stream::providers()
+            .iter()
+            .filter_map(|p| p.permission().map(|perm| (p.name().to_string(), Value::String(perm.to_string()))))
+            .collect::<serde_json::Map<String, Value>>(),
         // Uplink consumers, so a plugin knows where it may push to.
         "sinks": uplink::sink_names(),
         // The error vocabulary, so a caller can branch on codes it has actually

@@ -90,6 +90,7 @@
 - **同层 `alwaysOnTop` 窗口的 z 序 = 创建顺序** → 后建的遮罩会盖住先建的胶囊，需要重新 `show()` 抬升。
 - **WebView2 默认右键菜单**（重载/检查元素）必须 `preventDefault()` 抑制；要覆盖整页得挂 `document`/`window` 级监听。
 - **计时/参数改动要"立即生效"**：只在"改的键 === 当前阶段对应的键"时重置该阶段（work 期看 `workMinutes`，rest 期看 `restMinutes`）。
+- **`setIgnoreCursorEvents(true)` 是窗口级标志** → 透传窗口收不到**任何**鼠标事件（含 `pointermove`）。**`ctx.log` 只到 webview console，不写 `debug.log`** → 插件的失败原因必须显示在界面上，否则用户与开发者都看不到。
 
 ## 8. 调试工具链
 
@@ -143,8 +144,47 @@
 
 ```
 cd src-tauri && cargo check --all-targets   # 零警告（仓库根没有 Cargo.toml）
-cargo run --example host-checks             # Rust 侧 16 项，替代不可用的 cargo test
+cargo run --example host-checks             # Rust 侧自检，替代不可用的 cargo test
 npm test                                    # node --test
 npm run build / npm run deploy:examples / npm run preview:theme / npm run bench
 ```
 应用内：`npm run tauri dev` 后看 `debug.log` 的 15/15。**codec 实测**（`docs/PROTOCOL.md` §2）：字节流必须 raw（4 KiB 块 JSON 慢 126×、大 3.6×）；raw 解码返回 subarray 视图故几乎免费（41 ns）；line-json 比 json-envelope 贵 25–60%，它存在是因为 sidecar 需要分隔符。
+
+## 14. 近期新增硬规则（2026-09）
+
+### 14.1 主线程与命令
+- **每个 `#[tauri::command]` 必须 `async fn`**。Tauri 把**没有 `async` 的命令跑在主线程**，而那是给**所有**窗口泵消息的一条线程 → 命令里任何阻塞都变成"整个界面卡"。`async` 只是把它挪出主线程；真正的阻塞 I/O 还要再套 `spawn_blocking`（否则占住 runtime worker，worker 数 = 核数）。守卫 `tests/main-thread.test.mjs` 扫全部命令。**症状永远是"界面卡"而不是"命令阻塞"**，所以必须机器把关。
+- `plugin_rpc` 的权限闸必须在 `spawn_blocking` **之外**（闸是同步的、快的；放进去等于白挪）。
+
+### 14.2 capability / ACL
+- `src-tauri/capabilities/*.json` 是**源文件**；运行期用的是 `tauri-build` 编译进二进制的 ACL（`OUT_DIR/capabilities.json`），**Cargo 会缓存它**。所以"源文件正确 ≠ 应用有权限"。全窗口权限被拒（`event.listen` / `window.get_all_windows` / `pty.spawn` 一起挂）时先 `wc -c src-tauri/target/debug/build/toolbox-*/out/capabilities.json` —— **`2` 就是空 ACL**（`{}`），`cargo clean -p toolbox` 重建。守卫 `tests/capabilities.test.mjs`（编译产物 + 源文件双重核对）。**清缓存前必须优雅关闭正在跑的应用**，否则 `os error 5` / `LNK1104`。
+
+### 14.3 窗口分发与页面拆分
+- **窗口分发改按窗口 label，不按 URL 参数**：只有 label 是 `main` 的窗口 boot 宿主，其余走 `pluginwin-host.js`。**不要写成 `if (mode === 'pluginwin') … else <boot 宿主>`** —— 那个 `else` 会让插件窗口跑起第二个完整宿主（重复注册热键、每个插件再激活一次、procman 再 auto-start 真实进程）。URL 校验要求"入口页 + mode"两个条件。守卫 `tests/window-options.test.mjs`。
+- **两个窗口 = 两个页面**：`index.html` → `src/main.js` → `assets/app.css`（外壳）；`pluginwin.html` → `src/pluginwin.js` → `assets/plugin.css`（插件窗口）。**一个页面的样式表是 `<link>`，在模块之前生效 → 只能在页面层选，JS 分支拦不住。** 两份共享 `assets/design-system.css`（令牌 + `.tb-*`）。实测插件窗口 948 KB → **61 KB**。插件窗口 URL = `pluginwin.html?plugin=…&label=…`。
+
+### 14.4 生命周期回收与 host 权限
+- **停用插件 = 宿主强制回收一切**：订阅 / 热键 / 主题 / 视图 / streams / sidecars / ptys / **窗口**。窗口是最后补上的那一块（`ctx.windows.create` 曾是唯一没有 `disposer.track` 的资源获取点）。**新增任何"插件获得一个句柄"的 API，都必须同时 `disposer.track` 它的释放** —— 否则停用会留下没人能关的东西（插件的 JS 上下文已经没了）。复用（label 已存在）的窗口**不**回收：那可能是别的插件建的。
+- **`host` 服务的写动作必须 host-only**（`unregister` / `stop_session`）：`rpc:host` 是发给插件的，读授权悄悄变成写权力是权限模型腐烂的方式。守卫 `tests/host-kernel.test.mjs`。
+- **`stream/close` 按调用者插件 id 定位** → 宿主（`__host__`）匹配不到别人的会话。宿主想停一条得走 `host/stop_session {plugin, ch}`。
+
+### 14.5 契约迁移
+- **改契约必须留迁移路径** —— 判断依据不是「仓库里还有谁在用」，而是「**用户机器上已装的是什么**」。本仓库踩过：把插件窗口 URL 从 `index.html?mode=pluginwin&…` 改成 `pluginwin.html?…` 时直接拒绝旧写法 → **所有已装插件开不出窗口**（第三方插件改不到，插件目录里那份是副本），而症状是「什么都没有」（每个调用方都套了 `catch`，插件照常激活，只有窗口不出现）。**做法：在边界处翻译而不是拒绝**（`normalizePluginWindowUrl` 返回规范形状，用返回值创建窗口，旧写法零成本）。
+
+### 14.6 托盘与关闭到托盘
+- 主窗口 ✕ = 隐藏（`boot.js` 的 `installCloseToTray`），退出只在托盘右键菜单（`app.exit(0)` → `RunEvent::Exit` → `kill_all()`）。**托盘建不起来是致命错误**（否则应用无法从自己界面退出）。`store.settings.closeToTray` 持久化 —— 注意 `saveSettings` 只写手挑的子集。**主窗口上插件的 `onCloseRequested` 不触发**（窗口没关），所以那条 API 必须由宿主中转。
+
+### 14.7 工具与踩坑
+- **任何含反引号 / `$` 的文本都要先写进文件，再用 `-F` 读** —— bash 在双引号里会做命令替换，`git commit -m "…\`x\`…"` 会把消息吃掉（本仓库已踩两次：`python -c` 与 `git commit -m`）。判断标准：**这段文本会不会经过 bash？** 会 → 用文件。
+- **用对象当查找表要防原型链**：`NEEDS[m]` 对 `toString`/`constructor`/`valueOf` 会取到 `Object.prototype` 上的函数 → 假失败。用 `Object.hasOwn`。
+- **断言只匹配「你期望的那种错误」，就会把「另一种错误」当成成功** —— 本仓库已两次踩到（URL 校验的文案改了，而测试只查旧文案 → 被拒绝了却算通过）。**报错类断言要覆盖整个校验面。**
+- **`git restore <path>` 按索引恢复，会连工作区里未提交的修改一起回滚**（本项目有多个并发会话在动同一仓库 → 动它之前先确认别处没在改）。反过来，恢复被误删的文件时它是**纯增量**的，不会覆盖已存在的东西。
+- **`git add <已删除的路径>` 会整条失败**（git 先校验全部 pathspec）→ 已暂存的删除不要再 add。
+
+### 14.8 为什么 `win:self` 做不到
+- Tauri 的窗口命令**不校验调用者身份** —— 目标窗口由调用者传的 `label` 决定（`window/plugin.rs::get_window`），ACL 只按调用窗口授权（`webview/mod.rs::resolve_access`），window 插件的权限**没有 `scope`**。给插件窗口窗口权限 = 它能操作任意窗口（含主窗口），且能绕开 bridge 直接 `__TAURI_INTERNALS__.invoke`。「限自己」要放在**宿主层**（`control` 的归属校验，当前**缺失** —— 插件 A 能改插件 B 的窗口）。插件窗口动自己的正解是 `bridge.drag()`（原生，零 IPC）。
+
+### 14.9 流提供者权限（本轮新增）
+- **`StreamProvider::permission()` 默认 `None`**；`open_json`/`open_raw` 检查它 → 提供者可以要求自己的权限（提供者 **`clipboard`** → `rpc:clipboard`），名单在 `host/schema` 的 `providerPermissions`。守卫在 `examples/host-checks.rs` 的 `provider-permissions-are-published`。
+- **规律：拉取 → 服务（service），推送 → 流提供者（stream provider）**。剪贴板读/写是服务（`clipboard/read`、`clipboard/write`），剪贴板**变化**是流（提供者 `clipboard`）。截屏是服务（`screen/monitors`、`screen/capture`），**没有**对应的流。
+- **服务权限是派生的**：`plugin_rpc` 里 `is_allowed(plugin_id, &format!("rpc:{svc}"))` → 注册一个服务就自动得到 `rpc:<服务名>`。所以 `rpc:screen` 在源码里搜不到字符串，但**确实被强制**；`tests/plugins.test.mjs` 的白名单也是 `serviceNames().map(n => \`rpc:${n}\`)` 派生的，不会漂移。**只有非服务型权限（`rpc:dialog` / `win:manage`）才需要手写进白名单。**
