@@ -146,19 +146,30 @@ const SHARED = [
  * in the main window, a drop is routed to the active view, and window ownership
  * stays with whoever created the window.
  */
-const INTENTIONAL_CTX_ONLY = ['focusView', 'onDrop', 'registerView', 'windows'];
+const INTENTIONAL_CTX_ONLY = [
+  'focusView',
+  'onDrop',
+  'registerView',
+  'windows',
+  // Decided 2026-09-26: `ui` is NOT being mirrored. It is Vue + 376 shadcn
+  // components whose look comes entirely from Tailwind UTILITIES, and a plugin
+  // window's stylesheet deliberately ships none (it is tokens + `.tb-*` only —
+  // measured 5 KB JS + 19 KB CSS per window). Mirroring it would mean adding
+  // ~122 KB of utilities back to every plugin window, or maintaining a second
+  // trimmed-down component set. A plugin window that wants rich UI builds it
+  // from `.tb-*`.
+  'ui',
+];
 
 /**
- * Debt, not design. Nothing about this needs the main window — a plugin window
- * can render the same components. It is listed so that "missing" is a recorded
- * decision; move it to SHARED when the factory is mirrored.
+ * Debt, not design — currently empty.
  *
- * `files` / `log` / `closeStream` were here too until they were mirrored. They
- * had no reason to be main-window-only: the same plugin code worked in a view
- * and threw `undefined is not a function` in the plugin's own window. Mirroring
- * them also surfaced a real leak — see `bridge.dispose()` in pluginwin-host.js.
+ * `files` / `log` / `closeStream` were here until they were mirrored. They had
+ * no reason to be main-window-only: the same plugin code worked in a view and
+ * threw `undefined is not a function` in the plugin's own window. Mirroring them
+ * also surfaced a real leak — see `bridge.dispose()` in pluginwin-host.js.
  */
-const PENDING_CTX_ONLY = ['ui'];
+const PENDING_CTX_ONLY = [];
 
 const CTX_ONLY = [...INTENTIONAL_CTX_ONLY, ...PENDING_CTX_ONLY];
 

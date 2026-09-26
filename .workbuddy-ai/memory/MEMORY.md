@@ -30,11 +30,11 @@
 - **插件窗口里没有 Tailwind 工具类**（写了**静默失效**）→ 用 `.tb-*` / 内联 `style`。**不要给插件加 safelist**（外部插件是 Blob URL 单文件 ESM，import 不了任何东西）。
 - **`ctx.windows.control` 每次 = 2 次 IPC 往返** → 拖动时逐帧连带动多窗口 = 卡顿。**几何上报必须 rAF 合并 + 去重**（拖拽期 `resize` 与 `SetWindowPos` 会成**自放大回路**）；拖窗口用原生 `bridge.drag()`。
 - **渲染细节见 `NOTES.md` §6–§7**：透明窗口别用 `backdrop-filter`、别留无限动画；尺寸由内容**实测上报**（去重、单轴不清零）；`setIgnoreCursorEvents(true)` 是窗口级（透传窗口收不到**任何**鼠标事件）；`ctx.log` 只到 webview console → 插件失败原因必须显示在界面上。
+- **插件窗口收不到拖放**（**不是**框架限制：`onDragDropEvent` per-webview、无需权限 —— 是 `watchDrops()` 只在 `boot()` 调，且路由按 `activeViewId` 而视图只在主窗口）；**fs 已评估、暂不实施**（路线 D / 方案 A：宿主自己实现 `fs` 服务、不做 scope，`ctx.fs` + `bridge.fs` 都要有）→ `NOTES.md` §14.20–§14.22、`docs/plugin-dev/FILE-ACCESS-PLAN.md` §七。
 
 ## 生命周期 / 权限
 - **停用插件 = 宿主强制回收一切**：订阅 / 热键 / 主题 / 视图 / streams / sidecars / ptys / **窗口**。**新增任何「插件获得一个句柄」的 API，都必须同时 `disposer.track` 它的释放**。复用（label 已存在）的窗口**不**回收。
 - **释放流用 `hub.close(pluginId, ch)`，不是 `handle.close()`** —— 传输层只「告诉宿主停」，hub 自己的注册表（`already open` 的判据）只有 `hub.close` 会清；**等终止 `end` 帧来清不算**（帧没到就永远占着，插件再也开不了那个 ch）。`bridge.dispose()` 曾完全不释放流 → **关插件窗口会留下跑着的 pty/sidecar**（那个窗口是唯一会关它们的东西）。
-- **`host` 服务的写动作必须 host-only**（`unregister` / `stop_session`）。守卫 `tests/host-kernel.test.mjs`。
 - **托盘**：主窗口 ✕ = 隐藏，退出只在托盘右键菜单。**托盘建不起来是致命错误**。**主窗口上插件的 `onCloseRequested` 不触发** → 必须由宿主中转。
 
 ## 契约 / 测试

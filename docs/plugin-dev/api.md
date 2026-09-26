@@ -386,6 +386,14 @@ file drop: ignored — no listener at all for view msglog.demo/msglog (plugin ms
 每个插件都会按「这是不是我的视图」过滤。所以判断「有没有生效」要看**界面**，
 不是看这一行。**这一行真正的用处是告诉你：drop 到了，以及它被路由给了哪个插件。**
 
+**⚠️ 插件自己的窗口收不到拖放。** `onDrop` 是**视图级**的能力 —— 拖放由主窗口监听，
+再按「当前显示的是哪个视图」路由。插件窗口里没有视图这个概念，所以往插件窗口拖文件
+**完全没反应、也不报错**（`dragDropEnabled` 默认开启还会一并压掉 HTML5 的 `ondrop`）。
+
+要让插件窗口也能收，需要的不是权限，而是**另一条路由规则**（「窗口 X 上的 drop 给拥有 X 的插件」）——
+而它依赖**窗口归属**，那正是 `ctx.windows.control` 目前缺失的同一块。见
+[FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md) §7.4。
+
 ### 拿到路径之后怎么读？
 
 **自己起一个 sidecar 进程读**（`ctx.sidecar`，权限 `rpc:proc`）：
@@ -718,7 +726,7 @@ async function closeMe() {
 | `windows.create` / `windows.control` | ✅ | ❌ **没有** |
 | `registerView` / `focusView` | ✅ | ❌ **没有**（视图在主窗口里） |
 | `onDrop` | ✅ | ❌ **没有**（拖放只送给活动视图） |
-| `ui`（组件工厂 / toast） | ✅ | ❌ **没有** |
+| `ui`（组件工厂 / toast） | ✅ | ❌ **没有**（**有意为之**，见下） |
 | `rpc(svc, act, p)` | ✅ | ⚠️ 叫 **`request(svc, act, p)`** —— 同一个东西，两个名字 |
 | `drag()` / `close()` | ❌ 不需要 | ✅ **独有** |
 | `cleanup()` / `dispose()` | ✅（`ctx.cleanup`） | ✅ |
@@ -729,7 +737,12 @@ async function closeMe() {
 
 **表里 ❌ 的那几项不是「忘了做」，而是「主窗口才有的东西」**：视图、拖放路由、窗口所有权。
 但 `clipboard` / `screen` / `files` / `log` / `closeStream` 曾经也在 ❌ 里 —— 那没有道理，
-同一段代码在视图里能用、在插件自己的窗口里就 `undefined is not a function`。**现在只剩 `ui` 待办。**
+同一段代码在视图里能用、在插件自己的窗口里就 `undefined is not a function`。**`files` / `log` / `closeStream` 都已补上。**
+
+**`ui` 是有意不镜像的（2026-09-26 决定）。** 组件工厂的观感**全部来自 Tailwind 工具类**，
+而插件窗口的样式表**故意不含工具类**（只有令牌 + `.tb-*` —— 实测每个插件窗口 5 KB JS + 19 KB CSS）。
+把它镜像过去意味着给**每个**插件窗口加回 ~122 KB utilities，或再维护一套裁剪版组件 —— 不值。
+**插件窗口要富 UI，就用 `.tb-*` 自己搭。**
 
 > **⚠️ 关窗口会释放你开的一切，包括流。** `bridge.dispose()` 在 `beforeunload` 里被调用，
 > 它会关掉你开的 `stream` / `pty` / `sidecar` —— 这一条不是可有可无的清理：那些是宿主侧的

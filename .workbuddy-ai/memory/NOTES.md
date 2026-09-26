@@ -255,3 +255,37 @@ npm run build / npm run deploy:examples / npm run preview:theme / npm run bench
 - trace 是 fire-and-forget 经网关写文件，**行会被丢/会被合并到相邻行**。
 - **要验证插件的 activate 行为，直接写探针跑它**：单文件 ESM 在 Node 里 `import()` 就能跑，
   把 `ctx` 换成记录器，一眼看出调了哪些接口、有没有抛错。
+
+### 14.20 三类调用者的能力矩阵（2026-09-26 核实）
+| 调用者 | 能调什么 |
+|---|---|
+| **宿主**（`__host__`） | **一切** —— `HOST_IDENTITY` 在 `host/registry.rs` 里**无条件放行**，所以宿主能调任何服务/动作 |
+| 视图插件（`ctx`，27 项） | 除下面几项外全部 |
+| 插件窗口（`bridge`，26 项） | 共有部分 + `close`/`drag`/`cleanup`/`dispose` |
+
+- **只在 ctx 的**：`focusView` / `registerView`（视图在主窗口）、`onDrop`（按 `activeViewId` 路由）、
+  `windows`（窗口归属归创建方）、`ui`（**已决定不镜像**）。
+- `ctx.rpc` ↔ `bridge.request` 只是改名，不是缺口。
+- 守卫 `tests/sdk-parity.test.mjs` 的 `PENDING_CTX_ONLY` 现在是**空的** —— 即「没有已知的欠账」。
+  新增 ctx-only 的东西必须登记（否则守卫变红），并在 `INTENTIONAL_CTX_ONLY` 里写明理由。
+
+### 14.21 ⚠️ 插件窗口收不到拖放 —— 不是框架限制，是没接线
+- `onDragDropEvent` 是 **per-webview 的方法、不需要任何权限**（官方 JS API 文档未标注 permission），
+  `dragDropEnabled` 默认开启 → **插件窗口本来就能监听**。所以这不是「Tauri 做不到」。
+- 真正原因两条：① `watchDrops()` 只在 `boot()` 里调用，而 **`boot()` 只跑在主窗口**（窗口按 label 分发），
+  `pluginwin.js` → `mountPluginWindow()` 从不调它；② **路由规则不适用** ——
+  `ctx.onDrop` 按 `store.activeViewId` 过滤，而**视图只存在于主窗口**，插件窗口没有 view 这个概念。
+- 要让插件窗口支持拖放，需要另一条规则「**窗口 X 上的 drop 给拥有 X 的插件**」——
+  它依赖**窗口归属**，正是 `ctx.windows.control` 缺失的同一块。
+- 现状：往插件窗口拖文件**完全没反应、也不报错**（`dragDropEnabled` 默认开启还会一并压掉 HTML5 `ondrop`）。
+
+### 14.22 fs（文件读写）：已评估，**暂不实施**
+- 完整评估在 `docs/plugin-dev/FILE-ACCESS-PLAN.md` **§七**（顶部状态已改成「已评估，暂不实施」）。
+- **选定路线 D**（宿主代理 + 目录授权），自用前提下按**方案 A**：宿主自己实现 `fs` 服务（Rust `std::fs`）
+  走现有网关，**不做 scope 判定**；`ctx.fs` 与 `bridge.fs` 都要有。
+- **与安全无关的硬约束**：外部插件是 Blob URL 单文件 ESM、`import` 不了任何东西 →
+  **宿主必须是中间人**。`ctx.fs` 一定要有，这不是安全决定，是打包模型的硬约束。
+- 已核实（将来实施时直接用）：`FsExt::fs_scope()` → `Scope::allow_directory(path, recursive)`；
+  `Scope` 还有 `listen()`（scope 变化发事件）；capability **权限 + scope 两个都要给**。
+- 若将来真做：第一期只做 `readText`/`writeText`/`readDir`/`exists`/`stat` 且**只收绝对路径**；
+  **不做** `remove`/`rename`/`mkdir`（最容易误伤）。
