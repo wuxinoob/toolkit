@@ -30,7 +30,7 @@
 - **插件窗口里没有 Tailwind 工具类**（写了**静默失效**）→ 用 `.tb-*` / 内联 `style`。**不要给插件加 safelist**（外部插件是 Blob URL 单文件 ESM，import 不了任何东西）。
 - **`ctx.windows.control` 每次 = 2 次 IPC 往返** → 拖动时逐帧连带动多窗口 = 卡顿。**几何上报必须 rAF 合并 + 去重**（拖拽期 `resize` 与 `SetWindowPos` 会成**自放大回路**）；拖窗口用原生 `bridge.drag()`。
 - **渲染细节见 `NOTES.md` §6–§7**：透明窗口别用 `backdrop-filter`、别留无限动画；尺寸由内容**实测上报**（去重、单轴不清零）；`setIgnoreCursorEvents(true)` 是窗口级（透传窗口收不到**任何**鼠标事件）；`ctx.log` 只到 webview console → 插件失败原因必须显示在界面上。
-- **插件窗口收不到拖放**（**不是**框架限制：`onDragDropEvent` per-webview、无需权限 —— 是 `watchDrops()` 只在 `boot()` 调，且路由按 `activeViewId` 而视图只在主窗口）；**fs 已评估、暂不实施**（路线 D / 方案 A：宿主自己实现 `fs` 服务、不做 scope，`ctx.fs` + `bridge.fs` 都要有）→ `NOTES.md` §14.20–§14.22、`docs/plugin-dev/FILE-ACCESS-PLAN.md` §七。
+- **插件窗口的 `onDrop` / `focusView` 可解，`registerView` 不行**（`render` 是闭包、跨 realm 传函数不可能 —— 而它在 `activate(ctx)` 里本来就能用）。注意 `onDrop` **不是**框架限制、也**不需要窗口归属**。方案见 `NOTES.md` §14.23。**fs 已评估、暂不实施**（路线 D / 方案 A）→ `NOTES.md` §14.20–§14.22、`docs/plugin-dev/FILE-ACCESS-PLAN.md` §七–§八。
 
 ## 生命周期 / 权限
 - **停用插件 = 宿主强制回收一切**：订阅 / 热键 / 主题 / 视图 / streams / sidecars / ptys / **窗口**。**新增任何「插件获得一个句柄」的 API，都必须同时 `disposer.track` 它的释放**。复用（label 已存在）的窗口**不**回收。

@@ -390,9 +390,9 @@ file drop: ignored — no listener at all for view msglog.demo/msglog (plugin ms
 再按「当前显示的是哪个视图」路由。插件窗口里没有视图这个概念，所以往插件窗口拖文件
 **完全没反应、也不报错**（`dragDropEnabled` 默认开启还会一并压掉 HTML5 的 `ondrop`）。
 
-要让插件窗口也能收，需要的不是权限，而是**另一条路由规则**（「窗口 X 上的 drop 给拥有 X 的插件」）——
-而它依赖**窗口归属**，那正是 `ctx.windows.control` 目前缺失的同一块。见
-[FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md) §7.4。
+要让插件窗口也能收，需要的**不是权限**，而是让插件窗口**自己监听自己的拖放** ——
+归属是已知的（`?plugin=<id>` 在 URL 里），所以**不需要任何路由**。
+见 [FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md) §7.4。
 
 ### 拿到路径之后怎么读？
 

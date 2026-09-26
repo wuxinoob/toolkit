@@ -289,3 +289,24 @@ npm run build / npm run deploy:examples / npm run preview:theme / npm run bench
   `Scope` 还有 `listen()`（scope 变化发事件）；capability **权限 + scope 两个都要给**。
 - 若将来真做：第一期只做 `readText`/`writeText`/`readDir`/`exists`/`stat` 且**只收绝对路径**；
   **不做** `remove`/`rename`/`mkdir`（最容易误伤）。
+
+### 14.23 插件窗口的 `onDrop` / `focusView` / `registerView`（方案在 FILE-ACCESS-PLAN §八）
+- **`onDrop` ✅ 能**：**让插件窗口自己监听自己的拖放** —— 归属已知（`?plugin=<id>` 在 URL 里），
+  **路由这一层根本不存在**。主窗口之所以要路由，是因为一个窗口里装着**多个**插件的视图。
+  ⚠️ 我一度写「需要窗口归属」—— **那是把问题想复杂了**（那是「让主窗口替插件窗口路由」的错路）。
+  实现：模块级 `dropHandlers` 集合 + `bridge.onDrop(fn)` + `mountPluginWindow()` 里注册
+  `getCurrentWebview().onDragDropEvent(...)` + `dispose()` 清空。**不需要新权限**。
+- **`focusView` ✅ 能**：本质是「请主窗口切一下」= 跨窗口请求。新保留 topic `host:focus-view`
+  （与 `host:drop` 并列定义在 `events.js`）；`bridge.focusView` **先按 `manifest.contributes.views`
+  本地校验**（拼错就 reject —— 保住 `ctx.focusView` 刻意要的「拼错会抛、不静默」），再 publish；
+  主窗口 `boot()` 订阅一次，用 **`env.svc`（`bus.rs:48` 把发布者写进信封）** 校验 `${svc}/${viewId}`
+  归属后才切。**切换动作要抽成一个共享函数**，否则两份实现迟早漂移。
+  **代价**：`bridge.focusView` 需要 `rpc:bus`，而 `ctx.focusView` 不需要 —— 这个不对称要写进文档。
+- **`registerView` ❌ 不能且不该**：`render` 是**一个 JS 闭包**，视图渲染发生在**主窗口**，
+  而插件窗口是**另一个 document、另一个 JS realm** —— 跨 realm 传函数**在结构上不可能**（不是权限问题）。
+  **需求本来就被满足**：外部插件的 `activate(ctx)` **本来就跑在主窗口**（`ctx` 就在那里构建），
+  `mountWindow(bridge)` 才跑在插件窗口 → 「要视图就在 `activate(ctx)` 里注册」是唯一能工作的位置。
+  插件窗口想影响主窗口的视图内容 → event-bus 反向推（已有能力）。
+- **通用教训**：「一个能力在 B 处缺失」先问**它是不是本来就属于 A**。
+  `registerView` 是类别错误（闭包跨 realm），`focusView` 是缺一条请求通路，`onDrop` 是缺一个监听器 ——
+  三者看着像同一类问题，其实要三种不同的处理。

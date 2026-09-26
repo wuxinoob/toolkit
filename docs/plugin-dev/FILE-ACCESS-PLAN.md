@@ -285,11 +285,108 @@ A 还顺带保住「所有插件能力都走网关」这个统一性 —— 于�
   `pluginwin.js` → `mountPluginWindow()` 从不调它
 - 而且即使监听了，**路由规则也不适用**：`ctx.onDrop` 按 `store.activeViewId` 过滤，
   而**视图只存在于主窗口**，插件窗口没有 view 这个概念
-- 所以要让插件窗口支持拖放，需要另一条规则：「**窗口 X 上的 drop 给拥有 X 的那个插件**」——
-  而它需要**窗口归属**，这正是 `ctx.windows.control` 缺失的同一块
+- **正解比这简单得多**：让插件窗口**自己监听自己的拖放**，把路径直接投给它自己的订阅者 ——
+  **不需要任何路由，也不需要窗口归属**。主窗口之所以要路由，是因为一个窗口里装着**多个**插件的视图；
+  插件窗口只属于一个插件，归属是**已知的**（`?plugin=<id>` 就在 URL 里）。
+  > 这里先前写的「需要窗口归属」是**把问题想复杂了** —— 那是「让主窗口替插件窗口路由」的错路。
+  > 正确做法是「谁收到谁处理」，于是路由这一层根本不存在。
+- 所以要修只需要三步：① 插件窗口 `mountPluginWindow()` 里注册 `onDragDropEvent`；
+  ② `bridge.onDrop(fn)` 注册进一个**局部**集合（不是主窗口那张按 topic 的全局表）；
+  ③ `dispose()` 清空那个集合。**不需要新权限**（`core:default` 已覆盖事件监听）。
 - 现状：往插件窗口拖文件**完全没反应、也不报错**（`dragDropEnabled` 默认开启还会压掉 HTML5 `ondrop`）
 
 **② `ui` 记为「主窗口才有」（已定，不再镜像）。**
 `ctx.ui` 是 Vue + 376 个 shadcn 组件，观感来自 **Tailwind 工具类**；
 而插件窗口的样式表**故意不含工具类**（`plugin.css` = theme + preflight + `.tb-*`，实测 19 KB CSS + 5 KB JS）。
 镜像它意味着给每个插件窗口加回 ~122 KB utilities，或另做一份裁剪版 —— 不值。
+
+---
+
+## 八、让 `onDrop` / `focusView` 在插件窗口也能用（方案，2026-09-26）
+
+**先分清三件事 —— 两项能解决，一项是「类别错误」：**
+
+| 能力 | 插件窗口能否支持 | 性质 |
+|---|---|---|
+| `onDrop` | ✅ **能** | 窗口级事件，插件窗口本来就能监听；**而且比主窗口更简单**（不需要路由） |
+| `focusView` | ✅ **能** | 它本质是「请主窗口把我的视图切到前台」= 一条跨窗口请求 |
+| `registerView` | ❌ **不能，且不应该** | 视图的 `render` 是**一个 JS 闭包**，必须在**主窗口的 realm** 里执行 |
+
+### 8.1 `onDrop`（纯增益，不碰网关）
+
+主窗口需要路由，是因为**一个窗口里装着多个插件的视图**；插件窗口只属于一个插件，
+归属已知（URL 里的 `?plugin=<id>`）→ **路由这一层根本不存在**。
+
+1. `pluginwin-host.js` 加一个模块级 `dropHandlers` 集合；
+   `bridge.onDrop(fn)` 注册进去，返回取消函数（与 `ctx.onDrop` 同形状：**返回 promise**）
+2. `mountPluginWindow()` 在 bridge 建好后注册 `getCurrentWebview().onDragDropEvent(...)`，
+   `drop` 时把 `paths` 投给 `dropHandlers`
+3. `dispose()` 清空该集合（局部集合，清空即可）
+4. `over` 相不上报（会刷屏），与主窗口一致；`enter`/`leave`/`drop` 上报
+
+**不需要新权限**：`onDragDropEvent` 无 permission 要求，插件窗口的 `core:default` 已覆盖事件监听。
+**注意**：`dragDropEnabled` 默认开启 → 插件窗口的 HTML5 `ondrop` 同样被压掉，
+所以文档要写清「插件窗口用 `bridge.onDrop`，别写 HTML5 的」。
+
+**诊断**：插件窗口的日志只到 webview console（`ctx.log` 同理）。
+要进 `debug.log` 就得走 `host/write_debug_log`（需要 `rpc:host`），失败则退回 console。
+
+### 8.2 `focusView`（跨窗口请求 + 本地校验）
+
+它做不了「切换」这件事本身（视图不在插件窗口），但它可以**请求**。
+
+1. 新保留 topic `host:focus-view`，**与 `host:drop` 并列定义在 `events.js`**（单点，两处不许各写一份字面量）
+2. `bridge.focusView(viewId)`：
+   - **先本地校验**：`manifest.contributes.views` 里有没有这个 id —— 没有就 **reject**。
+     这一步保住了 `ctx.focusView` 刻意要的性质：**「拼错会抛，不会静默什么都不做」**
+     （否则看起来就像「热键突然失效了」）
+   - 通过则 `hub.publish(pluginId, FOCUS_VIEW_TOPIC, { viewId }, { scheme: 'event-bus' })`
+3. 主窗口在 `boot()` 里**订阅一次**：取 `env.p?.viewId` 与 **`env.svc`（信封带发布者）**，
+   校验 `store.views` 里存在 `${env.svc}/${viewId}` → 存在才切。
+   **这条校验就是「只能切自己的视图」**，与 ctx 侧同一条规则
+4. 切换动作抽成**一个共享函数**，`ctx.focusView` 与这个订阅者都调它 —— 否则两份实现迟早漂移
+
+**代价（要说清）**：`bridge.focusView` 需要 **`rpc:bus`**（跨窗口消息走 event-bus，而发布有闸），
+而 `ctx.focusView` **不需要权限**。这个不对称可接受（`rpc:bus` 本来就是「跨窗口通信」的权限），
+但要么写进文档，要么改用 `host/focus_view` 动作（闸口 `rpc:host`）—— 后者的代价是动服务表 + schema + 测试。
+**取前者**：少动一处，且 `host:drop` 已是同类先例。
+
+**已知限制**：这是**发布**（fire-and-forget），插件拿不到「主窗口确实切了」的回执。
+拼错由第 2 步本地拦住，所以只剩「合法但主窗口还没注册该视图」这一种静默情形 ——
+而视图在 `activate()` 时就注册了，早于任何窗口打开。
+
+### 8.3 `registerView` —— 做不到，而且不该做
+
+**不是遗漏，是类别错误。** `registerView(viewId, render)` 的第二个参数是**一个 JS 函数**。
+视图渲染发生在**主窗口**，而插件窗口是**另一个 document、另一个 JS realm** ——
+那里的 Blob URL 模块实例，主窗口**拿不到**。跨 realm 传函数在结构上不可能
+（这不是权限问题，是 JS 的边界）。
+
+**而这个需求已经被满足了**：外部插件的 `activate(ctx)` **本来就跑在主窗口**（`ctx` 就在那里构建），
+`mountWindow(bridge)` 才跑在插件窗口。所以插件要视图，就在 `activate(ctx)` 里注册 ——
+那是唯一能工作的位置：
+
+```js
+// activate(ctx) —— 主窗口
+export async function activate(ctx) {
+  ctx.registerView('main', renderLauncher);
+  ctx.onHotkey('open', () => ctx.windows.control(LABEL, 'raise', true));
+}
+// mountWindow(bridge) —— 插件窗口
+export function mountWindow(bridge) {
+  bridge.onDrop((paths) => { … });          // §8.1
+  bridge.focusView('main');                 // §8.2
+}
+```
+
+**插件窗口想「影响」主窗口的视图内容**（例如侧栏条目上显示计数）→ 用 event-bus 反向推：
+主窗口 render 里 `ctx.bus.subscribe(...)`，插件窗口 `bridge.publish(...)`。**这是已有能力，不需要新东西。**
+
+### 8.4 实施顺序
+
+| # | 内容 | 风险 |
+|---|---|---|
+| 1 | `bridge.onDrop` + 插件窗口自己听拖放 | 低：纯增益，不碰网关 |
+| 2 | `bridge.focusView` + `host:focus-view` + 主窗口校验归属 + 抽出共享的切换函数 | 中：新增一条跨窗口通路，要有测试 |
+| 3 | 文档：`api.md` 对照表把 `onDrop`/`focusView` 从 ❌ 改成 ✅ | 低 |
+| 4 | 守卫：`sdk-parity` 的 `INTENTIONAL_CTX_ONLY` 缩到 `registerView`/`windows`/`ui`，并写明 `registerView` 的理由是「跨 realm 传函数不可能」 | 低 |
