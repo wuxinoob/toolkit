@@ -1,0 +1,30 @@
+{
+  "id": "eyecare.demo",
+  "name": "护眼助手",
+  "version": "0.1.0",
+  "api": 2,
+  "entry": "main.js",
+  "description": "定时护眼：自绘悬浮胶囊 + 穿透锁定 + 全屏休息遮罩；键鼠空闲检测由自带 sidecar 提供。",
+  "contributes": {
+    "views": [
+      {
+        "slot": "tool",
+        "id": "eyecare",
+        "title": "护眼助手",
+        "icon": "lucide:eye"
+      }
+    ],
+    "hotkeys": [
+      {
+        "key": "ctrl+alt+e",
+        "action": "toggle-menu"
+      }
+    ]
+  },
+  "permissions": [
+    "rpc:storage",
+    "rpc:proc",
+    "rpc:bus",
+    "win:manage"
+  ]
+}
