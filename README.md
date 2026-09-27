@@ -17,12 +17,17 @@ A scheme is the combination of two independent axes:
 | scheme id | transport · codec | direction | capabilities |
 |---|---|---|---|
 | `rpc` | invoke · json-envelope | up | requestResponse, ordered |
+| `channel-in` | invoke (batched) · json-envelope | up | uplink, ordered |
 | `channel-json` | channel · json-envelope | down | push, ordered, crossWindow |
 | `channel-raw` | channel · raw-binary | down | push, binary, ordered |
 | `event-bus` | event · json-envelope | down | push, crossWindow |
 | `stdio-line` | stdio · line-json | both | requestResponse, push, pull |
 | `pty-stream` | pty · raw-binary | both | push, binary, ordered |
 | `in-process` | in-process · object | down | push |
+
+That is all eight. `channel-in` is the odd one: Tauri's `Channel` is
+one-directional (`JS` gets a receive callback and no `send`), so the plugin→host
+push is carried by **batched `invoke`** rather than by a new carrier.
 
 Adding an experiment = one descriptor + one small transport module. Nothing in
 the host, the SDK or the plugins grows a branch — they all resolve a scheme by
@@ -32,7 +37,7 @@ id through `src/protocol/registry.js`.
 
 ```bash
 npm install
-npm run test          # 62 node tests: scheme conformance, host kernel, real boot, plugin audit
+npm run test          # 268 node tests: scheme conformance, host kernel, real boot, plugin + doc audits
 npm run bench         # codec experiment: what each codec costs per message
 npm run build         # build the frontend
 npm run tauri dev     # run the app
@@ -43,7 +48,7 @@ Rust side:
 ```bash
 cd src-tauri
 cargo check --all-targets
-cargo run --example host-checks   # 27 pure-logic assertions, no test harness
+cargo run --example host-checks   # 29 pure-logic assertions, no test harness
 ```
 
 `cargo test` does **not** work on Windows: `tauri-build` embeds the app manifest
@@ -56,7 +61,7 @@ report — plus the boot trace — to `{appData}/debug.log`, so a runtime proble
 readable from outside the webview. Re-run it any time with
 `await window.__toolbox.selftest()` in the webview console.
 
-Last verified end to end: `node --test` 221, `host-checks` 27/27, build clean,
+Last verified end to end: `node --test` 268, `host-checks` 29/29, build clean,
 zero code warnings.
 
 ### Closing the window puts it in the tray
@@ -85,7 +90,7 @@ src/
     events.js               the window-local bus (the `in-process` scheme)
     pluginwin-host.js       secondary plugin windows
   plugins/                  first-party plugins
-    notepad  eyecare  procman  streamlab  floatwin
+    procman  streamlab
   core/logger.js  core/selftest.js
 src-tauri/src/
   protocol/{envelope,codec}.rs   the same contract, native side
@@ -93,27 +98,37 @@ src-tauri/src/
   host/registry.rs               the authoritative permission registry
   lib.rs                         three table-driven entry points
 examples/
-  plugins/hello/            drop-in external plugin
-  plugins/probe/            drives every interface in one pass (living check)
   calc-plugin/              window frontend + native sidecar backend
+  plugins/eyecare/          multi-window + self-drawn chrome
+  plugins/fileprobe/        native dialogs and OS drag-and-drop, by hand
+  plugins/gallery/          the component vocabulary, in one view
+  plugins/msglog/           the broadcast bus, seen from two windows
+  plugins/probe/            drives every interface in one pass (living check)
+  plugins/senses/           clipboard / screen / drag-drop, on real hardware
 docs/
   MESSAGE-FRAMEWORK.md      the analysis + design that led here
   PROTOCOL.md               the protocol reference
   INTERFACES.md             interface inventory + unification audit + roadmap
+  INTERFACE-REVIEW-2026-09-27.md   interface classification + what is and is not verified
   UI.md                     design tokens + the .tb-* primitives plugins can use
+  plugin-dev/               the plugin author's manual (start at its README)
 ```
 
 ## Plugins
 
-Built-ins each exercise a different part of the plane:
+**A built-in is code the user cannot uninstall and every boot pays for**, so the
+bar is deliberately high: it has to exercise a scheme nothing else in the table
+exercises. That leaves two:
 
-| plugin | what it demonstrates |
-|---|---|
-| Notepad | `rpc` storage + `event-bus` notify |
-| Eyecare | timers, overlay layer, `in-process` events |
-| Processes | `pty-stream` multi-process management with xterm.js |
-| StreamLab | the scheme table, and one experiment per scheme side by side |
-| FloatWin | multi-window control + broadcast instead of polling |
+| plugin | id | what it demonstrates |
+|---|---|---|
+| Processes | `builtin.procman` | `pty-stream` multi-process management with xterm.js |
+| StreamLab | `builtin.streamlab` | the scheme table, and one experiment per scheme side by side |
+
+`notepad`, `eyecare` and `floatwin` used to be built-ins. They were working
+demos rather than parts of the message plane, and they moved to `examples/` —
+where a user who wants one can install it. See `src/host/registry.js` for the
+rule this table encodes.
 
 See `docs/INTERFACES.md` for the full interface inventory, what each feature
 uses, and the known gaps. `examples/plugins/probe` is a new plugin that drives
@@ -122,7 +137,8 @@ no host changes and a living integration check.
 
 External plugins need no host changes: drop a folder with `plugin.json` + a
 single-file ESM entry into `{appData}/plugins/` and click **Rescan** in Settings.
-See `examples/plugins/hello` and `examples/calc-plugin`.
+See `examples/plugins/probe` (the interface sweep) and `examples/calc-plugin`
+(a window frontend plus a native sidecar backend).
 
 Rescan **reconciles** rather than only discovering — new folders load, changed
 ones reload in place (no app restart), deleted ones unload and lose their host

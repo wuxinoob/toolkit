@@ -81,6 +81,11 @@ const NEEDS = {
   // Tauri implements onCloseRequested as `handler(); if (!prevented) destroy()`
   // — so listening for the close event is what makes `destroy` mandatory.
   onCloseRequested: 'core:window:allow-destroy',
+  // Drag-and-drop reaches JS as a core webview event, so `bridge.onDrop` needs
+  // the core event permission — same requirement as the main window's watcher
+  // (`watchDrops` in boot.js). Listed here so a plugin window that watches drops
+  // is checked rather than assumed.
+  onDragDropEvent: 'core:event:allow-listen',
 };
 
 /** Which window each file runs in, and therefore which capability governs it. */

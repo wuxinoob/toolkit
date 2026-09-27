@@ -34,6 +34,12 @@ const root = fileURLToPath(new URL('..', import.meta.url));
  * happily matches a name on the NEXT line. That is not a theoretical worry — it
  * made this extractor report every key twice (once from the blank line above it,
  * once from its own line) on the first run.
+ *
+ * The separator is `[:,]`, not `:`. Shorthand properties (`id,`, `manifest,`,
+ * `pluginId,`, `label,`) have no colon, and demanding one silently hid four
+ * capabilities — including `label`, which is bridge-only. A guard that cannot
+ * see a name cannot report it as an undecided asymmetry, which is the one job
+ * this file has.
  */
 function topLevelKeys(source, anchor) {
   const stripped = strip(source);
@@ -57,12 +63,24 @@ function topLevelKeys(source, anchor) {
       lineStart = true;
       continue;
     } else if (depth === 1 && lineStart) {
-      const m = /^[ \t]*([A-Za-z_$][\w$]*)[ \t]*:/.exec(stripped.slice(i));
+      const m = /^[ \t]*([A-Za-z_$][\w$]*)[ \t]*[:,]/.exec(stripped.slice(i));
       if (m) keys.push(m[1]);
     }
     lineStart = false;
   }
   return keys;
+}
+
+/**
+ * `ctx.foo = …` assignments that follow the literal.
+ *
+ * `ctx.cleanup` is the one that exists, and reading only the literal made this
+ * guard report `cleanup` as a BRIDGE-ONLY name while `tests/plugin-docs.test.mjs`
+ * reported it as shared. Two guards disagreeing about the same fact is worse
+ * than one guard, so the extractor reads the assignment too.
+ */
+function assignedKeys(source) {
+  return [...strip(source).matchAll(/^[ \t]*ctx\.([A-Za-z_$][\w$]*)[ \t]*=/gm)].map((m) => m[1]);
 }
 
 /** Blank out comments and string bodies so braces/newlines inside them are inert. */
@@ -93,10 +111,8 @@ function strip(src) {
   return out;
 }
 
-const ctxRaw = topLevelKeys(
-  readFileSync(path.join(root, 'src/host/ctx.js'), 'utf8'),
-  'const ctx = {',
-);
+const ctxSource = readFileSync(path.join(root, 'src/host/ctx.js'), 'utf8');
+const ctxRaw = [...topLevelKeys(ctxSource, 'const ctx = {'), ...assignedKeys(ctxSource)];
 // `return {` — NOT `function makeBridge`. Anchoring on the function declaration
 // lands on the function's BODY brace, so every key is one level too deep and the
 // extractor returns nothing. (It did exactly that on the first run.)
@@ -110,13 +126,15 @@ const bridgeRaw = topLevelKeys(
  * but worth recording: a plugin author moving code between windows should not
  * have to discover this from a stack trace.
  */
-const RENAMED_ON_BRIDGE = { rpc: 'request' };
+const RENAMED_ON_BRIDGE = { rpc: 'request', id: 'pluginId' };
 
 const ctxKeys = [...new Set(ctxRaw.map((k) => RENAMED_ON_BRIDGE[k] ?? k))].sort();
 const bridgeKeys = [...new Set(bridgeRaw)].sort();
 
 /** On both, under the same name (after the rename above). */
 const SHARED = [
+  'pluginId',
+  'manifest',
   'protocol',
   'request',
   'log',
@@ -130,6 +148,7 @@ const SHARED = [
   'events',
   'bus',
   'onHotkey',
+  'onDrop',
   'stream',
   'streamRaw',
   'uplink',
@@ -139,16 +158,22 @@ const SHARED = [
   'sessions',
   'schemes',
   'schema',
+  'cleanup',
 ];
 
 /**
  * Main-window concepts. A plugin window genuinely cannot have these: views live
- * in the main window, a drop is routed to the active view, and window ownership
- * stays with whoever created the window.
+ * in the main window, and window ownership stays with whoever created the
+ * window.
+ *
+ * `onDrop` used to be on this list, on the theory that a drop is routed to the
+ * active view. That was the wrong model: a plugin window belongs to exactly one
+ * plugin, so it can watch its OWN drag-and-drop and needs no router at all —
+ * which is simpler than the main window, not more complex. It moved to SHARED
+ * on 2026-09-27.
  */
 const INTENTIONAL_CTX_ONLY = [
   'focusView',
-  'onDrop',
   'registerView',
   'windows',
   // Decided 2026-09-26: `ui` is NOT being mirrored. It is Vue + 376 shadcn
@@ -175,10 +200,11 @@ const CTX_ONLY = [...INTENTIONAL_CTX_ONLY, ...PENDING_CTX_ONLY];
 
 /**
  * `close` / `drag` are window-local and only mean something for a window.
- * `cleanup` / `dispose` are the teardown pair — `ctx` gets the same thing as
- * `ctx.cleanup`, assigned after the literal, so the extractor cannot see it.
+ * `label` is the window's own name (the main window is `main` — there is no
+ * second window to name). `dispose` is the window's teardown; `ctx` gets the
+ * equivalent as `cleanup`, which is SHARED.
  */
-const BRIDGE_ONLY = ['cleanup', 'close', 'dispose', 'drag'];
+const BRIDGE_ONLY = ['close', 'dispose', 'drag', 'label'];
 
 test('the two SDK surfaces were actually parsed', () => {
   // Guards the extractor: if the literal shape changes, every assertion below

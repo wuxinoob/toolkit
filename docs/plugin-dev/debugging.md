@@ -15,7 +15,7 @@
 message plane: rpc, channel-json, channel-in, channel-raw, event-bus, stdio-line, pty-stream, in-process
 boot timing (ms): debug 10 | reap 12 | uikit 399 | schemes 402 | builtins 429 | external 640 | hotkey 646
   plugin load (ms): builtin.procman 24 | builtin.streamlab 3 | …
-boot ok: 10 plugins, 6 views, active=builtin.procman/procman
+boot ok: 7 plugins, 9 views, active=builtin.procman/procman
   plugin builtin.procman: active
   plugin my.plugin: error — [plugin:my.plugin] view "main" not declared in manifest.contributes.views
 --- toolbox selftest … : 15/15 passed ---
@@ -23,6 +23,8 @@ boot ok: 10 plugins, 6 views, active=builtin.procman/procman
 
 **读法**：
 - 每个插件一行状态。`error — <原因>` 就是答案，**不用去猜**
+- **插件表 = 2 个内置（`builtin.procman` / `builtin.streamlab`）+ 你装的那些** ——
+  所以「10 plugins」这类数字不该照抄，你自己机器上是多少就是多少
 - `boot timing` 看哪一阶段慢；`plugin load` 看**哪个插件**慢
 - 插件没出现 → 没被发现（看 [「插件没出现」](#插件没出现)）
 
@@ -101,7 +103,7 @@ boot timing (ms): debug 10 | reap 12 | uikit 399 | schemes 402 | builtins 429 | 
 **后面所有插件**的视图都要等它。所以「我的插件让别人的插件也出不来」是真会发生的。
 
 **注意 `plugin load` 的一个陷阱**：`activate()` 第一件事是 `await loadUiKit()`
-（376 个组件），而**先激活的插件替所有人付这笔钱**。所以那行里
+（组件词汇表当前 377 个导出），而**先激活的插件替所有人付这笔钱**。所以那行里
 **排第一的插件数字偏大是正常的**，不代表它慢。已把 `loadUiKit()` 移到 `boot()`
 开头并给它自己的 `uikit` 标记，正常情况下那行数字现在是准的。
 
@@ -113,7 +115,7 @@ boot timing (ms): debug 10 | reap 12 | uikit 399 | schemes 402 | builtins 429 | 
 
 ### `loadUiKit()` 的并行化：改了，但**收益未验证**
 
-它原本是 `for (…) await load()` —— 376 个组件模块**逐个**加载。已改成
+它原本是 `for (…) await load()` —— 几百个组件模块**逐个**加载。已改成
 `Promise.allSettled` 并行。
 
 **实测（并行版）**：177 个模块，`sumMs 217535` 而 `windowMs 3223` ——
@@ -297,7 +299,7 @@ end   <- my.plugin pty-stream ch=term
 **`->` 是插件在发，`<-` 是插件在收。**
 
 **这是 `debug.log` 里唯一能看到「你没写的那些消息」的地方** ——
-各插件自己 `ctx.log` 的行只反映它**想**写什么，
+插件的 `ctx.log` **不在这个文件里**（它只到 webview console），它反映的是作者**想**说什么；
 而 trace 反映**实际发生**了什么，包括权限拒绝和**到达的每一帧**。
 
 **读法**：
@@ -323,7 +325,7 @@ end   <- my.plugin pty-stream ch=term
 | `err: … is not registered …` | 插件没注册成功，宿主 fail-closed 拦下了 |
 
 **第一列是「调用方自称的身份」，不是宿主核实的身份。** 一个 `__host__` 出现在插件的
-调用里就是伪造的形状 —— 见 [COMMS-AUDIT](../../COMMS-AUDIT-2026-09-23.md)。
+调用里就是伪造的形状 —— 见 [COMMS-AUDIT](../COMMS-AUDIT-2026-09-23.md)。
 
 **payload 会被截断到 80 字符** —— 够你认出「是不是我以为的那条消息」，
 又不会把日志刷爆（也不至于让一个 token 落进文件）。

@@ -8,6 +8,10 @@
 > **状态：本设计已在 toolbox 中落地。** 应用名 **Toolbox**，identifier `com.tan18.toolbox`
 > （原 `com.tan18.toolkit` 与 eyecare 冲突，已更名）。协议参考见 [`PROTOCOL.md`](./PROTOCOL.md)，
 > 实现位置见 §5 的目录结构。
+> **本文是设计来由（历史），不是现状。** 要了解当前接口，看
+> [`INTERFACES.md`](./INTERFACES.md)（清单）、[`PROTOCOL.md`](./PROTOCOL.md)（契约）、
+> [`plugin-dev/`](./plugin-dev/README.md)（插件作者手册）、
+> [`INTERFACE-REVIEW-2026-09-27.md`](./INTERFACE-REVIEW-2026-09-27.md)（接口分类与核查）。
 >
 > 落地后的验证：**应用内自检 15/15 全绿**（含真实 sidecar 往返）、7 插件 / 7 视图全部 active、
 > `cargo test` 39、`node --test` 39、`cargo check --all-targets` 零代码警告、`npm run build` 通过。

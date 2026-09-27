@@ -67,6 +67,82 @@ function renderError(title, detail) {
 }
 
 /**
+ * Files dropped on THIS window, for the one plugin that owns it.
+ *
+ * ## Why there is no routing here
+ *
+ * The main window needs a router because ONE window holds many plugins' views:
+ * boot.js watches the OS once and republishes on the window-local bus, tagging
+ * the drop with the active view id, and `ctx.onDrop` accepts only its own views.
+ * A plugin window is the opposite situation — the URL says `?plugin=<id>`, so
+ * ownership is known before the drop happens and the routing layer simply does
+ * not exist. Whoever receives the event IS the owner.
+ *
+ * That is also why this needs no permission, matching `ctx.onDrop`: you only
+ * ever see drops the user aimed at your own window.
+ *
+ * ## Why the set is module-level
+ *
+ * One window is one realm with one bridge, so this is the same shape (and the
+ * same justification) as the listener map in `host/events.js`. `dispose()`
+ * clears it, which matters because a window that is torn down deliberately can
+ * outlive its document.
+ */
+const dropHandlers = new Set();
+
+/**
+ * Deliver a dropped set of paths to every handler this window registered.
+ *
+ * Exported because it is the testable half: the OS subscription below needs a
+ * real webview, but the delivery contract (paths + info, one bad handler must
+ * not stop the others) can be driven under `node --test`.
+ */
+export function deliverWindowDrop(paths, info) {
+  let delivered = 0;
+  for (const fn of [...dropHandlers]) {
+    try {
+      fn(paths, info);
+      delivered += 1;
+    } catch (e) {
+      // One plugin's bad handler is not the next one's problem.
+      console.error('[pluginwin] onDrop handler failed', e);
+    }
+  }
+  return delivered;
+}
+
+/**
+ * Watch THIS window's own drag-and-drop, and hand `drop` to the bridge.
+ *
+ * `onDragDropEvent` is core (`@tauri-apps/api/webview`) and needs no
+ * permission. Tauri has `dragDropEnabled` on by default, which is what
+ * suppresses the browser's HTML5 `ondrop` — so a plugin window that wants drops
+ * must use `bridge.onDrop`, exactly like a view must use `ctx.onDrop`.
+ *
+ * Every phase is logged except `over`, which fires continuously while the
+ * pointer moves and would be a flood rather than a signal. This mirrors
+ * `watchDrops` in boot.js: "the drop never arrived" and "the drop arrived and
+ * nobody was listening" must not look the same in the log.
+ *
+ * NOT fatal: a window that cannot report drops is still a usable window, and on
+ * a platform without the event this is the only symptom.
+ */
+async function watchWindowDrops(label) {
+  try {
+    const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+    await getCurrentWebview().onDragDropEvent((event) => {
+      const payload = event?.payload;
+      const type = payload?.type ?? 'unknown';
+      if (type !== 'over') console.info(`[pluginwin] file drop: ${type}`);
+      if (type !== 'drop') return;
+      deliverWindowDrop(payload.paths ?? [], { label });
+    });
+  } catch (e) {
+    console.warn('[pluginwin] file drop watch unavailable:', e?.message ?? e);
+  }
+}
+
+/**
  * Window-scoped SDK. Mirrors `ctx` exactly — same method names, same async
  * shapes, same permission rules — so `ctx.js` and this file stay two views of
  * one contract rather than two dialects.
@@ -253,6 +329,30 @@ export function makeBridge(pluginId, label, manifest) {
         fn(env);
       }),
 
+    /**
+     * Files dropped on THIS window. `fn(paths, info)` with `info = { label }`.
+     *
+     * Same shape as `ctx.onDrop` — including the returned Promise of a cancel
+     * function — with one difference in the second argument: a view gets
+     * `{ viewId }` (which view the user aimed at) and a window gets
+     * `{ label }` (there is only one possible target, so there is nothing to
+     * route and nothing to disambiguate).
+     *
+     * **No permission**, for the same reason as `ctx.onDrop`: a drop lands on
+     * the window the user aimed at, so a plugin can only ever see its own.
+     *
+     * **Do not write an HTML5 `ondrop` instead** — Tauri's `dragDropEnabled`
+     * is on by default and silently suppresses the browser's drag events, which
+     * looks like "nothing happened" with no error.
+     */
+    onDrop: (fn) => {
+      if (typeof fn !== 'function') {
+        return Promise.reject(new Error(`${prefix} onDrop(fn): fn must be a function`));
+      }
+      dropHandlers.add(fn);
+      return Promise.resolve(() => dropHandlers.delete(fn));
+    },
+
     // Every stream creator registers the handle for teardown, exactly like
     // `ctx` does. The close is fire-and-forget because `dispose()` runs on
     // `beforeunload`, where nothing can be awaited — but it IS issued, which is
@@ -318,6 +418,9 @@ export function makeBridge(pluginId, label, manifest) {
      * the result, which is why the stream closes above are fire-and-forget.
      */
     dispose: () => {
+      // Drops first: it is the one input that is not a `hub` subscription, so
+      // nothing else in this teardown would release it.
+      dropHandlers.clear();
       // `[...disposer]`, not `disposer`: `reverse()` returns the SAME array, so
       // clearing `disposer.length` below would empty the list we are about to
       // run and turn this whole method into a no-op. (It did exactly that until
@@ -398,6 +501,11 @@ export async function mountPluginWindow() {
 
     const bridge = makeBridge(pluginId, label, item.manifest);
     window.__pluginBridge = bridge;
+
+    // This window watches its OWN drag-and-drop. Not awaited into the failure
+    // path: a window that cannot report drops is still a usable window.
+    await watchWindowDrops(label);
+
     await mod.mountWindow(bridge);
   } catch (e) {
     console.error('[pluginwin] load failed', e);

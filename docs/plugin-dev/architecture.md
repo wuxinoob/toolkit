@@ -85,7 +85,20 @@ await ctx.windows.create('plugin-my-win', {
 | **transport** | `invoke` · `channel` · `event` · `stdio` · `pty` · `in-process` |
 | **codec** | `json-envelope` · `line-json` · `raw-binary` · `object` |
 
-八个方案登记在 `src/protocol/registry.js`。**你通常不直接选它们** ——
+**八个方案**登记在 `src/protocol/registry.js`（`src-tauri` 侧另有一份镜像）：
+
+| 方案 id | 载体 · 编码 | 方向 |
+|---|---|---|
+| `rpc` | invoke · json-envelope | 上行 |
+| `channel-in` | **invoke（批量）** · json-envelope | 上行 |
+| `channel-json` | channel · json-envelope | 下行 |
+| `channel-raw` | channel · raw-binary | 下行 |
+| `event-bus` | event · json-envelope | 下行 |
+| `stdio-line` | stdio · line-json | 双向 |
+| `pty-stream` | pty · raw-binary | 双向 |
+| `in-process` | in-process · object | 下行 |
+
+**你通常不直接选它们** ——
 你调 `ctx.rpc` / `ctx.stream` / `ctx.pty` / `ctx.sidecar` / `ctx.bus`，
 每个方法背后是一个固定组合，且**形状一致**（方案差异只体现在默认值上）：
 
@@ -103,6 +116,8 @@ ctx.bus.publish('topic', payload)            // 广播给所有窗口
 
 **上行流的载体是批量 invoke**，不是 Channel —— Tauri 的 `Channel` 是单向的，
 JS 侧只有接收回调、**没有 `send`**。所以别去找「从 JS 推给 Rust」的 Channel。
+这就是 `channel-in` 存在的理由，也是它为什么是八个方案里唯一一个
+「载体不是自己的名字」的方案。
 
 ---
 
@@ -136,7 +151,7 @@ JS 侧只有接收回调、**没有 `send`**。所以别去找「从 JS 推给 R
 
 | | 看什么 | 在哪 |
 |---|---|---|
-| **① 启动日志** | 每个插件的状态、分阶段与**分插件**耗时 | `%APPDATA%\com.tan18.toolbox\debug.log` |
+| **① 启动日志** | 每个插件的状态、分阶段与**分插件**耗时（内置的只有 `builtin.procman` / `builtin.streamlab`，其余是你自己装的） | `%APPDATA%\com.tan18.toolbox\debug.log` |
 | **② 通信 trace** | 网关层的每一笔往来，**含权限拒绝** | 同一个文件，`hub.setTrace(true)` 打开 |
 | **③ 调试句柄** | 运行时的 store / 事件 / 会话 / 流 | `window.__toolbox`（DevTools 控制台） |
 | **④ 自检** | 15 项底层契约 | `await window.__toolbox.selftest()` |
@@ -146,12 +161,13 @@ JS 侧只有接收回调、**没有 `send`**。所以别去找「从 JS 推给 R
 ```
 boot timing (ms): debug 10 | reap 12 | uikit 399 | schemes 402 | builtins 429 | external 640 | hotkey 646
   plugin load (ms): builtin.procman 24 | builtin.streamlab 3 | …
-boot ok: 10 plugins, 6 views, active=builtin.procman/procman
+boot ok: 7 plugins, 9 views, active=builtin.procman/procman
   plugin my.plugin: error — [plugin:my.plugin] view "main" not declared in manifest.contributes.views
 ```
 
 **`error — <原因>` 就是答案**，不用猜。而 `plugin load` 那一行是分插件的 ——
 **`bootPlugins` 是串行 await**，所以一个插件慢会拖住后面所有插件的视图。
+（插件总数 = 2 个内置 + 你自己装的那些，所以这个数字每台机器都不同。）
 
 ### ② 通信 trace
 
@@ -165,11 +181,11 @@ rpc -> my.plugin host/info 3ms ok
 rpc -> my.plugin proc/spawn 1ms err: plugin `my.plugin` lacks permission `rpc:proc`
 ```
 
-**这是唯一能看到「你没写的那些调用」的地方。** 各插件自己 `ctx.log` 的行只反映它
-**想**写什么；trace 反映**实际发生**了什么。
+**这是唯一能看到「你没写的那些调用」的地方。** 插件的 `ctx.log` 只到 webview console
+（**不在这个文件里**），它反映的是作者**想**说什么；trace 反映**实际发生**了什么。
 
 > ⚠️ **第一列是「调用方自称的身份」，不是宿主核实的身份。**
-> 这个区别本身是个已知问题 —— 见 [COMMS-AUDIT](../../COMMS-AUDIT-2026-09-23.md)。
+> 这个区别本身是个已知问题 —— 见 [COMMS-AUDIT](../COMMS-AUDIT-2026-09-23.md)。
 > trace 刻意把它印在最前面，因为**一个 `__host__` 出现在插件的调用里就是那个形状**。
 
 ### ③ 调试句柄

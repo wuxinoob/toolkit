@@ -43,7 +43,7 @@ globalThis.window = {
 };
 
 // dynamic imports AFTER shims are in place
-const { makeBridge } = await import('../src/host/pluginwin-host.js');
+const { makeBridge, deliverWindowDrop } = await import('../src/host/pluginwin-host.js');
 const { hub } = await import('../src/protocol/hub.js');
 
 /** A host that accepts everything the bridge might open. */
@@ -182,4 +182,76 @@ test('log.* prefixes the plugin id, like ctx.log', () => {
     console.info = real;
   }
   assert.deepEqual(calls, [['[plugin:p.logger]', 'hello', 1]]);
+});
+
+// ------------------------------- onDrop (files) -------------------------------
+
+test('onDrop receives the paths and the window label, and needs no permission', async () => {
+  // A drop on a plugin window lands on the ONE plugin that owns the window, so
+  // there is nothing to route and nothing to authorise — the same reasoning as
+  // ctx.onDrop, which is why the permission list here is empty.
+  const bridge = makeBridge('p.drop', 'plugin-mywindow', { permissions: [] });
+  const seen = [];
+  const off = await bridge.onDrop((paths, info) => seen.push([paths, info]));
+
+  assert.equal(deliverWindowDrop(['C:/a.txt', 'C:/b.md'], { label: 'plugin-mywindow' }), 1);
+  assert.deepEqual(seen, [
+    [['C:/a.txt', 'C:/b.md'], { label: 'plugin-mywindow' }],
+  ]);
+
+  off();
+  assert.equal(deliverWindowDrop(['C:/c.txt'], { label: 'plugin-mywindow' }), 0);
+});
+
+test('onDrop has the same shape as ctx.onDrop: a Promise of a cancel function', async () => {
+  const bridge = makeBridge('p.drop2', 'plugin-p', {});
+  const off = bridge.onDrop(() => {});
+  assert.equal(typeof off.then, 'function', 'the return value must be awaitable, like ctx.onDrop');
+  const unsubscribe = await off;
+  assert.equal(typeof unsubscribe, 'function', 'and it must resolve to an unsubscribe function');
+  unsubscribe(); // the set is per-window; do not leak this into the next test
+
+  await assert.rejects(
+    () => bridge.onDrop('not a function'),
+    /onDrop\(fn\): fn must be a function/,
+    'a bad argument should fail loudly rather than register nothing',
+  );
+});
+
+test('one throwing drop handler does not stop the next one', async () => {
+  const bridge = makeBridge('p.drop3', 'plugin-p', {});
+  const seen = [];
+  const offBad = await bridge.onDrop(() => {
+    throw new Error('this plugin is broken');
+  });
+  const offGood = await bridge.onDrop((paths) => seen.push(paths));
+
+  const errs = [];
+  const real = console.error;
+  console.error = (...a) => errs.push(a);
+  try {
+    assert.equal(deliverWindowDrop(['C:/x'], { label: 'plugin-p' }), 1, 'only the good handler counts');
+  } finally {
+    console.error = real;
+    // The handler set is per-WINDOW, not per-bridge (one window, one realm, one
+    // bridge), so a test that leaves a handler behind leaks it into the next
+    // test. Release explicitly rather than relying on a later dispose().
+    offBad();
+    offGood();
+  }
+  assert.deepEqual(seen, [['C:/x']], 'the second handler must still run');
+  assert.equal(errs.length, 1, 'and the failure must be reported, not swallowed');
+});
+
+test('dispose() clears the window\u2019s drop handlers, so a torn-down window is inert', async () => {
+  const bridge = makeBridge('p.drop4', 'plugin-p', {});
+  await bridge.onDrop(() => {
+    throw new Error('a stale window must not run this');
+  });
+  await bridge.dispose();
+  assert.equal(
+    deliverWindowDrop(['C:/after-dispose'], { label: 'plugin-p' }),
+    0,
+    'a disposed window must not deliver drops',
+  );
 });

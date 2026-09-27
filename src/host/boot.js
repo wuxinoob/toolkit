@@ -243,7 +243,7 @@ export async function boot() {
     await reapOrphanSessions();
     mark('reap');
 
-    // The component factory loads all 376 components. `activate()` awaits it too,
+    // The component factory loads the whole vocabulary (~377 exports). `activate()` awaits it too,
     // but whoever gets there FIRST pays for it — which used to be whichever
     // plugin happened to be first, making the per-plugin timings a lie (the
     // first plugin's number was really the UI kit's).

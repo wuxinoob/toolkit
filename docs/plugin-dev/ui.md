@@ -141,6 +141,16 @@ el('card', {}, el('card-header', {}, el('card-title', {}, 'T')));
 `class: 'tb-btn tb-btn-primary'` 和 `el('button', { variant: 'primary' })`
 最终是同一个东西。
 
+### 想知道有哪些 tag？问工厂，别翻源码
+
+```js
+const tags = ctx.ui.components();   // → ['accordion', 'alert', 'button', 'card', …]（已排序）
+```
+
+返回宿主这一刻真正装上的组件名，也就是 `el(tag, …)` 接受的那一套。
+**用它而不是照抄文档里的清单** —— 文档给的是节选，这个方法给的是实况。
+拼错的 tag 不会静默失败：`el('cardd', …)` 会在调用处抛「unknown tag」。
+
 ---
 
 ## `native()` 什么时候用
@@ -155,6 +165,35 @@ native('form', { onSubmit: (ev) => { ev.preventDefault(); /* … */ } }, …)
 ```
 
 **判据**：你要的是浏览器原生行为（表单提交、`FormData`、原生校验）→ 用 `native`。
+
+---
+
+## ⚠️ 组件工厂只在主窗口 —— 插件窗口里**没有** `ctx.ui`
+
+**这是最容易踩空的一处不对称。** 你按本页搭好的界面搬进独立窗口
+（`mountWindow(bridge)`）会拿到 `undefined is not a function`，因为
+**`bridge` 上根本没有 `ui`** —— 组件工厂、站内 toast、overlay 都不在。
+
+| 你用的 | 主窗口视图 | 插件窗口 | 换成什么 |
+|---|---|---|---|
+| `ctx.ui.el` / `render` / `native` / `node` | ✅ | ❌ | `.tb-*` 类 + 内联 `style`（或自己注入 `<style>`） |
+| `ctx.ui.notify`（toast） | ✅ | ❌ | 自己在界面里画一行状态 |
+| `ctx.ui.notifyOS` | ✅ | ❌ | `bridge.request('notify', 'send', { title, body })`（需 `rpc:notify`） |
+| `ctx.ui.mountOverlay` | ✅ | ❌ | 不需要 —— 整个窗口都是你的 |
+
+**为什么组件工厂不镜像**：它的观感**全部来自 Tailwind 工具类**，而插件窗口的样式表
+**故意不含工具类**（只有令牌 + `.tb-*`）。镜像它等于给每个插件窗口加回 ~122 KB utilities，
+或再维护一套裁剪版组件 —— 不值。
+
+**但 `notifyOS` 是另一回事**：OS 通知与 DOM / CSS 毫无关系，它只是被放进了 `ui`
+命名空间然后跟着整块被跳过了。替代写法见 [bridge.md](bridge.md) §4。
+
+**结论**：**插件窗口里的富 UI 用 `.tb-*` + 令牌 + 内联布局搭** —— 也就是本页前面
+「三件套」那套写法，只是没有工厂可用。好消息是那个窗口整块 DOM 都是你的，
+想彻底自绘就注入自己的 `<style>`。
+
+> 完整的 `ctx` / `bridge` 差异矩阵（含 `windows` / `registerView` / `focusView` /
+> `onDrop` 的 `info` 差异 / `log` 落点）在 [bridge.md](bridge.md)，那是唯一权威清单。
 
 ---
 
@@ -215,10 +254,14 @@ native('form', { onSubmit: (ev) => { ev.preventDefault(); /* … */ } }, …)
 
 ## 想要更多自由度？
 
-**现在的路径**：`.tb-*` 常驻 CSS + 内联布局。产物 164K / **26KB gzip**
-（`dist/assets/index-*.css`，实测）。其中大部分是拉进来的 376 个组件词汇表，
-`.tb-*` 那部分很小。
-且外部插件拿得到全部观感。
+**现在的路径**：`.tb-*` 常驻 CSS + 内联布局，外部插件拿得到全部观感。
+外壳的产物是 170 KB CSS（`dist/assets/main-*.css`，一次实测；gzip 约 26 KB），
+其中大部分是组件词汇表 —— **377 个组件导出**，而 `.tb-*` 那部分很小。
+
+> **这个数字不该手抄。** 准确值问运行时：`ctx.ui.components().length`
+> （返回已装上的 tag 名，见上文）。文档里这个数字由
+> `tests/plugin-docs.test.mjs` 盯着，改了组件就必须同步 ——
+> 它以前写的是 376，漂了一个也没人发现。
 
 **自带的 CSS 目前是全局的** —— 裸 `<style>` 会污染整个应用。
 要真正自由的方案需要先有 **shadow DOM 隔离**（规划中的 L4），

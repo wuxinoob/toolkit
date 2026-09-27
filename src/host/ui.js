@@ -152,8 +152,8 @@ export async function loadUiKit() {
 
   // Loaded in PARALLEL, not one at a time.
   //
-  // This used to be `for (… ) await load()`, which made the browser fetch 376
-  // modules strictly sequentially — a 376-deep waterfall. Measured at ~2.1s in
+  // This used to be `for (… ) await load()`, which made the browser fetch every
+  // module strictly sequentially — a ~377-deep waterfall. Measured at ~2.1s in
   // dev, and it lands on whichever plugin activates FIRST (`bootPlugins` awaits
   // each plugin in turn), so it looked like that plugin was slow.
   //

@@ -6,7 +6,7 @@
 |---|---|
 | 最小插件（一个视图） | `examples/plugins/fileprobe/` |
 | 一次跑完所有接口（活的集成检查） | `examples/plugins/probe/` |
-| 组件词汇表大全（376 个 tag） | `examples/plugins/gallery/` |
+| 组件词汇表大全（tag 名单用 `ctx.ui.components()` 查） | `examples/plugins/gallery/` |
 | 文件访问（选择器 / 拖放）的现场验证 | `examples/plugins/fileprobe/` |
 | 剪贴板 / 截屏 / 拖放的现场验证 | `examples/plugins/senses/` |
 | 内嵌终端 | `src/plugins/streamlab.js` |

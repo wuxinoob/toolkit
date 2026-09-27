@@ -158,7 +158,7 @@ OS 按下 → Rust handler → app.emit(BROADCAST_EVENT, topic="hotkey:<action>"
 > ⚠️ **一处不对称**：`ctx.onHotkey` 会按 owner 过滤，**但直接
 > `ctx.bus.subscribe('hotkey:x')` 不会** —— 所以一个插件如果猜到别人的 action 名，
 > 能收到那个热键事件。action 名不该被当作秘密，但也不该依赖它来隔离。
-> 见 [COMMS-AUDIT](../../COMMS-AUDIT-2026-09-23.md)。
+> 见 [COMMS-AUDIT](../COMMS-AUDIT-2026-09-23.md)。
 
 ### 命令式（运行时增删，**需要 `rpc:hotkey`**）
 
@@ -386,13 +386,32 @@ file drop: ignored — no listener at all for view msglog.demo/msglog (plugin ms
 每个插件都会按「这是不是我的视图」过滤。所以判断「有没有生效」要看**界面**，
 不是看这一行。**这一行真正的用处是告诉你：drop 到了，以及它被路由给了哪个插件。**
 
-**⚠️ 插件自己的窗口收不到拖放。** `onDrop` 是**视图级**的能力 —— 拖放由主窗口监听，
-再按「当前显示的是哪个视图」路由。插件窗口里没有视图这个概念，所以往插件窗口拖文件
-**完全没反应、也不报错**（`dragDropEnabled` 默认开启还会一并压掉 HTML5 的 `ondrop`）。
+### 插件自己的窗口：`bridge.onDrop`（**同样不需要权限**）
 
-要让插件窗口也能收，需要的**不是权限**，而是让插件窗口**自己监听自己的拖放** ——
-归属是已知的（`?plugin=<id>` 在 URL 里），所以**不需要任何路由**。
-见 [FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md) §7.4。
+**插件窗口也能收拖放**（2026-09-27 起）。做法与视图**不同**，但没有更复杂 ——
+**它更简单**：一个插件窗口只属于一个插件，归属写在 URL 里（`?plugin=<id>`），
+所以主窗口那套「按当前显示的视图路由」在这里**根本不存在**：谁收到谁处理。
+
+```js
+// 插件窗口里（mountWindow(bridge)）
+const off = await bridge.onDrop((paths, info) => {
+  console.log(paths);       // 用户拖进来的路径数组
+  console.log(info.label);  // 本窗口的 label —— 注意**不是** viewId
+});
+off();
+```
+
+| | 主窗口视图 `ctx.onDrop` | 插件窗口 `bridge.onDrop` |
+|---|---|---|
+| 形状 | `fn(paths, info)` → Promise of 取消函数 | **完全一样** |
+| `info` | `{ viewId }`（落在哪个视图上） | `{ label }`（就是本窗口） |
+| 权限 | 不需要 | 不需要 |
+| 谁监听 | 主窗口监听一次，按活动视图路由 | 窗口自己监听自己 |
+
+**⚠️ 不要写 HTML5 的 `ondrop`** —— Tauri 的 `dragDropEnabled` 默认开启，
+会**静默压制**浏览器的拖放事件（两个窗口都一样）。用 `bridge.onDrop`。
+
+细节与迁移清单见 [bridge.md](bridge.md) §1。
 
 ### 拿到路径之后怎么读？
 
@@ -444,8 +463,9 @@ const shot = await ctx.screen.capture();       // 不传参数 = 主显示器
 // shot = { png: <base64>, width, height, monitor, name, bytes }
 img.src = `data:image/png;base64,${shot.png}`;
 
-// 文件拖放 —— 宿主监听一次，只发给**当前活动视图**
+// 文件拖放 —— 主窗口侧只发给**当前活动视图**
 ctx.onDrop((paths, info) => console.log(paths, info.viewId));
+// 插件窗口侧：bridge.onDrop((paths, info) => …)，info 是 { label }
 ```
 
 **要点**：
@@ -458,9 +478,10 @@ ctx.onDrop((paths, info) => console.log(paths, info.viewId));
   **一切**，这不是 `rpc:stream` 所描述的东西，所以提供者**有自己的权限**。
 - **`capture()` 是网关最重的载荷**（1080p PNG ≈ 0.5–2 MB，base64 再大三分之一）。
   一次性可以，**别放进循环**。
-- **拖放只到活动视图。** 这是刻意的：否则一个插件能静默捡走本该给别人的路径。
-  也正因为如此 `onDrop` **不需要权限** —— 你只会看到用户**对着你的视图**丢下的东西。
-  丢在别的视图上时，`debug.log` 会写 `no listener for view …`，而不是保持沉默。
+- **拖放只到活动视图（主窗口侧）。** 这是刻意的：否则一个插件能静默捡走本该给别人的路径。
+  也正因为如此 `onDrop` **不需要权限** —— 你只会看到用户**对着你的界面**丢下的东西
+  （视图是你的，窗口也是你的）。丢在别的视图上时，`debug.log` 会写
+  `no listener for view …`，而不是保持沉默。
 
 ---
 
@@ -712,37 +733,48 @@ async function closeMe() {
 
 ### `bridge`（独立窗口）≠ `ctx`（主窗口）
 
-**它们不是同一个对象，能力也不对等。** 独立窗口里只有 `bridge`：
+**它们不是同一个对象，能力也不对等 —— 差异恰好 8 个。**
 
-| 能力 | 主窗口 `ctx` | 独立窗口 `bridge` |
+| | 只有主窗口 `ctx` | 只有插件窗口 `bridge` |
 |---|---|---|
-| `storage` / `bus` / `events` / `onHotkey` | ✅ | ✅ |
-| `stream` / `streamRaw` / `uplink` / `sidecar` / `pty` | ✅ | ✅ |
-| `clipboard` / `screen` | ✅ | ✅ |
-| `files`（原生对话框） | ✅ | ✅ |
-| `log` | ✅ | ✅ |
-| `closeStream` | ✅ | ✅ |
-| `sessions` / `schemes` / `schema` / `protocol` | ✅ | ✅ |
-| `windows.create` / `windows.control` | ✅ | ❌ **没有** |
-| `registerView` / `focusView` | ✅ | ❌ **没有**（视图在主窗口里） |
-| `onDrop` | ✅ | ❌ **没有**（拖放只送给活动视图） |
-| `ui`（组件工厂 / toast） | ✅ | ❌ **没有**（**有意为之**，见下） |
-| `rpc(svc, act, p)` | ✅ | ⚠️ 叫 **`request(svc, act, p)`** —— 同一个东西，两个名字 |
-| `drag()` / `close()` | ❌ 不需要 | ✅ **独有** |
-| `cleanup()` / `dispose()` | ✅（`ctx.cleanup`） | ✅ |
+| 能力 | `ui` · `windows` · `registerView` · `focusView` | `label` · `close` · `drag` · `dispose` |
+
+**其余 26 个能力两边都有**，包括 `storage` / `bus` / `events` / `onHotkey` / `onDrop` /
+`stream` / `streamRaw` / `uplink` / `sidecar` / `pty` / `clipboard` / `screen` /
+`files` / `log` / `closeStream` / `sessions` / `schemes` / `schema` / `protocol` /
+`cleanup`。
+两者是**同一套信封、同一个网关、同一个权限注册表**，所以「插件窗口里少一项能力」
+从来不是因为管道不同，而是因为那一项**本来就只属于某个窗口**。
+
+> **完整矩阵、每一处的「为什么」、以及每一处的替代写法，都在
+> [bridge.md](bridge.md)。** 清单只有那一份 —— 这里不再重复，否则两份会先过期一份。
 
 **所以独立窗口想再开一个窗口，要请主窗口代劳** ——
 `bridge.bus.publish('my.plugin:open-window', {...})`，主窗口订阅后 `ctx.windows.create(...)`。
 **窗口的创建与尺寸控制权专属创建方**，这是刻意的。
 
-**表里 ❌ 的那几项不是「忘了做」，而是「主窗口才有的东西」**：视图、拖放路由、窗口所有权。
-但 `clipboard` / `screen` / `files` / `log` / `closeStream` 曾经也在 ❌ 里 —— 那没有道理，
-同一段代码在视图里能用、在插件自己的窗口里就 `undefined is not a function`。**`files` / `log` / `closeStream` 都已补上。**
+**`ui` 整块不在**（`ctx.ui` 的十个成员一个都没有），但它们**不是一回事**：
 
-**`ui` 是有意不镜像的（2026-09-26 决定）。** 组件工厂的观感**全部来自 Tailwind 工具类**，
-而插件窗口的样式表**故意不含工具类**（只有令牌 + `.tb-*` —— 实测每个插件窗口 5 KB JS + 19 KB CSS）。
-把它镜像过去意味着给**每个**插件窗口加回 ~122 KB utilities，或再维护一套裁剪版组件 —— 不值。
-**插件窗口要富 UI，就用 `.tb-*` 自己搭。**
+- **组件工厂**（`el` / `render` / `native` / `node` / `destroy` / `components`）、
+  **站内 toast**（`notify`）、**overlay**（`mountOverlay` / `unmountOverlay`）
+  —— **合理缺席**：观感来自 Tailwind 工具类，toaster 与 overlay 都是外壳的 DOM，
+  而插件窗口两个都不加载（前者还省下 ~122 KB utilities）。
+- **`notifyOS` 是连带缺席**：OS 通知和 DOM / CSS 毫无关系，它只是被放进了 `ui` 命名空间
+  然后跟着整块被跳过了。**替代写法是现成的**：
+
+  ```js
+  // 插件窗口里发系统通知（需要 plugin.json 声明 "rpc:notify"）
+  await bridge.request('notify', 'send', { title: bridge.manifest.name, body: '构建完成' });
+  ```
+
+  注意两点：`title` 这里**没有**「默认插件名」的照顾（服务侧默认是 `"Toolbox"`），
+  而失败会 **reject**（`ctx.ui.notifyOS` 是解析成 `false`），所以要自己 catch。
+
+**插件窗口要富 UI，就用 `.tb-*` 自己搭。** 详见 [bridge.md](bridge.md) §4 与 [ui.md](ui.md)。
+
+**`onDrop` 两边都有，但第二个参数不同**：视图里 `fn(paths, { viewId })`，
+窗口里 `fn(paths, { label })` —— 主窗口要回答「这次拖放是给哪个视图的」，
+而插件窗口只属于一个插件，没有第二个可能的目标。见 [bridge.md](bridge.md) §1。
 
 > **⚠️ 关窗口会释放你开的一切，包括流。** `bridge.dispose()` 在 `beforeunload` 里被调用，
 > 它会关掉你开的 `stream` / `pty` / `sidecar` —— 这一条不是可有可无的清理：那些是宿主侧的
@@ -766,14 +798,23 @@ async function closeMe() {
 ## 我要写日志 / 报错
 
 ```js
-ctx.log.info('message');     // 带 [plugin:<id>] 前缀
+ctx.log.info('message');     // 带 [plugin:<id>] 前缀，进控制台
 ctx.log.warn('…');
 ctx.log.error('…');
 ctx.ui.notify('给用户看的一句话', 'error');
 ```
 
-`ctx.log` 的输出会进宿主的调试日志 —— 排查时这是**唯一在 webview 之外**留痕的通道，
-所以重要状态**一定要写**。
+**`ctx.log` 只到当前 webview 的 console**（它就是三个带前缀的 `console.*` 包装）——
+**不会**进 `{appData}/debug.log`。这一条曾经被本文写错，所以写清楚：
+
+| 你想让日志去哪 | 怎么做 | 权限 |
+|---|---|---|
+| 开发时看一眼 | `ctx.log.*`（或插件窗口里的 `bridge.log.*`） | — |
+| **事后还能读**（webview 之外） | `await ctx.rpc('host', 'write_debug_log', { content })` | `rpc:host` |
+
+`debug.log` 里本来就有的是**宿主自己**写的部分：启动与分插件耗时、通信 trace
+（`hub.setTrace(true)`）、自检报告。**插件要留痕得自己写** ——
+所以重要状态要么走 `write_debug_log`，要么在界面上说出来。
 
 ---
 
@@ -800,7 +841,9 @@ export default {
 ```
 
 **`activate()` 会被 `await`，而且是串行的。** 一个插件慢，后面所有插件的视图都要等。
-实测九个内置插件总共 ~1.7s，这就是启动时侧栏空几秒的原因。
+内置插件现在只剩两个（`builtin.procman` / `builtin.streamlab`），
+所以启动耗时里的大头是**外部插件**和你自己的 `activate()` ——
+一个只应该出现在 Settings 里的插件，也会让侧栏空几秒。
 
 **怎么做**：
 - 慢活（网络、子进程、大文件）**不要**在 `activate()` 里 await

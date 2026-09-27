@@ -1,6 +1,6 @@
 # The toolbox message protocol
 
-One envelope, seven schemes, three entry points. This document is the contract;
+One envelope, 8 schemes, a table-driven gateway. This document is the contract;
 `src/protocol/` (JS) and `src-tauri/src/protocol/` (Rust) are its two mirrors,
 and both validate the same rules.
 
@@ -197,6 +197,16 @@ ctx.schemes()                             // the scheme table (local, no IPC)
 ctx.schema()                              // what this host supports
 ctx.onHotkey(action, fn)                  // a declared global hotkey
 ctx.protocol                              // the envelope constructors + constants
+ctx.files.pick / save / message           // native dialogs (raw command, gated)
+ctx.clipboard.read / write / watch        // rpc + channel-json (watch is a stream)
+ctx.screen.monitors / capture             // rpc
+ctx.ui.el / render / notify / notifyOS    // the component factory and toasts
+ctx.registerView(viewId, render)          // a view in the main window
+ctx.focusView(viewId)                     // bring one of YOUR views forward
+ctx.onDrop(fn)                            // files dropped on YOUR active view
+                                          //   (a plugin window uses bridge.onDrop, same shape)
+ctx.windows.create / control / exists     // multi-window (the one non-envelope corner)
+ctx.closeStream(ch) / ctx.log.*           // teardown and diagnostics
 ```
 
 ### The scheme never changes the shape of a call
@@ -249,8 +259,13 @@ built for api 1 that calls the result of `subscribe`/`on` synchronously must be
 re-deployed. Built-in plugins ship with the host and cannot go stale, which is
 why only external examples declare `api`.
 
-A secondary window gets the same surface through `bridge` (see
-`src/host/pluginwin-host.js`), so plugin code ports between the two contexts.
+A secondary window gets **almost** the same surface through `bridge`
+(`src/host/pluginwin-host.js`): 26 capabilities on both sides, and exactly 8
+one-sided — `ui` / `windows` / `registerView` / `focusView` exist only
+on `ctx`, while `label` / `close` / `drag` / `dispose` exist only on `bridge`.
+The differences are deliberate except for `ui.notifyOS`, which is collateral.
+Full matrix and the substitute for each:
+[`plugin-dev/bridge.md`](./plugin-dev/bridge.md).
 
 ### Timeouts
 
@@ -292,7 +307,10 @@ instead of discovering the surface by failing.
 ```jsonc
 { "protocol": 1,
   "services": { "storage": ["get","set","remove","keys"], "hotkey": ["register", …], … },
-  "providers": ["ticker", "blob"],
+  "providers": ["ticker", "blob", "clipboard"],
+  "providerPermissions": { "clipboard": "rpc:clipboard" },
+  "sinks": ["proc"],
+  "codes": ["denied", "unknown_service", …],
   "schemes": [ … ], "transports": [ … ] }
 ```
 
@@ -300,12 +318,17 @@ The service/action half is authoritative: it is generated from the same
 `Service::actions()` lists the gateway validates against, so it cannot drift
 from what actually works.
 
+`providerPermissions` is the additive half of the same idea: a stream provider
+whose DATA is more sensitive than `rpc:stream` declares its own permission here
+(`clipboard` does), so a plugin can *ask* what a provider needs instead of
+discovering it by being denied.
+
 ---
 
 ## 5. Entry points (native)
 
-Three commands, all table-driven. The gateway contains no per-service and no
-per-transport branching.
+Every native entry point is one of a small table-driven family, and the gateway
+contains no per-service and no per-transport branching.
 
 ```rust
 plugin_rpc(plugin_id, msg: Envelope) -> Result<Envelope, String>
@@ -341,7 +364,19 @@ match table().iter().find(|s| s.name() == service) {
 
 Adding a capability is a new table entry. `lib.rs` does not change.
 
-The six services: `storage`, `host`, `proc`, `stream`, `bus`, `hotkey`.
+The nine services: `storage`, `host`, `proc`, `stream`, `bus`, `hotkey`,
+`notify`, `clipboard`, `screen`.
+
+The five above are the whole **data plane**. The rest of the invoke handler is
+host-side management that a plugin cannot reach — plugin discovery
+(`plugin_scan` / `plugin_info` / `plugin_read_entry` / `plugin_open_dir`),
+autostart (`host_autostart_get` / `host_autostart_set`), orphan reaping
+(`plugin_reap_orphans`) and `plugin_dialog`, which is a raw command because a
+modal dialog needs the main thread's message loop and the gateway is
+synchronous. **Every command is `async fn`** — a non-async Tauri command runs on
+the message thread and blocks every window, and the symptom is "the UI is
+laggy", not "a command blocked". `tests/main-thread.test.mjs` enforces it. The
+full inventory of 13 is in [`INTERFACES.md`](./INTERFACES.md) §1.
 
 ---
 
@@ -357,6 +392,14 @@ is **denied**, so bypassing `ctx` and calling `invoke` directly still gets a
 `denied` envelope. The host identity `__host__` is implicitly allowed, which is
 how host-originated calls (Settings reading a plugin's storage, the selftest)
 reach the gateway.
+
+> ⚠️ **Known gap: identity is claimed, not proven.** `plugin_rpc` takes the
+> plugin id as a caller-supplied argument, and `__host__` is allowed everything —
+> so a plugin sharing the main window's JS context can reach every service by
+> naming itself `__host__`. The fix is "token is identity" (Rust mints a token at
+> `plugin_register`, the gateway takes the token instead of an id). Analysis and
+> work estimate: [`COMMS-AUDIT-2026-09-23.md`](./COMMS-AUDIT-2026-09-23.md) §1;
+> classification and priority: [`INTERFACE-REVIEW-2026-09-27.md`](./INTERFACE-REVIEW-2026-09-27.md) §3.
 
 ### One capability, one permission
 

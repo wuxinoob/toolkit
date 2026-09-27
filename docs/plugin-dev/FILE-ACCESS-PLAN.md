@@ -131,7 +131,9 @@ payload 是判别联合：`{type:'over', position}` / `{type:'drop', paths}` / `
 | 插件要读某个路径 | 宿主只读**用户刚交出来的那些路径** | 上一行的授权 |
 
 ```js
-// 插件侧（示意）
+// ⚠️ 路线 D 的示意代码 —— readText / ctx.files.onDrop **都不存在**，
+//    这是「如果采用路线 D 会长什么样」，不是可以照抄的 API。
+//    真实存在的是：ctx.files.pick / save / message，以及 ctx.onDrop（见 api.md）。
 const files = await ctx.files.pick({ multiple: true });   // 用户选了什么
 const text  = await ctx.files.readText(files[0]);         // 只读用户交出来的
 ctx.files.onDrop((paths) => { … });                        // 用户拖进来的
@@ -296,7 +298,7 @@ A 还顺带保住「所有插件能力都走网关」这个统一性 —— 于�
 - 现状：往插件窗口拖文件**完全没反应、也不报错**（`dragDropEnabled` 默认开启还会压掉 HTML5 `ondrop`）
 
 **② `ui` 记为「主窗口才有」（已定，不再镜像）。**
-`ctx.ui` 是 Vue + 376 个 shadcn 组件，观感来自 **Tailwind 工具类**；
+`ctx.ui` 是 Vue + shadcn 组件词汇表（当前 377 个导出，见 [ui.md](ui.md)），观感来自 **Tailwind 工具类**；
 而插件窗口的样式表**故意不含工具类**（`plugin.css` = theme + preflight + `.tb-*`，实测 19 KB CSS + 5 KB JS）。
 镜像它意味着给每个插件窗口加回 ~122 KB utilities，或另做一份裁剪版 —— 不值。
 
@@ -312,7 +314,16 @@ A 还顺带保住「所有插件能力都走网关」这个统一性 —— 于�
 | `focusView` | ✅ **能** | 它本质是「请主窗口把我的视图切到前台」= 一条跨窗口请求 |
 | `registerView` | ❌ **不能，且不应该** | 视图的 `render` 是**一个 JS 闭包**，必须在**主窗口的 realm** 里执行 |
 
-### 8.1 `onDrop`（纯增益，不碰网关）
+### 8.1 `onDrop`（纯增益，不碰网关）— ✅ **已实施（2026-09-27）**
+
+> **实施结果**：`bridge.onDrop(fn)`、窗口自己的 `onDragDropEvent` 监听、
+> `dispose()` 清空处理器都已落地（`src/host/pluginwin-host.js`）。
+> 形状与 `ctx.onDrop` 一致（`fn(paths, info)`，返回 Promise of 取消函数），
+> 唯一差别是 `info` 为 `{ label }` 而不是 `{ viewId }`。
+> 行为测试在 `tests/plugin-bridge.test.mjs`（交付、取消、一个处理器抛错不影响其他、
+> `dispose` 后失效）；对等性由 `tests/sdk-parity.test.mjs` 与
+> `tests/plugin-docs.test.mjs` 双向盯着。文档见 [bridge.md](bridge.md) §1。
+> **本节的方案文本原样保留**，因为「为什么不需要权限、为什么不需要路由」的理由比代码更难复原。
 
 主窗口需要路由，是因为**一个窗口里装着多个插件的视图**；插件窗口只属于一个插件，
 归属已知（URL 里的 `?plugin=<id>`）→ **路由这一层根本不存在**。
@@ -331,7 +342,11 @@ A 还顺带保住「所有插件能力都走网关」这个统一性 —— 于�
 **诊断**：插件窗口的日志只到 webview console（`ctx.log` 同理）。
 要进 `debug.log` 就得走 `host/write_debug_log`（需要 `rpc:host`），失败则退回 console。
 
-### 8.2 `focusView`（跨窗口请求 + 本地校验）
+### 8.2 `focusView`（跨窗口请求 + 本地校验）— ⏳ **尚未实施**
+
+> 本节仍是**方案**。截至 2026-09-27，`bridge.focusView` 在代码里**不存在** ——
+> 照抄下面的代码会拿到 `undefined is not a function`。
+> 要「呼出窗口」现在用 `ctx.windows.control(label, 'raise', true)`，见 [bridge.md](bridge.md) §2。
 
 它做不了「切换」这件事本身（视图不在插件窗口），但它可以**请求**。
 
@@ -374,8 +389,8 @@ export async function activate(ctx) {
 }
 // mountWindow(bridge) —— 插件窗口
 export function mountWindow(bridge) {
-  bridge.onDrop((paths) => { … });          // §8.1
-  bridge.focusView('main');                 // §8.2
+  bridge.onDrop((paths) => { … });          // §8.1 ✅ 已实施
+  bridge.focusView('main');                 // §8.2 ⏳ 仍是方案，还没有这个 API
 }
 ```
 
@@ -386,7 +401,128 @@ export function mountWindow(bridge) {
 
 | # | 内容 | 风险 |
 |---|---|---|
-| 1 | `bridge.onDrop` + 插件窗口自己听拖放 | 低：纯增益，不碰网关 |
+| 1 | ~~`bridge.onDrop` + 插件窗口自己听拖放~~ → **已完成 2026-09-27** | 低：纯增益，不碰网关 |
 | 2 | `bridge.focusView` + `host:focus-view` + 主窗口校验归属 + 抽出共享的切换函数 | 中：新增一条跨窗口通路，要有测试 |
-| 3 | 文档：`api.md` 对照表把 `onDrop`/`focusView` 从 ❌ 改成 ✅ | 低 |
-| 4 | 守卫：`sdk-parity` 的 `INTENTIONAL_CTX_ONLY` 缩到 `registerView`/`windows`/`ui`，并写明 `registerView` 的理由是「跨 realm 传函数不可能」 | 低 |
+| 3 | 文档：`onDrop` 已完成（`bridge.md` 矩阵 + `api.md` 摘要）；`focusView` 仍待第 2 项 | 低 |
+| 4 | ~~守卫：`sdk-parity` 的 `INTENTIONAL_CTX_ONLY` 缩到 `registerView`/`windows`/`ui`~~ → **已完成**（现为这 4 个：`focusView` / `registerView` / `windows` / `ui`；`registerView` 的理由「跨 realm 传函数不可能」写在 `bridge.md` §8.3 与本页 §8.3） | 低 |
+
+**顺带修掉的一个守卫缺陷**：`sdk-parity` 的键提取器要求 `name:` 带冒号，
+于是**简写属性（`id,` / `manifest,` / `pluginId,` / `label,`）全都看不见** ——
+其中 `label` 是插件窗口独有的。一个看不见名字的守卫，无法把「多出来的不对称」报出来，
+而那正是它唯一的职责。已改为 `[:,]`，并把 `ctx.cleanup`
+（写在对象字面量**之后**的赋值）也纳入解析，两个对等性守卫因此不再各说各话。
+
+---
+
+## 九、引入 fs 的评估：负面清单、复杂度、最小接口（讨论记录，2026-09-27，**未实施**）
+
+> **状态：讨论记录，不是决定。** 本次没有动任何代码、接口、权限或依赖。
+> 记下来的原因见本页顶部那三条规矩 —— 这次讨论的结论（尤其「plugin-fs 对外部插件无效」
+> 与「授权粒度是窗口不是插件」）比结论本身更容易被重新推导一遍。
+>
+> **触发条件**（比日期有用）：当某个插件需要「下载文件到用户指定目录」这类
+> **必须与用户文件系统交互**的事情时，回来读这一节，走 §9.5 的路线 B。
+
+### 9.1 一个关键事实：plugin-fs 单独引入，对「插件」几乎没用
+
+外部插件的入口是从 **Blob URL** 动态 import 的（`src-tauri` 之外那一条：
+入口源码 → Blob → `import()`），**bare/relative import 解析不了**。
+所以 `@tauri-apps/plugin-fs` 的 JS API **到不了第三方插件手里** —— 它连 import 都做不到。
+
+受惠的只有两种代码：**打包进应用的内置插件**，和**宿主自己**。
+要让外部插件用上，必须由宿主代它调用 —— 所以这题的实质不是
+「要不要加一个依赖」，而是**「要不要给宿主加一个 fs 服务」**。
+
+### 9.2 负面清单（不是为了劝退，是为了记账）
+
+| # | 影响 | 说明 |
+|---|---|---|
+| 1 | **授权粒度是窗口，不是插件** | ACL 按 window label 匹配，而所有插件的 `activate()` 都跑在主窗口 → 给 main 一个 fs scope 等于给**每一个**插件（含用户以后丢进来的）同样的权限。连带后果：`plugin.json` 里写 `fs:read` 会是一句**假话** —— ACL 不看插件清单，只有本项目的网关才看 |
+| 2 | **`fs:default` 恰好覆盖宿主自己的目录** | `$APPDATA` 就是 `data_root`：`plugin-data/<id>/data.json`、`debug.log`、`plugins/` 全在它下面 → 会打破 [storage.md](storage.md) 声称的「每插件一个目录，天然隔离」。ACL 表达不了「这个插件」这个主语，想保住隔离只能在宿主侧判定 |
+| 3 | **可观测性掉线** | trace 只包住 hub 的四个方法（`request` / `publish` / `subscribe` / `stream`），直接 `invoke` 不产生任何 trace 行 → 造出一整类**看不见的活动**，而 [debugging.md](debugging.md) 把 trace 说成「唯一能看到你没写的那些调用」的地方。同样不进会话表、没有 disposer 兜底 |
+| 4 | **错误码与协商面出现两套** | 失败会以 Tauri 自己的字符串回来，不是那个闭集；`ctx.schema()` 不再等于「这个宿主支持什么」（它由服务表生成） |
+| 5 | **两种授权模型并存** | `ctx.files.pick` / `ctx.onDrop` 的整个前提是「授权 = 用户的一次动作」；有了宽 fs 之后同一件事有两种说法，文档与评审都要同时带上 |
+| 6 | **文档会自相矛盾** | [storage.md](storage.md) 有一条明确的「不引入 fs 是安全决定」，§六 的建议建立在它之上 |
+| 7 | **构建与测试的连带** | 新 Rust 依赖 + 新 ACL manifest 条目（编译产物现在是 `core` / `dialog` / `pty` / `notification` 等，没有 `fs`），**必须重新构建** —— `tests/capabilities.test.mjs` 会比对编译产物，而本仓库有过「Cargo 缓存出空 ACL、源码看着对、运行时全拒」的前车之鉴 |
+| 8 | **scope 写错就是全盘** | 而且错在 `default.json` 一侧，影响面是所有插件 |
+
+**对单人开发而言，1–2 的「安全」代价可以忽略**（插件都是自己写的）。
+真正还在付的代价是 **3–6**：可观测性、错误码、两套模型、文档互相打脸 ——
+这些与「有没有恶意插件」无关。
+
+### 9.3 复杂度：架构已经付过账的部分
+
+选**网关服务**（而不是直接给 ACL）之后，下面这些是**零成本**的：
+
+| 通常要做的 | 在本项目 |
+|---|---|
+| 别阻塞主线程 | **免费**：`plugin_rpc` 已经是 `async` + `spawn_blocking` 才进 `services::route`，服务里直接写阻塞 `std::fs` 就是对的。（对比 `plugin_dialog` 之所以是裸命令，是因为模态框需要主线程泵消息。） |
+| 权限闸 | **免费**：`rpc:fs` 自动被 JS 闸 + Rust 注册表两道管住 |
+| 错误码 | **免费**：`io` / `denied` / `not_found` / `bad_params` 已够用，不用碰 `codes.rs`（也就不会惊动跨语言漂移测试） |
+| trace / schema / 会话表 / teardown | **免费**：前提是走网关 |
+| 可测性 | **免费**：照抄 `storage.rs` 的 `*_at` 纯路径核心，`dispatch_at(&root, plugin_id, …)` 不需要 Tauri runtime |
+| capability 文件、原生命令 | **不用碰**：走网关不需要新 `#[tauri::command]`，也不动 `default.json` |
+
+### 9.4 三个真正的坑（会写错，不是工作量大）—— 实现前先验证
+
+1. **Windows 上 `std::fs::canonicalize` 返回 `\\?\C:\…`**。拿它去比对一个未规范化的根会
+   **永远不相等**，于是 scope 要么静默全拒、要么静默全放。本项目 Windows 优先，这是最可能踩的一条。
+   **未在本仓库核实**，实现时要先打印出来看一眼。
+2. **写一个还不存在的文件时 `canonicalize` 会失败** —— 必须先规范化**父目录**再拼文件名。
+   而「下载到用户指定目录」**正好就是这个 case**：`ctx.files.save()` 只返回用户选的路径，
+   **不创建文件**（`lib.rs` 里就是 `blocking_save_file()` 取一个 path）。
+3. **`$PLUGINDIR` 现在拿不到** —— 原生注册表只存 `HashSet<String>`（权限），
+   插件目录只有 `plugin_scan` 返回给前端、宿主自己不保留；内置插件更是没有目录。
+   要用它就得改 `plugin_register` 的签名 + `host/registry.rs` 的数据结构 + `registerWithHost` 的调用方，
+   也就是**碰权限主干**。
+
+### 9.5 两条路线，成本差很多 —— 建议 B
+
+**A：别名 scope 系统**（manifest 里写 `"fs": { "read": ["$APPDATA/my.plugin/**"] }`）
+通用，但要写 scope 解析 / 规范化 / 包含判定，要改权限主干（坑 3），要踩坑 1–2。**建议拆两次做。**
+
+**B（推荐）：用户授权路径表。** 不引入别名词汇，不碰权限主干：
+
+- `ctx.files.pick` / `ctx.files.save` 返回路径时，**宿主把该路径记进一张宿主侧的表**（按 plugin id 分组）；
+- fs 的每个动作先查表：这个插件被授予过这个路径（或它的父目录）吗？没有 → `denied`；
+- **不需要 manifest 声明 scope**，所以 `plugin_register`、`host/registry.rs` 一行都不用改；
+- 坑 1 基本消失：比对的是「对话框刚给的路径」的规范形式，而不是「任意路径 vs 手写的根」；
+- **storage.md 那条安全声明不需要撤回**，只需一条带日期的补充：
+  「fs 存在，但**碰不到任意路径**，只能碰用户当场交出来的那些」——
+  整个「授权 = 用户的一次动作」的故事保住了。
+
+代价：每个新目录要用户选一次；要不要跨重启记住授权是个可以单独决定的小问题（存 `plugin-data/<id>/` 即可）。
+
+### 9.6 建议的最小接口
+
+```js
+// 权限：rpc:fs        授权来源：用户授权路径表（路线 B）
+await ctx.fs.readText(path)          // → string
+await ctx.fs.writeText(path, text)   // 覆盖写；父目录不存在 → not_found
+await ctx.fs.readBytes(path)         // → base64（带上限）
+await ctx.fs.writeBytes(path, b64)
+await ctx.fs.list(dir)               // → [{name, path, dir, size, mtime}]
+await ctx.fs.stat(path)              // → {exists, dir, size, mtime}
+```
+
+**先不加**：`remove` / `rename` / 任意路径 / 目录 watch。
+要看目录变化就加**流提供者**（那样它进会话表、`dispose()` 免费帮你关），**不要**加事件主题。
+
+**一个容易漏的上限**：网关是 JSON，所以字节只能走 base64，10 MB 会变成 ~13 MB 的 JSON 过 IPC。
+`screen` 已经有 `MAX_PIXELS` 这种上限先例 —— fs 也该有一个（单次 8–16 MB，超了报错）。
+**大文件不要走网关**：要么分块，要么用 sidecar（`rpc:proc` 本来就能读写任意路径）。
+
+`ctx.fs` / `bridge.fs` 要同时加，否则就是又一次「同一段代码在视图里能用、在窗口里 `undefined is not a function`」
+（见 [bridge.md](bridge.md)）；对等表与权限表会被 `tests/plugin-docs.test.mjs` 逼着更新。
+
+### 9.7 storage 与 fs 的边界（提出来就是为了定死它）
+
+**分工**：`storage` 放**默认配置与本地存储**；`fs` 只在**必须与用户文件系统交互**时用
+（下载文件到用户指定目录、读用户拖进来的文件）。
+
+这**正好就是 [storage.md](storage.md) 已有的建议**（「大块数据放你自己的数据目录下的独立文件，
+`storage` 只放索引和配置」）—— 所以 fs 相当于把那条建议变成 API，两份文档不会互相打脸。
+
+**唯一要写清的边角**：`storage` 是**整文件重写**（每次 `set` 都重写整个 `data.json`）。
+建议明确 `plugin-data/<id>/data.json` 归 storage 管，fs 只碰别的文件 ——
+否则会出现「两个都能写、语义不同」的重叠区。
