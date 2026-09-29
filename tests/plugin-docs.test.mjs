@@ -761,7 +761,7 @@ test('every .tb-* class the manual tells a plugin to use actually exists', () =>
   // Tailwind utility, which a plugin's source cannot generate). So a class the
   // manual recommends but the CSS never defines would fail silently and look
   // exactly like the problem `.tb-*` exists to solve.
-  const css = ['src/assets/design-system.css', 'src/assets/app.css', 'src/assets/plugin.css']
+  const css = ['src/assets/design-system.css', 'src/assets/app.css']
     .map((p) => readFileSync(path.join(root, p), 'utf8'))
     .join('\n');
   const defined = new Set([...css.matchAll(/\.(tb-[a-z0-9-]+)/g)].map((m) => m[1]));

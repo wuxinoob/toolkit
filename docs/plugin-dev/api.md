@@ -651,7 +651,7 @@ ctx.windows.onCloseRequested(async () => { /* 清理 */ });
    | 页面 | 是什么 |
    |---|---|
    | `index.html` | **外壳**。挂载 `App.vue`、启动插件宿主、引外壳样式表。它不知道 `mountWindow` 是什么。 |
-   | `pluginwin.html` | **你的窗口**。引插件样式表（只有令牌 + `.tb-*`），加载 `pluginwin-host.js`，调用你的 `mountWindow(bridge)`。 |
+   | `pluginwin.html` | **你的窗口**。**不引任何样式表**，加载 `pluginwin-host.js`，调用你的 `mountWindow(bridge)`。 |
 
    传 `index.html` 曾经更糟：宿主会在**插件窗口里再跑一个完整宿主** ——
    重复注册热键、每个插件再激活一次（`procman` 会再 auto-start 一套真实进程）、
@@ -672,17 +672,19 @@ ctx.windows.onCloseRequested(async () => { /* 清理 */ });
 
 ### ⚠️ 你的窗口里**没有** Tailwind 工具类
 
-插件窗口引的是 `plugin.css`，它只含**令牌 + `.tb-*` 词汇表** —— 不含 Tailwind 的
-工具类层，也不含 toaster 的样式。理由有两条，互相印证：
+插件窗口**不引任何样式表** —— 没有工具类，也没有令牌、`.tb-*` 和 reset。理由有两条，
+互相印证：
 
 - 你的插件是 Blob URL 单文件 ESM，源码在项目之外，**Tailwind 根本扫不到它** ——
   写 `flex gap-2` 本来就产生不了任何 CSS；
-- 而那 122 KB 的工具类 + 22 KB 的 sonner 样式，是每个插件窗口都在白付的钱。
-  拆开之后插件窗口只加载 **19 KB**（原来 166 KB）。
+- 而历史上那份 19 KB（工具类拆掉之后的令牌 + `.tb-*` + preflight）**没人要**：
+  它的 preflight 落在无层，反过来压过同船的 `.tb-*`；两个真实插件窗口又都自带 reset。
+  现在插件窗口是 **0 KB CSS**，样式全由你负责。
 
-**所以：用 `.tb-*`（见 `docs/UI.md`）、内联 `style`，或者自己注入 `<style>`。**
-工具类**不会报错** —— 元素就是没样式。`tests/window-options.test.mjs` 盯着宿主自己的
-插件窗口代码不许出现 `.tb-*` 以外的类名。
+**所以：自己注入 `<style>`，自己写 reset。** 三件最容易忘的：
+`* { box-sizing: border-box }`、`html, body { margin: 0 }`、`:focus-visible` 的焦点环。
+类名**不会报错** —— 元素就是没样式。`tests/window-options.test.mjs` 盯着宿主自己的
+插件窗口代码：**那里一个类名都不许出现**（没有样式表能定义它）。
 
 ### `transparent: true` 只在真的需要异形窗口时用
 

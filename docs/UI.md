@@ -30,51 +30,59 @@ Two footnotes worth knowing:
 
 ## Where each half of the app gets its styles
 
-There are two halves, and they are styled by **different mechanisms on purpose**.
-The dividing line is the window, not the plugin.
+There are two halves, and the dividing line is the window, not the plugin.
+One of them is styled by the host; the other is **not styled by the host at all**.
 
 | | main window | a plugin's own window |
 |---|---|---|
 | which PAGE | `index.html` | `pluginwin.html` |
-| which stylesheet | `assets/app.css` | `assets/plugin.css` |
+| which stylesheet | `assets/app.css` | **none** — the page links nothing |
 | who renders it | the host, for the plugin | the plugin, in its own document |
-| how a plugin styles it | `ctx.ui` (the component factory) + `.tb-*` + tokens | `.tb-*` + tokens, **plus its own `<style>`, anything it likes** |
-| Tailwind utilities | **yes** | **NO** — see below |
-| follows the app theme | yes, automatically | yes for `.tb-*`; a hardcoded palette opts out |
+| how a plugin styles it | `ctx.ui` (the component factory) + `.tb-*` + tokens | **its own `<style>`, entirely** |
+| Tailwind utilities | **yes** | **no** — there is no stylesheet to put them in |
+| `.tb-*` / tokens / reset | yes | **no** — see below |
+| follows the app theme | yes, automatically | `color-scheme` + whatever its own `contributes.theme` declares; the rest is the plugin's |
 | can it break the app | no — scoped to `[data-plugin]` | no — **it is a different document** |
 
-### ⚠️ A plugin window has no Tailwind utilities
+### ⚠️ A plugin window ships **no CSS at all**
 
-This is the one thing to know before writing a window page. `plugin.css` links
-Tailwind's **theme and preflight** but deliberately not its **utilities layer**,
-for two reasons that reinforce each other:
+This is the one thing to know before writing a window page. There is no
+stylesheet, so there is **no reset, no tokens and no `.tb-*` vocabulary** — the
+plugin's own `<style>` is the only CSS in the document. Three things that are
+consequences rather than trivia, because their absence is silent:
 
-- **A plugin cannot use them anyway.** An external plugin is a Blob-URL
-  single-file ESM living outside this project, so Tailwind never scans its source
-  and `flex gap-2` in it produces no CSS at all.
-- **They were most of the cost.** Measured on this repo, utilities were 122 KB of
-  a 166 KB stylesheet, and vue-sonner another 22 KB — so every plugin window paid
-  ~147 KB for CSS it could not use. With the split a plugin window loads **19 KB**.
+- **no `box-sizing: border-box`** — `width: 100%` plus padding overflows;
+- **no `body { margin: 0 }`** — the browser's 8px margin is back;
+- **no focus ring** — `:focus-visible` has to be yours, or the window is unusable
+  from the keyboard.
 
-**So: use `.tb-*` (see [Primitives](#primitives)) or inline styles.** A utility
-class fails SILENTLY — the element is simply unstyled, with no error anywhere,
-which is why `tests/window-options.test.mjs` asserts the host's own plugin-window
-code uses nothing but `.tb-*`.
+**History, because the reasoning still applies**: the window used to link
+`assets/plugin.css` (theme + preflight + `.tb-*`, ~19 KB after the utilities were
+split out of a 166 KB stylesheet). It went away for two reasons:
 
-### The two stylesheets share one design system
+- its preflight landed **unlayered** while the design system's rules are in
+  `@layer base` / `@layer components`, and unlayered declarations outrank every
+  layer — so the reset silently beat the very `.tb-*` rules shipped beside it;
+- nothing wanted it. Both shipped window examples bring their own reset and
+  palette, so the host was paying 19 KB per window to fight them.
 
-`assets/design-system.css` holds the tokens and the `.tb-*` vocabulary, and BOTH
-entries import it — one source, so the two windows cannot drift apart on what a
-token means. Only what surrounds it differs:
+One style does survive, and it is not part of a stylesheet: the inline theme
+script sets **`color-scheme`**, which decides how the OS draws the parts CSS
+cannot reach — scrollbars, the `<select>` popup, date pickers. Drop it and a
+dark-themed window gets light native widgets.
 
-```
-design-system.css   tokens (:root / @theme inline / @layer base) + @layer components { .tb-* }
-app.css             tailwindcss (theme + preflight + UTILITIES) + tw-animate-css + sonner + ↑
-plugin.css          tailwindcss/theme.css + preflight.css + ↑
-```
+### The design system has exactly one entry
 
-A test asserts both entries import it and that neither defines tokens itself,
-because two copies of a token are two answers to the same question.
+`assets/design-system.css` holds the tokens and the `.tb-*` vocabulary, and one
+entry imports it: `app.css`, for the shell. A test asserts that import and
+asserts that the entry does not define tokens itself, because two copies of a
+token are two answers to the same question.
+
+**If a window ever needs the design system again**, add a THIRD page that links
+a stylesheet importing `design-system.css` — and put the preflight in a layer
+(`@import 'tailwindcss/preflight.css' layer(base);`). That one word is what the
+old `plugin.css` was missing, and what made it behave differently from `app.css`
+despite sharing a source.
 
 ### Why the split had to happen at the page level
 
@@ -164,11 +172,12 @@ ctx.windows.create('mywin', { url: 'https://example.com' })  // throws
 ctx.windows.create('mywin', { someFutureOption: true })      // throws
 ```
 
-The two pages are two applications, not two modes of one: each links its own
-stylesheet and loads its own entry. That is what makes the stylesheet split
-possible at all — a page picks its `<link>` before any module runs, so no branch
-in JS could have kept the shell's CSS out of a plugin window. See the note in
-`src/main.js` for what the old shared page cost.
+The two pages are two applications, not two modes of one: the shell links its
+stylesheet, the plugin window links none, and each loads its own entry. The page
+is the only place that can decide this — a `<link>` applies before any module
+runs, so no branch in JS could have kept the shell's CSS out of a plugin window
+(or added a stylesheet back to it). See the note in `src/main.js` for what the
+old shared page cost.
 
 Validation runs **before** the async window lookup, so a bad option fails the
 same way whether or not that window already exists.
@@ -481,4 +490,3 @@ If it is a **colour**, add it to `@theme` **and** to the
 `:root[data-theme='light']` block. Forgetting the second half is a silent bug —
 the token keeps its dark value in the light theme, and only that one element looks
 wrong. `tests/plugins.test.mjs` fails on it.
-

@@ -2,7 +2,7 @@
   "id": "probe.demo",
   "name": "Plane Probe",
   "version": "0.1.0",
-  "api": 2,
+  "api": 3,
   "entry": "main.js",
   "description": "Drives every frontend<->backend interface in one pass and reports the result.",
   "contributes": {

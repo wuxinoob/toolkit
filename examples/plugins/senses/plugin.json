@@ -2,7 +2,7 @@
   "id": "senses.demo",
   "name": "Senses",
   "version": "0.1.0",
-  "api": 2,
+  "api": 3,
   "entry": "main.js",
   "description": "Live check of the host's sensing surface: clipboard read/write/watch, screen enumeration and capture, and OS file drops. A live check, not a mock — it fails at activation rather than pretending.",
   "contributes": {

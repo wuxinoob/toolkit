@@ -228,10 +228,10 @@ async activate(ctx) {
   不是 `index.html`。两个页面是两个应用：`index.html` 是外壳，`pluginwin.html`
   才会加载你的 `mountWindow(bridge)`。传错会在 `create()` 当场被拒。
 - 窗口里跑的是 `pluginwin-host.js`，它会 Blob-import 你的入口 —— 参考 `examples/calc-plugin/`。
-- ⚠️ **窗口里没有 Tailwind 工具类。** `pluginwin.html` 引的是 `plugin.css`
-  （只有令牌 + `.tb-*`），`flex` / `gap-2` 这类类名**不产生任何 CSS**，而且**不报错** ——
-  元素就是没样式。用 `.tb-*`（见 [UI.md](../UI.md#primitives)）或内联 `style`，
-  想彻底自绘就在窗口里注入自己的 `<style>`。
+- ⚠️ **窗口里什么样式都没有。** `pluginwin.html` **不引任何样式表**，所以
+  `flex` / `gap-2` 这类类名、`.tb-*`、`var(--color-*)` 令牌**全都不存在**，而且**都不报错** ——
+  元素就是没样式。在窗口里注入自己的 `<style>`，并不忘写 `box-sizing: border-box`、
+  `body { margin: 0 }` 和 `:focus-visible`（见 [ui.md](ui.md)）。
 
 ---
 

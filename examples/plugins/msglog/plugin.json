@@ -2,7 +2,7 @@
   "id": "msglog.demo",
   "name": "Message Log",
   "version": "0.1.0",
-  "api": 2,
+  "api": 3,
   "entry": "main.js",
   "description": "Shows the observability layer live: the communication trace, window-local events, cross-window broadcasts, and every session. Also fires a test OS notification.",
   "contributes": {

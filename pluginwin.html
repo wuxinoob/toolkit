@@ -9,9 +9,9 @@
   <body>
     <!--
       A plugin's own window. Deliberately NOT `index.html`: this page links
-      `plugin.css` (tokens + `.tb-*`) instead of the shell's stylesheet, because
-      a plugin cannot use Tailwind utilities and shipping them cost 147 KB per
-      window. See src/pluginwin.js.
+      NO stylesheet at all. A plugin window is a blank document — the plugin's own
+      `<style>` is the only CSS in it — which is only possible at the page level,
+      because a `<link>` applies before any module runs. See src/pluginwin.js.
 
       There is no `<div id="app">` here — nothing mounts into it on this page.
     -->

@@ -214,7 +214,7 @@ test('ctx: rpc accepts a per-call timeout', async () => {
 test('ctx: the contract is handed over, not imported', () => {
   const ctx = buildCtx({ manifest: { id: 't.contract', permissions: [] } }, { track() {} });
   assert.equal(ctx.protocol.version, 1, 'wire protocol version');
-  assert.equal(ctx.protocol.api, 2, 'host API version');
+  assert.equal(ctx.protocol.api, 3, 'host API version');
   assert.equal(typeof ctx.protocol.req, 'function');
   assert.equal(ctx.protocol.Kind.DATA, 'data');
   // and it is frozen, so a plugin cannot mutate the contract for everyone
@@ -510,11 +510,11 @@ test('lifecycle: a plugin built for another host API is flagged, not silently br
   });
   const stale = store.plugins.find((p) => p.manifest.id === 'old.api');
   assert.match(stale.note, /built for host API 1/, 'the mismatch must be recorded');
-  assert.match(stale.note, /provides 2/);
+  assert.match(stale.note, /provides 3/);
   assert.equal(stale.status, 'inactive', 'a mismatch is a warning, not a failure');
 
   await loadPlugin({
-    manifest: { id: 'new.api', name: 'New', api: 2, permissions: [], contributes: { views: [{ id: 'v2', title: 'V' }] } },
+    manifest: { id: 'new.api', name: 'New', api: 3, permissions: [], contributes: { views: [{ id: 'v2', title: 'V' }] } },
     activate: () => {},
   });
   assert.equal(

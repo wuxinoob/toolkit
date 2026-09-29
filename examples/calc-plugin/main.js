@@ -77,7 +77,7 @@ export const manifest = {
   id: 'calc.demo',
   name: 'Calculator',
   version: '0.1.0',
-  api: 2,
+  api: 3,
   description: 'Integer calculator: window frontend + calc.exe sidecar backend, both speaking the same protocol.',
   contributes: {
     views: [{ slot: 'tool', id: 'calc', title: '计算器', icon: '🧮' }],
@@ -187,9 +187,10 @@ export async function deactivate(ctx) {
  * `bridge` exposes the same scheme helpers plus `protocol`, `close()` and
  * `drag()`.
  *
- * ⚠️ No Tailwind utilities here — the page links `plugin.css` (tokens + `.tb-*`
- * only), so a utility class would render nothing, silently. This plugin injects
- * its own stylesheet instead, which is the other supported route.
+ * ⚠️ The page links NO stylesheet at all — no utilities, no tokens, no `.tb-*`,
+ * no reset — so this plugin injects its own stylesheet and writes its own
+ * `box-sizing` / `body { margin }` / focus ring. That is the only route a window
+ * has, and it is why the markup below is unstyled without the `<style>` call.
  */
 export async function mountWindow(bridge) {
   const calc = makeCalc(bridge, 'calc-win');

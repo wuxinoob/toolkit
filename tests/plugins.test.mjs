@@ -615,26 +615,67 @@ test('plugins: no plugin calls a function it never declares (dead call sites)', 
 /**
  * Where the design system lives.
  *
- * The tokens and the `.tb-*` vocabulary are in ONE file, and both stylesheet
- * entries import it: `app.css` for the shell, `plugin.css` for a plugin window.
- * That is what keeps the two windows from disagreeing about what a token means,
- * and it is why every check below reads this file rather than either entry —
- * an entry is a list of imports, not a place where the design system is defined.
+ * The tokens and the `.tb-*` vocabulary are in ONE file, and exactly one
+ * stylesheet entry imports it: `app.css`, for the shell. Every check below reads
+ * this file rather than the entry — an entry is a list of imports, not a place
+ * where the design system is defined.
  */
 const DESIGN_SYSTEM = 'src/assets/design-system.css';
 
-test('theming: both stylesheet entries import the one design system', () => {
-  for (const entry of ['src/assets/app.css', 'src/assets/plugin.css']) {
-    assert.match(
-      read(entry),
-      /@import '\.\/design-system\.css'/,
-      `${entry} must import the shared design system`,
-    );
-    // And may not carry its own copy of it. A second `:root` or `@theme` block in
-    // an entry is exactly how the two windows would start disagreeing — silently,
-    // because both would still render.
-    assert.doesNotMatch(read(entry), /^:root|^@theme|^@layer components/m, `${entry} must not define tokens or .tb-* itself`);
-  }
+test('theming: the shell entry imports the one design system, and does not redefine it', () => {
+  const entry = 'src/assets/app.css';
+  assert.match(
+    read(entry),
+    /@import '\.\/design-system\.css'/,
+    `${entry} must import the shared design system`,
+  );
+  // And may not carry its own copy of it. A second `:root` or `@theme` block in
+  // an entry is exactly how the shell and a window would start disagreeing —
+  // silently, because both would still render.
+  assert.doesNotMatch(read(entry), /^:root|^@theme|^@layer components/m, `${entry} must not define tokens or .tb-* itself`);
+});
+
+/**
+ * A plugin window links NO stylesheet — the decision recorded in
+ * `src/pluginwin.js`, and the reason `plugin.css` no longer exists.
+ *
+ * Pinned at the PAGE level, because that is the only level where it can be true:
+ * a `<link>` applies before any module runs, so a `<link>` in this page is CSS
+ * the plugin cannot refuse, and one in a module is CSS that arrives too late to
+ * be a reset. If a window is ever supposed to have a design system again, it
+ * gets a new page — not an import added back here.
+ */
+test('theming: a plugin window links no stylesheet, so a plugin owns its own CSS', () => {
+  // Comments stripped first: this page legitimately DISCUSSES `<link>` and
+  // `<style>` in its own explanation, and a comment cannot style anything.
+  const page = read('pluginwin.html').replace(/<!--[\s\S]*?-->/g, '');
+  assert.doesNotMatch(page, /<link[^>]+stylesheet/, 'pluginwin.html must not link a stylesheet');
+  assert.doesNotMatch(page, /<style\b/, 'nor carry an inline one — the plugin owns this document');
+  // The page's entry module must not pull one in either: Vite turns a CSS import
+  // into a <link> on the page, which would put the stylesheet right back.
+  assert.doesNotMatch(
+    read('src/pluginwin.js'),
+    /import\s+['"][^'"]+\.css['"]/,
+    'src/pluginwin.js must not import CSS — Vite would emit it as a <link> here',
+  );
+  assert.ok(!existsSync('src/assets/plugin.css'), 'the old plugin stylesheet is gone, not merely unlinked');
+});
+
+/**
+ * The same rule, against the SHIPPED artifact.
+ *
+ * The source check above cannot see what Vite does: a config change (a non-split
+ * CSS chunk, a plugin that injects styles) would put CSS back into the built
+ * page without touching `pluginwin.html`. Skips when there is no build to look
+ * at — the same rule `capabilities.test.mjs` follows for its compiled-ACL check.
+ */
+test('theming: the BUILT plugin window links no stylesheet either', () => {
+  const built = 'dist/pluginwin.html';
+  if (!existsSync(built)) return; // nothing built on this checkout
+
+  const page = read(built).replace(/<!--[\s\S]*?-->/g, '');
+  assert.doesNotMatch(page, /<link[^>]*rel="stylesheet"/, `${built} links a stylesheet`);
+  assert.doesNotMatch(page, /<style\b/, `${built} carries an inline stylesheet`);
 });
 
 test('theming: every .tb-* class a plugin uses actually exists in the stylesheet', () => {

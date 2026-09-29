@@ -19,10 +19,10 @@ export default defineConfig(() => ({
   },
 
   // Two pages, not one. `index.html` is the shell; `pluginwin.html` is a
-  // plugin's own window. They link DIFFERENT stylesheets, and a page's
-  // stylesheet is applied before any module runs — so keeping 122 KB of Tailwind
-  // utilities out of a plugin window has to happen here, at the page level. No
-  // branch in `main.js` could do it. See src/pluginwin.js.
+  // plugin's own window and links NO stylesheet at all. Which page a window
+  // loads is the only thing that can decide its CSS, because a page's `<link>`
+  // applies before any module runs — no branch in `main.js` could add or remove
+  // one in time. See src/pluginwin.js.
   build: {
     rollupOptions: {
       input: {

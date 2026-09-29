@@ -8,9 +8,10 @@
  *   - the shell never boots here. This window does not load `src/main.js` at all,
  *     so a second plugin host (double-registered shortcuts, every plugin
  *     activated twice, a second selftest) is not something a URL can cause.
- *   - the plugin stylesheet is linked by that page, not the shell's. This window
- *     gets the tokens and the `.tb-*` vocabulary and nothing else — see
- *     `src/assets/plugin.css` for why that is the right set.
+ *   - that page links NO stylesheet, and that is the project's decision, not an
+ *     oversight: a plugin's window is a blank document. The host's own UI in
+ *     here (the failure page below) is therefore styled inline, and everything a
+ *     plugin renders is its own business. See the note in `src/pluginwin.js`.
  *
  * The window Blob-imports the plugin's entry module (single-file ESM, the same
  * constraint as the main-window loader) and calls its `mountWindow(bridge)`
@@ -24,21 +25,28 @@
  *
  * A fatal load error renders inline (no host chrome exists in this window).
  *
- * ## Styles: this window belongs to the plugin
+ * ## Styles: the plugin owns this document
  *
- * The plugin stylesheet is loaded here like in any window, so the design tokens
- * and `.tb-*` classes work and a plugin can look native for free. But a plugin
- * that wants its own look just injects a `<style>` and wins — unlayered CSS
- * beats anything in `@layer`, and this is a separate `document`, so it **cannot
- * reach the main window**. That is a structural guarantee rather than a policy,
- * which is why self-styling needs no sandbox and no review.
+ * Nothing is linked here — no reset, no tokens, no `.tb-*`, no utilities — so a
+ * plugin window is a blank canvas and the plugin's own `<style>` is the only CSS
+ * in the document. (The single exception is the plugin's own
+ * `contributes.theme` below: the host injects the custom properties the plugin
+ * declared, scoped to `[data-plugin='<id>']`, which matches `<html>` here.) And
+ * because this is a separate `document`, that `<style>` **cannot reach the main
+ * window**: a structural guarantee rather than a policy, which is why
+ * self-styling needs no sandbox and no review.
  *
- * ⚠️ **This window has no Tailwind utilities.** `flex`, `gap-2`, `text-sm` and
- * friends produce no CSS here — Tailwind never scans a plugin's source, and the
- * page does not link the utilities layer. Use `.tb-*` (see `docs/UI.md`) or
- * inline styles. A utility class fails SILENTLY: the element is simply unstyled,
- * and `tests/plugin-window-css.test.mjs` fails the build rather than let that
- * reach a plugin author.
+ * Three consequences worth stating out loud, because their absence is silent:
+ *
+ *   - **no `box-sizing: border-box`** — `width: 100%` plus padding overflows;
+ *   - **no `body { margin: 0 }`** — the 8px browser margin is back;
+ *   - **no focus ring** — `:focus-visible` has to be yours, or the window is
+ *     unusable from the keyboard.
+ *
+ * `color-scheme` (set by the inline theme script, one property) is the single
+ * exception, and it exists because it is the only way to make the OS-drawn parts
+ * — scrollbars, the `<select>` popup, date pickers — follow the theme. No CSS
+ * can reach those, so it is not part of "the host's stylesheet".
  *
  * See `docs/UI.md` → "Where each half of the app gets its styles", and
  * `examples/calc-plugin` for a window that takes this path.
@@ -54,15 +62,36 @@ import { PLUGIN_ATTR, applyPluginTheme } from './pluginTheme.js';
 function renderError(title, detail) {
   document.title = title;
   const box = document.createElement('div');
-  // Design-system classes and tokens, so the failure page follows the theme like
-  // everything else. main.js imports the stylesheet before it branches on
-  // ?mode=, so it is present even on this path.
-  box.className = 'tb-card tb-card-body';
-  box.style.cssText = 'max-width:520px;margin:48px auto;line-height:1.6;font-size:13px;';
-  box.innerHTML = `<div class="tb-t-bad" style="font-weight:500;margin-bottom:8px;"></div>
-    <div class="tb-hint" style="word-break:break-all;"></div>`;
-  box.firstElementChild.textContent = `⚠ ${title}`;
-  box.lastElementChild.textContent = detail;
+  /**
+   * Styled INLINE, because a plugin window now ships no stylesheet at all —
+   * there is no `.tb-card` to lean on, and this page has to be readable in a
+   * window whose plugin never got the chance to render its own CSS.
+   *
+   * This is the host's own fault-reporting UI, so it must not depend on the
+   * things the host gives to plugins. `color-scheme` is set by the inline theme
+   * script, so the system colours below still follow the user's theme.
+   */
+  box.style.cssText = [
+    'max-width:520px',
+    'margin:48px auto',
+    'padding:16px 18px',
+    'line-height:1.6',
+    'font-size:13px',
+    'font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif',
+    'color:canvastext',
+    'background:canvas',
+    'border:1px solid color-mix(in srgb, canvastext 25%, transparent)',
+    'border-radius:10px',
+  ].join(';');
+  const heading = document.createElement('div');
+  heading.style.cssText = 'font-weight:500;margin-bottom:8px;color:#c93a52';
+  heading.textContent = `⚠ ${title}`;
+  const body = document.createElement('div');
+  body.style.cssText = 'word-break:break-all;opacity:.7';
+  body.textContent = detail;
+  // `appendChild`, not `append`: the headless test shims provide the former.
+  box.appendChild(heading);
+  box.appendChild(body);
   document.body.appendChild(box);
 }
 

@@ -29,7 +29,7 @@ export const manifest = {
   id: 'msglog.demo',
   name: 'Message Log',
   version: '0.1.0',
-  api: 2,
+  api: 3,
   description: 'Live view of the communication trace, events and sessions.',
   contributes: {
     views: [{ slot: 'tool', id: 'msglog', title: 'Message Log', icon: 'lucide:activity' }],

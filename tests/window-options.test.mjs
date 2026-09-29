@@ -374,18 +374,19 @@ test('both pages set the theme before first paint, identically', () => {
   );
 });
 
-test('the plugin-window host styles itself with .tb-* only', () => {
-  // A plugin window links `plugin.css`, which has NO Tailwind utilities. A plugin
-  // cannot use them anyway — it is a Blob-URL single-file ESM living outside this
-  // project, so Tailwind never scans it and the classes would not exist — and
-  // shipping them cost ~143 KB per window. The consequence is that a utility
-  // class in host code HERE fails SILENTLY: the element renders unstyled, and the
-  // bug reads as the plugin's fault.
+test('the plugin-window host uses no class names at all', () => {
+  // A plugin window links NO stylesheet, so a class name in host code here is
+  // inert by construction — there is nothing to define it. That fails SILENTLY
+  // (the element renders unstyled) and reads as the plugin's fault, so the host's
+  // own plugin-window UI has to be styled inline.
   //
-  // So the host's own plugin-window code is restricted to the vocabulary that
-  // page actually ships. (A plugin's own window code may additionally define its
-  // own classes in its own `<style>` — that is the documented escape hatch and it
-  // is a separate document, so it cannot reach the main window.)
+  // This used to say "restricted to the `.tb-*` vocabulary", when the window
+  // linked a 19 KB stylesheet for it. Removing the stylesheet made the rule
+  // simpler AND stricter: any class is now a bug.
+  //
+  // (A plugin's own window code is unaffected — it may define classes in its own
+  // `<style>`. That is a separate document, so it cannot reach the main window,
+  // and this check does not read plugin code.)
   for (const rel of ['src/pluginwin.js', 'src/host/pluginwin-host.js']) {
     const src = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
@@ -394,12 +395,11 @@ test('the plugin-window host styles itself with .tb-* only', () => {
     for (const m of src.matchAll(/class(?:Name)?\s*[=:]\s*['"`]([^'"`]*)['"`]/g)) {
       for (const c of m[1].split(/\s+/)) if (c) classes.add(c);
     }
-    const stray = [...classes].filter((c) => !c.startsWith('tb-'));
     assert.deepEqual(
-      stray,
+      [...classes],
       [],
-      `${rel} uses ${stray.join(', ')} — plugin.css ships only the .tb-* vocabulary, ` +
-        'so these would render unstyled with no error anywhere',
+      `${rel} sets a class (${[...classes].join(', ')}) — a plugin window ships no stylesheet, ` +
+        'so it would render unstyled with no error anywhere. Style it inline instead.',
     );
   }
 });

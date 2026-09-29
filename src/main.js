@@ -1,6 +1,6 @@
 import { createApp } from 'vue';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-// The MAIN window's stylesheet. A plugin window links `plugin.css` instead — see
+// The MAIN window's stylesheet. A plugin window links NOTHING — see
 // the note at the top of `assets/app.css` for why that split exists and what it
 // saves.
 import './assets/app.css';

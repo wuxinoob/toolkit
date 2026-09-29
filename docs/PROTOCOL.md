@@ -240,14 +240,14 @@ They move independently, so they are tracked separately. A plugin declares the
 host API it was built for in its manifest:
 
 ```jsonc
-{ "id": "probe.demo", "version": "0.1.0", "api": 2, … }
+{ "id": "probe.demo", "version": "0.1.0", "api": 3, … }
 ```
 
 If the declaration does not match, the host records it on the plugin row and the
 boot trace says so:
 
 ```
-  plugin probe.demo: active [built for host API 1, this host provides 2 — re-deploy the plugin if it misbehaves]
+  plugin probe.demo: active [built for host API 1, this host provides 3 — re-deploy the plugin if it misbehaves]
 ```
 
 A mismatch is a **warning, not a failure** — a plugin built for an older shape

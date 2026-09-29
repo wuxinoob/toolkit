@@ -21,7 +21,7 @@ import { Code, ALL_CODES } from './codes.js';
  *   - `HOST_API` — the JavaScript surface a plugin codes against.
  *
  * Bump this whenever a plugin-visible shape changes incompatibly. A plugin
- * declares the version it was built for in its manifest (`"api": 2`), and the
+ * declares the version it was built for in its manifest (`"api": 3`), and the
  * host records a mismatch on the plugin row so the boot trace says why a plugin
  * misbehaves instead of leaving a cryptic runtime error.
  *
@@ -29,8 +29,13 @@ import { Code, ALL_CODES } from './codes.js';
  *   1 — `ctx.events.on` was synchronous, `ctx.bus.subscribe` asynchronous.
  *   2 — every subscribe/publish is async on every scheme (P1-1 unification);
  *       a plugin built for 1 that calls `off()` directly will fail.
+ *   3 — a plugin window links NO stylesheet (no reset, no tokens, no `.tb-*`).
+ *       It was 19 KB of theme + preflight + vocabulary, whose unlayered
+ *       preflight outranked the `.tb-*` rules shipped beside it. A window that
+ *       used `.tb-*` for its own UI now renders unstyled — silently, which is
+ *       why this is a version bump and not just a stylesheet edit.
  */
-export const HOST_API = 2;
+export const HOST_API = 3;
 
 export function protocolContract() {
   return Object.freeze({

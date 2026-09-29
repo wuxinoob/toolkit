@@ -133,7 +133,7 @@ await bridge.bus.publish('my.plugin:resize', { label: bridge.label, width: 520, 
 
 | 方法 | 插件窗口 | 为什么 |
 |---|---|---|
-| `el` / `render` / `native` / `node` | ❌ | 组件工厂的观感**全部来自 Tailwind 工具类**，而插件窗口的样式表**故意不含工具类**（只有令牌 + `.tb-*`）。镜像它意味着给每个窗口加回 ~122 KB utilities，或再维护一套裁剪版组件 |
+| `el` / `render` / `native` / `node` | ❌ | 组件工厂的观感**全部来自 Tailwind 工具类**，而插件窗口**不引任何样式表**（零 CSS）。镜像它意味着给每个窗口加回 ~122 KB utilities，或再维护一套裁剪版组件 |
 | `destroy` | ❌ | 只用来卸载工厂挂的 Vue app；没有工厂就没有它 |
 | `components` | ❌ | 查组件词汇表（`components()` 返回 `el()` 接受的 tag 名）。它是**工厂的**目录，没有工厂就没有东西可列；插件窗口里也**没有别的途径拿到它**（真需要清单就只能请主窗口从总线发过来，不值得）。窗口里直接用 `.tb-*`，见 [ui.md](ui.md) |
 | `notify`（站内 toast） | ❌ | toaster 是外壳的 DOM，插件窗口不加载外壳 |
@@ -166,10 +166,10 @@ try {
 - `ctx.ui.notifyOS` **失败不抛**（返回 `false`）；`bridge.request` **失败会 reject** ——
   少一条通知不该弄坏插件正在做的事，所以自己包一层。
 
-> **`ui` 缺席的通用后果**：插件窗口里的富 UI 要用 `.tb-*` 类 + 内联 `style`
-> （或自己注入 `<style>`，那个窗口整块 DOM 都是你的）。见 [ui.md](ui.md) 与
-> [../UI.md](../UI.md)。**⚠️ Tailwind 工具类在插件窗口里不产生任何 CSS，而且不报错** ——
-> 元素就是没样式。
+> **`ui` 缺席的通用后果**：插件窗口**不引任何样式表**，所以那里的 UI 要**完全自绘** ——
+> 自己注入 `<style>`，自己写 reset（`box-sizing`、`body` 的 margin、`:focus-visible`）。
+> 见 [ui.md](ui.md) 与 [../UI.md](../UI.md)。**⚠️ 令牌、`.tb-*`、Tailwind 工具类在插件
+> 窗口里都不存在，而且不报错** —— 元素就是没样式。
 
 ---
 
@@ -202,7 +202,9 @@ await bridge.request('host', 'write_debug_log', { content: 'anything' });
 
 把一段在主窗口视图里跑通的代码搬到插件窗口（或反过来），逐条过一遍：
 
-- [ ] 用了 `ctx.ui.el / render / native`？→ 换成 `.tb-*` + 内联 `style`；
+- [ ] 用了 `ctx.ui.el / render / native`？→ 自己建 DOM，样式写进自己的 `<style>`；
+- [ ] 用了 `.tb-*` 类或 `var(--color-*)` 令牌？→ 插件窗口是**零 CSS**，换成自己的类名与变量；
+- [ ] 依赖 `box-sizing: border-box` / `body { margin: 0 }` / 系统给的焦点环？→ 自己写；
 - [ ] 用了 `ctx.ui.notify`？→ 自己画一行状态，或者用 `notifyOS` 的替代写法；
 - [ ] 用了 `ctx.ui.notifyOS`？→ 换成 `bridge.request('notify', 'send', { title, body })` 并 catch；
 - [ ] 用了 `ctx.windows.*`？→ 改成广播给主窗口代劳；

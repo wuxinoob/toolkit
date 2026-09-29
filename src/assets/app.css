@@ -5,30 +5,30 @@
  *
  * A window loads whatever stylesheet its HTML page links, and this app has two
  * pages — `index.html` (the shell) and `pluginwin.html` (a plugin's own window).
- * They need very different amounts of CSS:
+ * They need very different amounts of CSS, and that difference is now total:
  *
- *   - The shell renders shadcn-vue components and Tailwind utilities, and mounts
- *     the toaster. It needs everything below.
- *   - A plugin window renders plugin DOM built from the `.tb-*` vocabulary and
- *     inline styles. It cannot use Tailwind utilities AT ALL — an external plugin
- *     is a Blob-URL single-file ESM living outside this project, so Tailwind
- *     never scans it and those classes would simply not exist. It does not mount
- *     the toaster either.
+ *   - The shell renders shadcn-vue components, the `.tb-*` vocabulary and
+ *     Tailwind utilities, and mounts the toaster. It needs everything below.
+ *   - A plugin window is a **blank document**: that page links no stylesheet at
+ *     all. One plugin owns one window, so there is no shared vocabulary to agree
+ *     on — the plugin's own `<style>` is the only CSS in there.
  *
- * Measured on this repo, one stylesheet for both meant every plugin window paid
- * 166 KB, of which ~19 KB was usable. Splitting it costs nothing at runtime and
- * takes a plugin window to that 19 KB.
+ * The history is worth keeping: one stylesheet for both meant every plugin
+ * window paid 166 KB, of which ~19 KB was usable. Splitting the PAGES took it to
+ * 19 KB (tokens + `.tb-*` + preflight, no utilities) — and that file was deleted
+ * once it turned out nothing wanted it: its preflight landed unlayered, where it
+ * outranked the very `.tb-*` rules it was shipped alongside, and both shipped
+ * window examples bring their own reset anyway. A plugin window is now 0 KB.
  *
- * ## The shared half
+ * ## If a window ever wants the design system back
  *
- * `design-system.css` holds the tokens and the `.tb-*` vocabulary, and BOTH
- * entries import it — one source, so the two windows cannot drift apart on what
- * a token means. What differs is only what each entry pulls in around it:
+ * Add a third page that links a stylesheet importing `design-system.css` — and
+ * put the preflight in a layer (`@import 'tailwindcss/preflight.css'
+ * layer(base);`), because unlayered preflight beats `.tb-*` and the design
+ * system's own defaults. That one-word omission is what made the old
+ * `plugin.css` behave differently from this file despite sharing a source.
  *
- *   this file      `tailwindcss` (theme + preflight + UTILITIES) + sonner
- *   plugin.css     `tailwindcss/theme.css` + `preflight.css` — no utilities
- *
- * The theme script in `index.html` / `pluginwin.html` runs before either link
+ * The theme script in `index.html` / `pluginwin.html` runs before the link
  * applies, which is why there is no flash of the wrong theme on window open.
  * ========================================================================== */
 

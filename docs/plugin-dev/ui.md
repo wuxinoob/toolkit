@@ -168,29 +168,64 @@ native('form', { onSubmit: (ev) => { ev.preventDefault(); /* … */ } }, …)
 
 ---
 
-## ⚠️ 组件工厂只在主窗口 —— 插件窗口里**没有** `ctx.ui`
+## ⚠️ 插件窗口里**什么样式都没有** —— 没有 `ctx.ui`，也没有 `.tb-*`
 
-**这是最容易踩空的一处不对称。** 你按本页搭好的界面搬进独立窗口
-（`mountWindow(bridge)`）会拿到 `undefined is not a function`，因为
-**`bridge` 上根本没有 `ui`** —— 组件工厂、站内 toast、overlay 都不在。
+**这是最容易踩空的一处不对称**，而且是两层的：
+
+1. **`bridge` 上没有 `ui`** —— 组件工厂、站内 toast、overlay 都不在，调它会拿到
+   `undefined is not a function`；
+2. **那个窗口不引任何样式表** —— `pluginwin.html` 页面**零 CSS**，所以
+   **令牌、`.tb-*`、Tailwind 工具类、reset 全都没有**。整个 document 的样式都是你的责任。
 
 | 你用的 | 主窗口视图 | 插件窗口 | 换成什么 |
 |---|---|---|---|
-| `ctx.ui.el` / `render` / `native` / `node` | ✅ | ❌ | `.tb-*` 类 + 内联 `style`（或自己注入 `<style>`） |
+| `ctx.ui.el` / `render` / `native` / `node` | ✅ | ❌ | 自己写 DOM + 自己的 `<style>` |
+| `.tb-*` 类 + `var(--color-*)` 令牌 | ✅ | ❌ | 自己的类名 + 自己的变量 |
 | `ctx.ui.notify`（toast） | ✅ | ❌ | 自己在界面里画一行状态 |
 | `ctx.ui.notifyOS` | ✅ | ❌ | `bridge.request('notify', 'send', { title, body })`（需 `rpc:notify`） |
 | `ctx.ui.mountOverlay` | ✅ | ❌ | 不需要 —— 整个窗口都是你的 |
 
-**为什么组件工厂不镜像**：它的观感**全部来自 Tailwind 工具类**，而插件窗口的样式表
-**故意不含工具类**（只有令牌 + `.tb-*`）。镜像它等于给每个插件窗口加回 ~122 KB utilities，
-或再维护一套裁剪版组件 —— 不值。
+**自己动手时别忘的三件事**（它们的缺席是静默的）：
 
-**但 `notifyOS` 是另一回事**：OS 通知与 DOM / CSS 毫无关系，它只是被放进了 `ui`
+```css
+* { box-sizing: border-box; }            /* 否则 width:100% + padding 溢出 */
+html, body { margin: 0; }                /* 否则恢复浏览器那 8px */
+:focus-visible { outline: 2px solid …; } /* 否则键盘用户看不见焦点 */
+```
+
+**唯一保留下来的一处**是 `color-scheme`（内联主题脚本设的一个属性），它决定
+**操作系统画的那部分**（滚动条、`<select>` 下拉、日期选择器）跟随主题 —— 那些东西
+CSS 碰不到。**你自己的正文配色仍然要自己写。**
+
+### 但你不必手写两套配色：`contributes.theme` 仍然属于你
+
+窗口零 CSS，**但你声明的主题变量照旧会被注入** —— 那是**你自己的声明**，不是宿主的样式：
+
+```json
+// plugin.json
+"contributes": {
+  "theme": { "light": { "--pill-bg": "#fff" }, "dark": { "--pill-bg": "#23262e" } }
+}
+```
+
+宿主把它写成 `:root[data-theme='dark'] [data-plugin='<你的 id>']{…}`，而这个选择器
+**也匹配 `<html>`** —— 整个窗口都是你这个插件的域。所以在自己的 `<style>` 里直接：
+
+```css
+.pill { background: var(--pill-bg); }
+```
+
+**这就是零 CSS 窗口里拿到「跟随明暗主题的变量」的正路** —— 不用自己监听主题变化，
+也不用写两份配色；`data-theme` 由内联主题脚本在首帧前设好。
+
+**为什么组件工厂不镜像**：它的观感**全部来自 Tailwind 工具类**，而插件窗口连样式表都没有。
+镜像它等于给每个插件窗口加回 ~122 KB utilities，或再维护一套裁剪版组件 —— 不值。
+（历史上那个窗口引过一份 19 KB 的 `plugin.css`：令牌 + `.tb-*` + preflight。
+它被删掉是因为**它的 preflight 落在无层**，反过来压过与它同船交付的 `.tb-*`；
+而且仓库里两个真实的插件窗口都自带 reset 与配色，没人需要它。）
+
+**`notifyOS` 是另一回事**：OS 通知与 DOM / CSS 毫无关系，它只是被放进了 `ui`
 命名空间然后跟着整块被跳过了。替代写法见 [bridge.md](bridge.md) §4。
-
-**结论**：**插件窗口里的富 UI 用 `.tb-*` + 令牌 + 内联布局搭** —— 也就是本页前面
-「三件套」那套写法，只是没有工厂可用。好消息是那个窗口整块 DOM 都是你的，
-想彻底自绘就注入自己的 `<style>`。
 
 > 完整的 `ctx` / `bridge` 差异矩阵（含 `windows` / `registerView` / `focusView` /
 > `onDrop` 的 `info` 差异 / `log` 落点）在 [bridge.md](bridge.md)，那是唯一权威清单。
