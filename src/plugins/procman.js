@@ -588,7 +588,10 @@ function registerRenderHooks(ctx) {
           ),
           el('div', {
             class: 'pm-profiles tb-list',
-            role: 'listbox',
+            // `list`, not `listbox`: the rows are `listitem`s that happen to be
+            // selectable, and a listbox expects its children to be `option`s —
+            // which cannot hold the enable checkbox each row has.
+            role: 'list',
             'aria-label': 'Profiles',
             // `.tb-list` already carries `overflow:auto; min-height:0`, so the
             // list is the one scroll region in this column.
@@ -688,23 +691,40 @@ function renderProfiles(root) {
     state.profiles.map((p) => {
       const sess = sessionOf(p.id);
       const live = sess && (sess.status === 'running' || sess.status === 'starting');
-      // The row is the selector: clicking it puts that profile's process in the
-      // terminal and shows its detail in the panel below. With one process per
-      // profile there is nothing else to disambiguate.
-      const selected = !!sess && state.selectedCh === sess.ch;
+      /**
+       * The row is the selector, and that is ALL it is.
+       *
+       * Its four action buttons moved to the right column — Run/Stop/Edit into
+       * the header, Clear/Delete into the drawer. Two sets of affordances for
+       * one object is one place too many to look when something does not behave
+       * as expected, and they were what made the row three lines tall.
+       *
+       * The status stays, deliberately: with the actions gone this is the only
+       * thing on the page that says which profiles are running.
+       */
+      const selected = state.selectedProfileId === p.id;
+      const status = sess ? sess.status : 'idle';
       return el(
         'div',
         {
-          class: 'pm-profile tb-pane tb-pane-pad',
+          class: 'pm-profile tb-pane',
           'data-id': p.id,
-          'aria-selected': String(selected),
-          style: `padding:6px;cursor:pointer;${
-            selected ? 'box-shadow:inset 0 0 0 1px var(--color-brand);' : ''
-          }${p.enabled ? '' : 'opacity:.5;'}`,
+          role: 'listitem',
+          // `aria-current`, not `aria-selected`: the row holds a real checkbox,
+          // and `aria-selected` is only meaningful on an option/tab — wrapping
+          // an interactive control in `role="option"` is worse than just saying
+          // "this is the current one".
+          'aria-current': selected ? 'true' : undefined,
+          style:
+            'padding:6px 8px;cursor:pointer;display:flex;flex-direction:column;gap:3px;' +
+            (selected
+              ? 'background:color-mix(in srgb, var(--color-brand) 12%, transparent);box-shadow:inset 3px 0 0 var(--color-brand);'
+              : '') +
+            (p.enabled ? '' : 'opacity:.5;'),
         },
         el(
           'div',
-          { style: 'display:flex;align-items:center;gap:6px;' },
+          { style: 'display:flex;align-items:center;gap:6px;min-width:0;' },
           // The enabled toggle is a real Checkbox, so its state arrives through
           // `update:modelValue` rather than a delegated `change` on a native
           // input. Attaching it here keeps the event next to the control that
@@ -718,32 +738,41 @@ function renderProfiles(root) {
               redraw();
             },
           }),
-          el('span', { class: 'tb-row-label', style: 'font-weight:500;' }, p.name || p.program),
           el(
             'span',
-            { class: 'tb-hint', title: sess ? sess.status : 'not started' },
+            { class: 'tb-row-label', style: 'font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' },
+            p.name || p.program,
+          ),
+          el(
+            'span',
+            {
+              class: `tb-hint ${live ? 'tb-t-ok' : sess ? 'tb-t-bad' : ''}`.trim(),
+              title: status,
+              style: 'margin-left:auto;flex:none;display:flex;align-items:center;gap:4px;',
+            },
             el('span', { class: `tb-dot ${live ? 'tb-dot-ok' : sess ? 'tb-dot-bad' : ''}`.trim() }),
-            sess ? sess.status : 'idle',
+            status,
           ),
         ),
-        el('div', { class: 'tb-hint tb-mono', style: 'margin-top:2px;' }, [p.program, ...p.args].join(' ')),
         el(
           'div',
-          { style: 'display:flex;gap:4px;align-items:center;margin-top:5px;' },
-          p.autoStart ? el('badge', { variant: 'outline' }, 'auto') : null,
-          p.schedule.kind !== 'none' ? el('badge', { variant: 'outline' }, describeSchedule(p.schedule)) : null,
-          p.restart.policy !== 'never' ? el('badge', { variant: 'outline', title: 'restart policy' }, '↻') : null,
+          { style: 'display:flex;align-items:center;gap:6px;min-width:0;' },
           el(
             'span',
-            { class: 'tb-row-actions', style: 'gap:3px;' },
-            el('button', { variant: 'outline', size: 'icon-xs', 'data-act': 'profile-run', title: 'Run now', 'aria-label': 'Run now' }, '▶'),
-            el(
-              'button',
-              { variant: 'outline', size: 'icon-xs', 'data-act': 'profile-stop', title: 'Stop', 'aria-label': 'Stop', disabled: !live },
-              '■',
-            ),
-            el('button', { variant: 'outline', size: 'icon-xs', 'data-act': 'profile-edit', title: 'Edit', 'aria-label': 'Edit' }, '✎'),
-            el('button', { variant: 'outline', size: 'icon-xs', 'data-act': 'profile-del', title: 'Delete', 'aria-label': 'Delete' }, '✕'),
+            { class: 'tb-hint tb-mono', style: 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' },
+            [p.program, ...p.args].join(' '),
+          ),
+          el(
+            'span',
+            { style: 'margin-left:auto;flex:none;display:flex;gap:3px;' },
+            p.autoStart ? el('badge', { variant: 'outline' }, 'auto') : null,
+            p.schedule.kind !== 'none' ? el('badge', { variant: 'outline' }, describeSchedule(p.schedule)) : null,
+            // `restart` as a word, not `↻`: the arrow was one of the four
+            // platform-dependent glyphs this row used to be full of, and the
+            // policy it stands for is what the tooltip now spells out.
+            p.restart.policy !== 'never'
+              ? el('badge', { variant: 'outline', title: `restart: ${describeRestart(p.restart)}` }, 'restart')
+              : null,
           ),
         ),
       );
