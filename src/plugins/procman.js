@@ -776,10 +776,27 @@ function renderProfileEditor(root) {
   const field = (label, input) =>
     el(
       'label',
-      { style: 'display:flex;flex-direction:column;gap:3px;font-size:10.5px;' },
+      // `align-items:stretch` is load-bearing: `el('label')` resolves to the
+      // shadcn Label COMPONENT, whose own style centres its children — which
+      // centred every 30px label over a 510px input (measured: the span's centre
+      // was 639.5 against the input's 640). A left-aligned label above its field
+      // is what a form is supposed to look like.
+      { style: 'display:flex;flex-direction:column;gap:3px;font-size:10.5px;align-items:stretch;' },
       el('span', { class: 'tb-label' }, label),
       input,
     );
+  /**
+   * Two fields side by side, each taking half the row.
+   *
+   * They used to be a `display:flex` row, which let each field shrink to its
+   * content: the numeric inputs came out 76px wide inside a 510px row, so two
+   * thirds of every pair row was empty. A grid gives each half a real width and
+   * keeps the two columns aligned between rows.
+   */
+  const pair = (...fields) =>
+    el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:8px;' }, ...fields);
+  const section = (title) =>
+    el('div', { class: 'tb-section-title', style: 'margin:12px 0 2px;' }, title);
   const toggle = (key, label) =>
     el(
       'div',
@@ -821,7 +838,16 @@ function renderProfileEditor(root) {
       },
       el(
         'dialog-content',
-        { class: 'max-h-[85vh] overflow-y-auto sm:max-w-[560px]' },
+        // Inline, not `max-h-[85vh] overflow-y-auto sm:max-w-[560px]`: a plugin
+        // view must not depend on Tailwind utilities (an external plugin cannot
+        // use them at all), and this file is the reference others copy. The
+        // dialog is 560x731 as measured, so the cap only matters on short windows.
+        // Header and footer stay put; only the FIELDS scroll. The height cap is
+        // what makes that necessary: measured at 1440x900 the form needs ~800px
+        // and 85vh is 765, so with `overflow:auto` on the whole dialog the Save
+        // button ended up below the fold — the one control that must always be
+        // reachable.
+        { style: 'max-height:85vh;max-width:560px;display:flex;flex-direction:column;' },
         el(
           'dialog-header',
           {},
@@ -840,35 +866,31 @@ function renderProfileEditor(root) {
           {
             class: 'pm-profile-form',
             'data-id': d.id,
-            style: 'display:flex;flex-direction:column;gap:8px;',
+            style: 'display:flex;flex-direction:column;gap:8px;min-height:0;',
             onSubmit: onProfileSubmit,
           },
-      field('name', text('name', { placeholder: 'My backend' })),
-      field('program', text('program', { placeholder: 'node' })),
-      field('args (space separated)', text('args')),
-      field('cwd', text('cwd', { placeholder: 'optional' })),
-      field('env (KEY=VALUE, one per line)', el('textarea', { rows: 2, defaultValue: d.env, onInput: (e) => set('env')(e.target.value) })),
-      el(
-        'div',
-        { style: 'display:flex;gap:6px;' },
-        field('cols', number('cols', 20, 500)),
-        field('rows', number('rows', 5, 200)),
-      ),
-      el('div', { style: 'display:flex;gap:14px;font-size:11px;' }, toggle('enabled', 'enabled'), toggle('autoStart', 'start with app')),
-      field('schedule', choice('schedKind', ['none', 'daily', 'interval'], { none: 'manual only' })),
-      el(
-        'div',
-        { style: 'display:flex;gap:6px;' },
-        field('at (daily)', text('schedAt', { type: 'time' })),
-        field('every (min)', number('schedEvery', 1, 1440)),
-      ),
-      field('restart on exit', choice('restartPolicy', ['never', 'on-failure', 'always'])),
-      el(
-        'div',
-        { style: 'display:flex;gap:6px;' },
-        field('max retries', number('maxRetries', 0, 100)),
-        field('delay (ms)', number('delayMs', 0, 600000)),
-      ),
+          el(
+            'div',
+            { class: 'pm-form-body', style: 'display:flex;flex-direction:column;gap:8px;overflow-y:auto;min-height:0;padding-right:4px;' },
+          // Grouped, so the modal reads as "what it runs" then "when it runs"
+          // instead of fourteen equal-looking rows.
+          section('Program'),
+          field('name', text('name', { placeholder: 'My backend' })),
+          field('program', text('program', { placeholder: 'node' })),
+          field('args (space separated)', text('args')),
+          field('cwd', text('cwd', { placeholder: 'optional' })),
+          field('env (KEY=VALUE, one per line)', el('textarea', { rows: 3, defaultValue: d.env, onInput: (e) => set('env')(e.target.value) })),
+          section('Behaviour'),
+          el('div', { style: 'display:flex;gap:14px;font-size:11px;' }, toggle('enabled', 'enabled'), toggle('autoStart', 'start with app')),
+          field('schedule', choice('schedKind', ['none', 'daily', 'interval'], { none: 'manual only' })),
+          pair(field('at (daily)', text('schedAt', { type: 'time' })), field('every (min)', number('schedEvery', 1, 1440))),
+          field('restart on exit', choice('restartPolicy', ['never', 'on-failure', 'always'])),
+          pair(field('max retries', number('maxRetries', 0, 100)), field('delay (ms)', number('delayMs', 0, 600000))),
+          section('Terminal'),
+          pair(field('cols', number('cols', 20, 500)), field('rows', number('rows', 5, 200))),
+          ),
+          // Outside the scrolling body: Cancel/Save must be reachable without
+          // scrolling a modal, and the error line belongs next to them.
           el(
             'dialog-footer',
             {},
