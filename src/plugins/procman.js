@@ -95,8 +95,22 @@ const state = {
   /** Pending restart timers, cleared on deactivate. */
   restartTimers: new Set(),
   sessions: new Map(), // ch -> session
-  activeCh: null,
+  /**
+   * The profile the user clicked — **the selector for the whole page**.
+   *
+   * There used to be two fields (`activeCh` + `selectedCh`) because the right
+   * column had its own tab bar, so a tab could be "active" without being the
+   * profile selected on the left. The tab bar is gone, so nothing needs keeping
+   * in sync: one click, one selection, and the row highlight, the header, the
+   * facts drawer and the terminal all read this.
+   */
+  selectedProfileId: null,
+  /** Channel of the selected profile's session, or null when it has none. */
   selectedCh: null,
+  /** The facts drawer — state, not DOM, because a re-render would drop the DOM's own. */
+  showFacts: false,
+  /** The raw output ring inside the drawer, same reason. */
+  showRaw: false,
   ringRaw: false,
   debug: null,
 };
@@ -141,15 +155,12 @@ async function spawnFromSpec(spec) {
     bytesIn: 0,
   };
   state.sessions.set(ch, session);
-  state.activeCh = ch;
-  state.selectedCh = ch;
 
   // Attach the terminal BEFORE spawning so the PTY is created at the pane's
   // real, fitted size. A post-spawn resize forces ConPTY to emit a full-screen
   // redraw in a new coordinate system; if that size ever diverges from the
   // xterm grid, the pane looks frozen. Starting in sync avoids the dance.
   scheduleRefreshRows();
-  activateSession(ch);
   if (session.terminal) {
     session.cfg.cols = session.terminal.cols;
     session.cfg.rows = session.terminal.rows;
@@ -240,6 +251,25 @@ function sessionOf(profileId) {
   return [...state.sessions.values()].find((s) => s.profileId === profileId) ?? null;
 }
 
+/**
+ * Select a profile: the row highlight, the right-hand header, the facts drawer
+ * and the terminal all follow it. **This is the only way the right column
+ * changes what it shows.**
+ *
+ * A background launch (schedule / auto-start / restart) deliberately does not
+ * call this. `spawnFromSpec` used to activate its own session on every spawn,
+ * which with a tab bar read as "a tab appeared"; without one it means a process
+ * you are not watching replacing the output of the one you are. The row's status
+ * is the signal for those, and clicking it is how you look.
+ */
+function selectProfile(id) {
+  state.selectedProfileId = id ?? null;
+  state.selectedCh = id ? (sessionOf(id)?.ch ?? null) : null;
+  activateSession(state.selectedCh);
+  renderProfiles(document);
+  renderDetail();
+}
+
 /** Live sessions belonging to a profile. */
 function runningFor(profileId) {
   return [...state.sessions.values()].filter(
@@ -258,9 +288,10 @@ async function launchProfile(rawProfile, reason = 'manual') {
   // unaffected: the exited session is no longer counted as running.
   const live = runningFor(p.id);
   if (live.length) {
-    state.activeCh = live[0].ch;
-    state.selectedCh = live[0].ch;
     state.ui?.notify(`"${p.name || p.id}" is already running`, 'info');
+    // Pressing Run means "show me this one" — but a schedule firing must not
+    // move the user's selection, so only the manual path follows it.
+    if (reason === 'manual') selectProfile(p.id);
     return live[0];
   }
   state.lastFired.set(p.id, Date.now());
@@ -273,6 +304,7 @@ async function launchProfile(rawProfile, reason = 'manual') {
     profileId: p.id,
   });
   state.log?.('profile', `launch "${p.name}" (${reason}) ch=${session.ch}`);
+  if (reason === 'manual') selectProfile(p.id);
   return session;
 }
 
@@ -543,10 +575,13 @@ function registerRenderHooks(ctx) {
 
         el(
           'div',
-          { class: 'pm-left', style: 'display:flex;flex-direction:column;gap:8px;min-height:0;' },
+          // The column does NOT scroll any more — the list inside it does. The
+          // toolbar therefore stays put while the profiles scroll under it,
+          // which is the only part of this column whose length is unbounded.
+          { class: 'pm-left', style: 'display:flex;flex-direction:column;gap:8px;min-height:0;overflow:hidden;' },
           el(
             'div',
-            { class: 'tb-toolbar' },
+            { class: 'tb-toolbar', style: 'flex:none;' },
             el('span', { class: 'tb-section-title', style: 'margin:0;' }, 'Profiles'),
             el('span', { class: 'pm-count tb-hint', style: 'margin-left:auto;' }),
             el('button', { variant: 'outline', size: 'xs', 'data-act': 'profile-new' }, '+ New'),
@@ -555,16 +590,13 @@ function registerRenderHooks(ctx) {
             class: 'pm-profiles tb-list',
             role: 'listbox',
             'aria-label': 'Profiles',
-            style: 'flex:1;min-height:0;',
+            // `.tb-list` already carries `overflow:auto; min-height:0`, so the
+            // list is the one scroll region in this column.
+            style: 'flex:1 1 auto;',
           }),
-          // The old right-hand column, merged in. With one profile owning one
-          // process, "the detail of the selected session" is just "the detail of
-          // the selected profile" — so it belongs next to the list, not in a
-          // permanently reserved third column costing the terminal 270px.
-          el('div', {
-            class: 'pm-detail tb-pane',
-            style: 'padding:10px;overflow:auto;font-size:12px;max-height:46%;flex:0 0 auto;',
-          }),
+          // The detail panel used to live here. It moved to the right column,
+          // next to the thing it describes: with one profile owning one process,
+          // every fact in it is a fact about the profile the terminal is showing.
           // The editor mounts here as a dialog; nothing renders into it inline.
           el('div', { class: 'pm-profile-editor' }),
         ),
@@ -572,48 +604,51 @@ function registerRenderHooks(ctx) {
         el(
           'div',
           { class: 'pm-center tb-card', style: 'display:flex;flex-direction:column;min-height:0;overflow:hidden;' },
-          el('div', { class: 'pm-tabs tb-tabs', role: 'tablist', 'aria-label': 'Running profiles' }),
+          /**
+           * The right column owns the running state: a header that names what
+           * you are looking at, a drawer for the profile's own facts, and the
+           * terminal under both.
+           *
+           * There is NO tab bar. It used to be a second way to choose what the
+           * terminal showed, and two selectors meant two places to look when the
+           * output was not what you expected — the left row is the selector.
+           */
+          el('div', {
+            class: 'pm-facts-head tb-card-head',
+            style: 'display:none;align-items:center;gap:8px;flex:none;flex-wrap:wrap;padding:8px 12px;',
+          }),
+          el('div', {
+            class: 'pm-facts tb-pane',
+            // Built only while the drawer is open (see state.showFacts) — not
+            // merely hidden — so a closed drawer costs nothing.
+            style: 'display:none;margin:8px;padding:10px;flex:none;font-size:12px;',
+          }),
           el(
             'div',
             { class: 'pm-term-area', style: 'flex:1;min-height:0;position:relative;background:var(--color-canvas);' },
             el(
               'div',
               { class: 'pm-term-empty tb-empty', style: 'position:absolute;inset:0;' },
-              'Nothing running — hit ▶ on a profile, or create one with + New.',
+              'Select a profile on the left, or create one with + New.',
             ),
           ),
         ),
       ),
     );
 
-    // Delegation is unchanged: the tree keeps the same `data-*` hooks and class
-    // names the handlers were written against, so only the DOM building moved.
-    // Bound to the whole left column so "+ New", the rows and the detail panel
-    // all reach one handler.
-    root.querySelector('.pm-left').addEventListener('click', (ev) => onProfileClick(root, ev));
-    root.querySelector('.pm-tabs').addEventListener('click', onTabClick);
+    // One handler, two columns. Both are bound (not `root`) so a click inside
+    // the editor dialog — which is portalled to the plugin's container, i.e.
+    // outside both — never routes through the row logic. The tree keeps the same
+    // `data-*` hooks the handlers were written against, so only the DOM moved.
+    for (const sel of ['.pm-left', '.pm-center']) {
+      root.querySelector(sel).addEventListener('click', (ev) => onProfileClick(root, ev));
+    }
 
     renderProfiles(root);
     renderProfileEditor(root);
-    renderTabs(root);
-    activateSession(state.activeCh);
+    activateSession(state.selectedCh);
     renderDetail();
   });
-}
-
-function onTabClick(ev) {
-  const tab = ev.target.closest('[data-ch]');
-  if (!tab) return;
-  const ch = tab.dataset.ch;
-  if (ev.target.closest('[data-act="close"]')) {
-    removeSession(ch);
-    return;
-  }
-  state.activeCh = ch;
-  state.selectedCh = ch;
-  activateSession(ch);
-  renderTabs();
-  renderDetail();
 }
 
 function dot(status) {
@@ -627,7 +662,6 @@ function refreshSessionRows() {
   // The profile rows carry the live status now that the separate sessions list
   // is gone, so refreshing rows means redrawing the profile list.
   renderProfiles(root);
-  renderTabs(root);
 }
 
 /** One row per profile: what it runs, when, and the actions available. */
@@ -917,17 +951,12 @@ function onProfileClick(root, ev) {
   if (!profile) return;
 
   // A click on the row itself (not on one of its buttons) selects the profile:
-  // its process goes to the terminal and its detail to the panel below. This is
-  // what the separate sessions list used to do.
+  // its process goes to the terminal and its facts to the drawer beside it.
+  // Selecting a profile that is NOT running is a real answer, not a no-op: the
+  // terminal swaps to that profile's "not running" state, so what you see always
+  // belongs to the row you highlighted.
   if (!btn) {
-    const sess = sessionOf(id);
-    if (!sess) return;
-    state.selectedCh = sess.ch;
-    state.activeCh = sess.ch;
-    activateSession(sess.ch);
-    renderProfiles(root);
-    renderTabs(root);
-    renderDetail();
+    selectProfile(id);
     return;
   }
 
@@ -981,34 +1010,25 @@ function onProfileSubmit(ev) {
   renderDetail();
 }
 
-function renderTabs(root) {
-  const host = (root || document).querySelector('.pm-tabs');
-  if (!host) return;
-  const { el, render } = state.ctx.ui;
-  render(
-    host,
-    [...state.sessions.values()].reverse().map((s) =>
-      el(
-        'div',
-        { class: 'tb-tab', 'data-ch': s.ch, role: 'tab', 'aria-selected': String(s.ch === state.activeCh) },
-        dot(s.status),
-        s.name,
-        el(
-          'span',
-          { class: 'tb-icon-btn', 'data-act': 'close', role: 'button', title: 'Remove tab', 'aria-label': 'Remove tab' },
-          '×',
-        ),
-      ),
-    ),
-  );
-}
-
 function activateSession(ch) {
   const area = document.querySelector('.pm-term-area');
   if (!area) return;
   const empty = area.querySelector('.pm-term-empty');
   area.querySelectorAll(':scope > .pm-term-box').forEach((n) => n.remove());
-  if (empty) empty.style.display = 'none';
+  /**
+   * The empty state names the SELECTED profile rather than saying "nothing is
+   * running". With the terminal driven by the left column, "nothing here" is a
+   * statement about one row: either you have not picked one, or the one you
+   * picked is not running — and saying which is the difference between an empty
+   * pane and an answer.
+   */
+  if (empty) {
+    const prof = state.profiles.find((p) => p.id === state.selectedProfileId);
+    empty.textContent = prof
+      ? `"${prof.name || prof.program}" is not running — press Run above.`
+      : 'Select a profile on the left, or create one with + New.';
+    empty.style.display = 'none';
+  }
   if (!ch || !state.sessions.has(ch)) {
     if (empty) empty.style.display = '';
     return;
@@ -1038,114 +1058,231 @@ function removeSession(ch) {
   }
   detachTerminal(s);
   state.sessions.delete(ch);
-  if (state.activeCh === ch) state.activeCh = [...state.sessions.keys()][0] || null;
-  if (state.selectedCh === ch) state.selectedCh = state.activeCh;
-  renderTabs();
-  activateSession(state.activeCh);
+  // The profile keeps its selection — it is still the row the user is looking
+  // at — but it no longer has a session, so the terminal falls back to its
+  // "not running" state and the row's status goes back to idle.
+  if (state.selectedCh === ch) {
+    state.selectedCh = null;
+    activateSession(null);
+    renderProfiles(document);
+  }
   renderDetail();
 }
 
+/**
+ * Render the right column's two panels for whatever is selected.
+ *
+ * Same name as before — this is still "the detail of the selection" — but a
+ * different home: the header above the terminal, and a drawer beside it, instead
+ * of a panel under the profile list. Every fact in here is a fact about the
+ * profile the terminal is showing, so it belongs next to the terminal.
+ *
+ * Both panels are rebuilt from scratch on each call (the factory replaces a
+ * container's children), which is why the two disclosure states live in `state`:
+ * a `<details>` element would forget it was open on the very next frame.
+ */
 function renderDetail() {
-  const host = document.querySelector('.pm-detail');
-  if (!host) return;
+  const head = document.querySelector('.pm-facts-head');
+  const facts = document.querySelector('.pm-facts');
+  if (!head || !facts) return;
   const { el, render } = state.ctx.ui;
 
+  const prof = state.profiles.find((p) => p.id === state.selectedProfileId) ?? null;
   const s = state.sessions.get(state.selectedCh);
-  if (!s) {
-    render(host, el('div', { class: 'tb-hint' }, 'Select a profile to see its process.'));
+
+  if (!prof) {
+    // Nothing selected: no header, no drawer — and the terminal already says
+    // what to do. `render(x, null)` is how a container is emptied THROUGH the
+    // factory; clearing it by hand would leave the previous Vue app mounted.
+    head.style.display = 'none';
+    facts.style.display = 'none';
+    render(head, null);
+    render(facts, null);
     return;
   }
 
-  const uptime = s.status === 'running' ? `${((Date.now() - s.startedAt) / 1000).toFixed(1)}s` : '—';
-  const running = s.status === 'running' || s.status === 'starting';
-  const prof = state.profiles.find((p) => p.id === s.profileId);
-  const code = (text, cls = 'tb-mono tb-t-muted') => el('code', { class: cls }, text);
-
-  render(
-    host,
+  const running = !!s && (s.status === 'running' || s.status === 'starting');
+  const status = s ? s.status : 'idle';
+  const uptime = s && s.status === 'running' ? `${Math.round((Date.now() - s.startedAt) / 1000)}s` : null;
+  const fact = (label, value) =>
     el(
       'div',
-      {},
-      el('strong', { style: 'font-size:13px;' }, s.name),
+      { style: 'min-width:0;' },
+      el('span', { class: 'tb-label' }, label),
+      el('span', { class: 'tb-mono', style: 'margin-left:6px;word-break:break-all;' }, value),
+    );
+
+  /**
+   * The header: what you are looking at, and what you can do to it.
+   *
+   * Handlers are closures over `prof`, NOT `data-act` delegation. The delegated
+   * handler resolves a profile from the clicked ROW, and these buttons are not
+   * in a row — routing them through it is how you get buttons that silently do
+   * nothing.
+   */
+  head.style.display = 'flex';
+  render(head, [
+    el('strong', { style: 'font-size:13px;' }, prof.name || prof.program),
+    el(
+      'badge',
+      {
+        variant: status === 'running' ? 'secondary' : 'outline',
+        title: s && s.status === 'exited' ? `exit code ${s.exitCode}` : undefined,
+      },
+      status,
+    ),
+    s
+      ? el(
+          'span',
+          { class: 'tb-hint tb-mono' },
+          [s.pid ? `pid ${s.pid}` : null, uptime, `${s.bytesIn} B`].filter(Boolean).join(' · '),
+        )
+      : el('span', { class: 'tb-hint' }, 'no process'),
+    el(
+      'span',
+      { style: 'margin-left:auto;display:flex;gap:6px;align-items:center;' },
+      running
+        ? el('button', { variant: 'outline', size: 'xs', onClick: () => stopProfile(prof.id) }, 'Stop')
+        : el('button', { variant: 'default', size: 'xs', onClick: () => launchProfile(prof, 'manual') }, 'Run'),
       el(
-        'div',
-        { class: 'tb-t-muted', style: 'margin:8px 0;display:flex;flex-direction:column;gap:4px;' },
-        el('div', {}, dot(s.status), ` status: ${s.status}${s.status === 'exited' ? ` (code ${s.exitCode})` : ''}`),
-        el('div', {}, 'program: ', code([s.cfg.program, ...(s.cfg.args || [])].join(' '))),
-        s.cfg.cwd ? el('div', {}, `cwd: ${s.cfg.cwd}`) : null,
-        s.cfg.env && Object.keys(s.cfg.env).length
-          ? el('div', {}, 'env: ', code(Object.keys(s.cfg.env).join(', ')))
-          : null,
-        prof
-          ? el(
-              'div',
-              { style: 'margin-top:6px;padding-top:6px;border-top:1px solid var(--color-line);' },
-              el('div', {}, 'profile: ', code(prof.name || prof.id, 'tb-mono tb-t-brand')),
-              el('div', {}, `schedule: ${describeSchedule(prof.schedule)}`),
-              el('div', {}, `restart: ${describeRestart(prof.restart)}${s.attempts ? ` · restarted ${s.attempts}×` : ''}`),
-              s.stoppedByUser ? el('div', { class: 'tb-hint' }, 'stopped by you — no restart') : null,
-            )
-          : null,
-        el('div', {}, 'channel: ', code(s.ch)),
-        el('div', {}, `pid: ${s.pid ?? '—'}`),
-        el('div', {}, `uptime: ${uptime}`),
-        el('div', {}, `bytes in: ${s.bytesIn}`),
-        el('div', {}, 'scheme: pty-stream (raw-binary)'),
-      ),
-      el(
-        'div',
-        { class: 'tb-toolbar', style: 'margin-top:10px;' },
-        el(
-          'button',
-          { variant: 'destructive', 'data-act': 'kill-sel', disabled: !running, onClick: () => killSession(s.ch) },
-          'Stop',
-        ),
-        el(
-          'button',
-          {
-            variant: 'outline',
-            'data-act': 'close-sel',
-            disabled: running,
-            title: running ? 'Stop it first' : undefined,
-            onClick: () => removeSession(s.ch),
+        'button',
+        {
+          variant: 'outline',
+          size: 'xs',
+          onClick: () => {
+            state.editingId = prof.id;
+            renderProfileEditor(document.querySelector('.pm-root'));
           },
-          'Remove tab',
-        ),
+        },
+        'Edit',
       ),
       el(
-        'div',
-        { style: 'margin-top:12px;border-top:1px solid var(--color-line);padding-top:8px;' },
-        el(
-          'div',
-          { style: 'display:flex;align-items:center;gap:8px;margin-bottom:5px;' },
-          el('span', { class: 'tb-section-title', style: 'margin:0;' }, 'output ring (last 4KB)'),
-          el(
-            'label',
-            {
-              class: 'tb-hint',
-              style: 'margin-left:auto;display:flex;gap:5px;align-items:center;cursor:pointer;',
-              title: 'raw = byte-accurate stream incl. ANSI escapes (debug)',
-            },
-            el('checkbox', {
-              'data-act': 'ring-raw',
-              defaultValue: state.ringRaw,
-              'onUpdate:modelValue': (v) => {
-                state.ringRaw = !!v;
-                renderDetail();
-              },
-            }),
-            ' raw',
-          ),
-        ),
-        el(
-          'pre',
-          { class: 'pm-ring tb-pane tb-mono', style: 'margin:0;padding:6px;white-space:pre-wrap;word-break:break-all;max-height:220px;' },
-          ringText(s) || '(empty)',
-        ),
+        'button',
+        {
+          variant: 'ghost',
+          size: 'xs',
+          'aria-expanded': String(state.showFacts),
+          onClick: () => {
+            state.showFacts = !state.showFacts;
+            renderDetail();
+          },
+        },
+        // A typographic disclosure mark, not an icon: the icon vocabulary is the
+        // host's sidebar set, and a plugin view has no legitimate way to reach it
+        // (that would mean widening the plugin contract — `ctx.ui.icon` — which is
+        // a separate decision, deliberately not taken here).
+        state.showFacts ? 'Config ▴' : 'Config ▾',
       ),
     ),
-  );
+  ]);
+
+  /**
+   * The drawer: the profile's own facts, then the raw capture for debugging.
+   *
+   * Closed means NOT BUILT (not `display:none`), which is what makes "collapsed
+   * costs nothing" true: the ring `<pre>` and its ANSI stripping only exist
+   * while someone is looking at them.
+   */
+  facts.style.display = state.showFacts ? 'block' : 'none';
+  if (!state.showFacts) {
+    render(facts, null);
+    return;
+  }
+
+  render(facts, [
+    el(
+      'div',
+      { style: 'display:grid;grid-template-columns:1fr 1fr;gap:4px 14px;font-size:11.5px;' },
+      fact('program', [prof.program, ...(prof.args || [])].join(' ') || '—'),
+      fact('cwd', prof.cwd || '(inherit)'),
+      fact('schedule', describeSchedule(prof.schedule)),
+      fact('restart', describeRestart(prof.restart) + (s && s.attempts ? ` · ${s.attempts}×` : '')),
+      fact('auto-start', prof.autoStart ? 'yes' : 'no'),
+      fact('enabled', prof.enabled ? 'yes' : 'no'),
+      s ? fact('channel', s.ch) : null,
+      s ? fact('scheme', 'pty-stream · raw-binary') : null,
+    ),
+    s
+      ? el(
+          'div',
+          { style: 'margin-top:8px;border-top:1px solid var(--color-line);padding-top:6px;' },
+          el(
+            'div',
+            { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;' },
+            el(
+              'button',
+              {
+                variant: 'ghost',
+                size: 'xs',
+                'aria-expanded': String(state.showRaw),
+                onClick: () => {
+                  state.showRaw = !state.showRaw;
+                  renderDetail();
+                },
+              },
+              state.showRaw ? '▴ Raw output (last 4KB)' : '▾ Raw output (last 4KB)',
+            ),
+            el(
+              'label',
+              {
+                class: 'tb-hint',
+                style: 'display:flex;gap:5px;align-items:center;cursor:pointer;',
+                title: 'raw = byte-accurate stream incl. ANSI escapes (debug)',
+              },
+              el('checkbox', {
+                'data-act': 'ring-raw',
+                defaultValue: state.ringRaw,
+                'onUpdate:modelValue': (v) => {
+                  state.ringRaw = !!v;
+                  renderDetail();
+                },
+              }),
+              'raw bytes',
+            ),
+            el(
+              'button',
+              {
+                variant: 'outline',
+                size: 'xs',
+                disabled: running,
+                title: running ? 'Stop it first' : 'Clear this output and forget the session',
+                onClick: () => removeSession(s.ch),
+              },
+              'Clear output',
+            ),
+          ),
+          state.showRaw
+            ? el(
+                'pre',
+                { class: 'pm-ring tb-pane tb-mono', style: 'margin:6px 0 0;padding:6px;white-space:pre-wrap;word-break:break-all;max-height:220px;' },
+                ringText(s) || '(empty)',
+              )
+            : null,
+        )
+      : null,
+    el(
+      'div',
+      { style: 'margin-top:10px;border-top:1px solid var(--color-line);padding-top:8px;display:flex;gap:8px;align-items:center;' },
+      // The destructive action lives behind the disclosure on purpose, and says
+      // what it does NOT do — the two things people get wrong about it.
+      el('span', { class: 'tb-hint', style: 'margin-right:auto;' }, 'Deleting a profile does not stop its process.'),
+      el(
+        'button',
+        {
+          variant: 'outline',
+          size: 'xs',
+          onClick: () => {
+            deleteProfile(prof.id);
+            renderProfiles(document.querySelector('.pm-root'));
+            renderProfileEditor(document.querySelector('.pm-root'));
+          },
+        },
+        'Delete',
+      ),
+    ),
+  ]);
 }
+
 
 /* ---------------------------------- helpers ----------------------------------- */
 
