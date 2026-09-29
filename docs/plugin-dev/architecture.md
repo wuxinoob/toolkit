@@ -166,7 +166,8 @@ boot ok: 7 plugins, 9 views, active=builtin.procman/procman
 ```
 
 **`error — <原因>` 就是答案**，不用猜。而 `plugin load` 那一行是分插件的 ——
-**`bootPlugins` 是串行 await**，所以一个插件慢会拖住后面所有插件的视图。
+**内置插件的加载是串行 await**（`reconcilePlugins` 的 built-in pass），
+所以一个插件慢会拖住后面所有插件的视图。
 （插件总数 = 2 个内置 + 你自己装的那些，所以这个数字每台机器都不同。）
 
 ### ② 通信 trace

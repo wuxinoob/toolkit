@@ -6,8 +6,7 @@ import { store, saveSettings, toast } from '../host/store.js';
 import { setHotkey } from '../host/lifecycle.js';
 import { applySummonShortcut } from '../host/boot.js';
 import { activate, deactivate, saveEnabled } from '../host/lifecycle.js';
-import { resolveBuiltin } from '../host/registry.js';
-import { scanExternalPlugins, getExternal } from '../host/external.js';
+import { Origin, originOf, pluginModule, reconcilePlugins, reloadPlugin } from '../host/plugins.js';
 import { hub } from '../protocol/hub.js';
 import { getResolvedTheme, getThemePref, onThemeChange, setTheme } from '../host/theme.js';
 
@@ -28,6 +27,8 @@ import {
 const shortcut = ref(store.settings.summonShortcut);
 const saved = ref(false);
 const scanning = ref(false);
+/** id of the plugin whose reload is in flight, so its button can show it. */
+const reloading = ref(null);
 const liveSessions = ref([]);
 
 /* --------------------------------- appearance -------------------------------- */
@@ -62,6 +63,18 @@ const pluginRows = computed(() =>
     name: p.manifest.name,
     version: p.manifest.version,
     builtin: p.manifest.builtin,
+    /**
+     * Where this plugin came from — the catalogue's answer, not the row's.
+     *
+     * `manifest.builtin` and this agree by construction (both are derived from
+     * the same load path), but the catalogue is the authority, and it is what
+     * decides whether the reload below can re-read anything.
+     */
+    // Fallback for a row whose plugin never loaded (a failed external plugin has
+    // a row but no catalogue entry): the row's own flag still says which kind it
+    // is, so the label stays right and the click produces a real error instead
+    // of a wrong-looking one.
+    origin: originOf(p.id) ?? (p.manifest.builtin ? 'builtin' : 'external'),
     status: p.status,
     error: p.error,
     enabled: p.status === 'active',
@@ -87,7 +100,7 @@ const statusVariant = (status) =>
   status === 'active' ? 'secondary' : status === 'error' ? 'destructive' : 'outline';
 
 async function togglePlugin(row) {
-  const mod = resolveBuiltin(row.id) || getExternal(row.id);
+  const mod = pluginModule(row.id);
   if (!mod) {
     toast('Plugin not loaded yet — use Rescan first', 'error');
     return;
@@ -101,12 +114,37 @@ async function togglePlugin(row) {
   await refreshSessions();
 }
 
+/**
+ * Load one plugin again.
+ *
+ * The button says two different things on purpose, because the two plugins can
+ * do two different things: an **external** plugin is re-read from disk (its
+ * bytes, whatever the digest says), while a **built-in** lives in the bundle and
+ * can only be restarted. Calling both "Reload" would imply the built-in picks up
+ * source edits, which it does not — in dev Vite has already done that.
+ */
+async function reloadRow(row) {
+  reloading.value = row.id;
+  try {
+    const r = await reloadPlugin(row.id, { silent: false });
+    toast(`${row.name} restarted (${r.origin})`, 'info');
+    await refreshSessions();
+  } catch (e) {
+    toast(`${row.name}: ${e?.message ?? e}`, 'error');
+  } finally {
+    reloading.value = null;
+  }
+}
+
 async function rescan() {
   scanning.value = true;
   try {
     // The summary says what CHANGED, not just how many folders exist — that was
     // the same number whether the rescan did anything or not.
-    const r = await scanExternalPlugins({ silent: false });
+    //
+    // `sources: [EXTERNAL]` because that is what this button means: rescan the
+    // plugins DIRECTORY. The built-ins have no directory to rescan.
+    const { external: r } = await reconcilePlugins({ silent: false, sources: [Origin.EXTERNAL] });
     const parts = [];
     if (r.added.length) parts.push(`${r.added.length} added`);
     if (r.reloaded.length) parts.push(`${r.reloaded.length} reloaded`);
@@ -601,6 +639,20 @@ onMounted(loadAutostart);
                 </TableCell>
                 <TableCell class="text-xs text-muted-foreground">{{ row.permissions }}</TableCell>
                 <TableCell class="text-right">
+                  <!--
+                    Two labels, one action: an external plugin is re-read from
+                    disk; a built-in lives in the bundle and can only be
+                    restarted. See reloadRow().
+                  -->
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    class="mr-2"
+                    :disabled="reloading === row.id"
+                    @click="reloadRow(row)"
+                  >
+                    {{ reloading === row.id ? '…' : row.origin === 'external' ? 'Reload' : 'Restart' }}
+                  </Button>
                   <Button variant="outline" size="sm" @click="togglePlugin(row)">
                     {{ row.enabled ? 'Disable' : 'Enable' }}
                   </Button>

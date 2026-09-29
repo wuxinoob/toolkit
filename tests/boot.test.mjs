@@ -78,6 +78,9 @@ const { boot } = await import('../src/host/boot.js');
 const { store, sortPluginList } = await import('../src/host/store.js');
 const { builtinSources } = await import('../src/host/registry.js');
 const { deactivate } = await import('../src/host/lifecycle.js');
+const { Origin, loadedIds, originOf, pluginModule, reconcilePlugins, reloadPlugin } = await import(
+  '../src/host/plugins.js'
+);
 const { descriptors } = await import('../src/protocol/registry.js');
 const { hub } = await import('../src/protocol/hub.js');
 const { selftestCases } = await import('../src/core/selftest.js');
@@ -388,4 +391,66 @@ test('t13: an ACTIVE built-in with a missing view is still a failure', async () 
   const r = await runSelftestCase('t13-registry-views');
   assert.equal(r.ok, false, "removing a live plugin's view must still fail t13");
   assert.match(r.detail, /view missing/, `expected a "view missing" failure, got: ${r.detail}`);
+});
+
+// ---------------------- the catalogue's built-in half ----------------------
+
+test('catalogue: a built-in reports its origin, and resolves to its module', async () => {
+  installGateway();
+  await resetHost();
+  await boot();
+
+  const victim = builtinSources()[0];
+  const id = victim.manifest.id;
+  assert.equal(originOf(id), Origin.BUILTIN);
+  assert.equal(pluginModule(id), victim, 'the catalogue holds the very module the registry ships');
+  // The row and the catalogue must not disagree about which kind a plugin is.
+  const row = store.plugins.find((p) => p.manifest.id === id);
+  assert.equal(row.manifest.builtin, true, 'the row says built-in too');
+});
+
+test('catalogue: reloadPlugin restarts a built-in, and keeps the module instance', async () => {
+  installGateway();
+  await resetHost();
+  await boot();
+
+  const victim = builtinSources()[0];
+  const id = victim.manifest.id;
+  assert.ok(victim._ctx, 'the victim must be active, or "restarted" would be vacuous');
+
+  const out = await reloadPlugin(id, { silent: true });
+
+  // A built-in cannot be re-imported — it is in the bundle — so the honest
+  // reload is stop-then-start, on the SAME module. This is the asymmetry the
+  // Settings button labels "Restart" instead of "Reload".
+  assert.equal(out.origin, Origin.BUILTIN);
+  assert.equal(pluginModule(id), victim, 'the same module instance, not a new one');
+  assert.ok(victim._ctx, 'and it is running again');
+  assert.equal(store.plugins.find((p) => p.manifest.id === id)?.status, 'active');
+});
+
+test('reconciling the plugins DIRECTORY must not unload the built-ins', async () => {
+  installGateway();
+  await resetHost();
+  await boot();
+
+  // Rescan means "rescan {appData}/plugins". A built-in has no folder there, so
+  // "not on disk" says nothing about it — and the removal pass is driven by
+  // exactly that question. Without the origin guard in `reconcileExternals`, the
+  // first click of Rescan would unload every built-in and revoke its native
+  // grant, which would look like the whole app falling apart.
+  const before = builtinSources().map((m) => m.manifest.id);
+
+  invokeCalls.length = 0;
+  const { external } = await reconcilePlugins({ silent: true, sources: [Origin.EXTERNAL] });
+
+  assert.deepEqual(external.removed, [], 'nothing built-in may be removed by a directory rescan');
+  for (const id of before) {
+    assert.ok(loadedIds().includes(id), `${id} must still be in the catalogue`);
+    assert.ok(pluginModule(id), `${id} must still resolve`);
+  }
+  const revoked = invokeCalls.filter(
+    (c) => c.cmd === 'plugin_rpc' && c.args?.msg?.svc === 'host' && c.args.msg.act === 'unregister',
+  );
+  assert.deepEqual(revoked, [], 'and no built-in may lose its native grant');
 });

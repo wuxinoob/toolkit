@@ -1,14 +1,25 @@
 /**
- * Reconciliation tests for the external plugin loader.
+ * The plugin catalogue: the bookkeeping shared by both kinds of plugin, and the
+ * digest-driven half that only an external plugin can have.
  *
  * A rescan used to only DISCOVER: new plugins loaded, changed ones were skipped
  * (so dropping new bytes in did nothing until a restart), removed ones stayed
  * loaded, and a plugin that failed to load was never retried because its row
  * already existed.
  *
- * These drive the real `scanExternalPlugins`, the real `loadPlugin` and the real
+ * These drive the real `reconcilePlugins`, the real `loadPlugin` and the real
  * lifecycle. Only the Tauri boundary is mocked. `URL.createObjectURL` is
  * redirected to a `data:` URL so Node can actually import the plugin source.
+ *
+ * Two notes on names:
+ *
+ *   - This file was `external-reconcile.test.mjs`. It was renamed because the
+ *     reconcile is no longer an external-only idea: `plugins.js` owns the loaded
+ *     set for BOTH sources, and this is the spec for that.
+ *   - The assertions below are unchanged, and the local helper still spells the
+ *     call the old way, so the diff shows "same assertions, new loader" rather
+ *     than a rewrite. The built-in half of the catalogue is pinned in
+ *     `boot.test.mjs`, which already has a boot-compatible gateway.
  */
 
 import test from 'node:test';
@@ -102,9 +113,22 @@ globalThis.URL.createObjectURL = (blob) =>
 globalThis.URL.revokeObjectURL = () => {};
 
 // dynamic imports AFTER shims are in place
-const { scanExternalPlugins, getExternal } = await import('../src/host/external.js');
+const { Origin, originOf, pluginModule, reconcilePlugins, reloadPlugin } = await import(
+  '../src/host/plugins.js'
+);
 const { store } = await import('../src/host/store.js');
 const { saveEnabled, saveKnown } = await import('../src/host/lifecycle.js');
+
+/**
+ * The external half of a reconcile — what most of this file is about.
+ *
+ * Kept under the old name so the assertions below read exactly as they did when
+ * this drove `scanExternalPlugins` directly. The only rename is
+ * `getExternal(id)` → `pluginModule(id)`; everything else is the same call
+ * through the new catalogue.
+ */
+const scanExternalPlugins = async (opts = {}) =>
+  (await reconcilePlugins({ silent: true, ...opts, sources: [Origin.EXTERNAL] })).external;
 
 // --------------------------------- helpers ------------------------------------
 
@@ -171,7 +195,7 @@ test('a rescan reconciles: added, unchanged, reloaded, removed', async () => {
   let r = await scanExternalPlugins({ silent: true });
   assert.deepEqual(r.added, ['a.demo']);
   assert.equal(r.found, 1);
-  const first = getExternal('a.demo');
+  const first = pluginModule('a.demo');
   assert.ok(first, 'the plugin was loaded');
   assert.equal(row('a.demo')?.status, 'active');
 
@@ -181,7 +205,7 @@ test('a rescan reconciles: added, unchanged, reloaded, removed', async () => {
   r = await scanExternalPlugins({ silent: true });
   assert.deepEqual(r.unchanged, ['a.demo']);
   assert.deepEqual(r.added, []);
-  assert.equal(getExternal('a.demo'), first, 'the module instance is untouched');
+  assert.equal(pluginModule('a.demo'), first, 'the module instance is untouched');
   assert.equal(reads(), readsBefore, 'an unchanged rescan must not re-read the entry');
   assert.equal(
     invokeCalls.filter((c) => c.cmd === 'plugin_register').length,
@@ -193,14 +217,14 @@ test('a rescan reconciles: added, unchanged, reloaded, removed', async () => {
   scanList = [entry('a.demo', 'd2', `${SOURCE('a.demo')}// changed`)];
   r = await scanExternalPlugins({ silent: true });
   assert.deepEqual(r.reloaded, ['a.demo']);
-  assert.notEqual(getExternal('a.demo'), first, 'a fresh module instance was imported');
+  assert.notEqual(pluginModule('a.demo'), first, 'a fresh module instance was imported');
   assert.equal(row('a.demo')?.status, 'active');
 
   // 4. removed: unload, drop the row, revoke the native grant
   scanList = [];
   r = await scanExternalPlugins({ silent: true });
   assert.deepEqual(r.removed, ['a.demo']);
-  assert.equal(getExternal('a.demo'), null);
+  assert.equal(pluginModule('a.demo'), null);
   assert.equal(row('a.demo'), undefined, 'the row is gone');
   const revoked = invokeCalls.filter(
     (c) => c.cmd === 'plugin_rpc' && c.args?.msg?.svc === 'host' && c.args.msg.act === 'unregister',
@@ -262,4 +286,68 @@ test('a plugin removed from disk while failed also loses its row', async () => {
   const r = await scanExternalPlugins({ silent: true });
   assert.deepEqual(r.removed, ['gone.demo']);
   assert.equal(row('gone.demo'), undefined, 'the error row goes with the folder');
+});
+
+// ------------------------- the catalogue's shared half -------------------------
+
+test('catalogue: an external plugin reports its origin, and resolves to its module', async () => {
+  reset();
+  scanList = [entry('cat.demo', 'c1', SOURCE('cat.demo'))];
+  await scanExternalPlugins({ silent: true });
+
+  assert.equal(originOf('cat.demo'), Origin.EXTERNAL);
+  assert.equal(pluginModule('cat.demo')?.manifest.id, 'cat.demo');
+  // The row and the catalogue must not be able to disagree about which kind a
+  // plugin is — the row drives sorting, the catalogue drives behaviour.
+  assert.equal(row('cat.demo').manifest.builtin, false, 'the row says external too');
+});
+
+test('catalogue: reloadPlugin re-imports an external plugin with unchanged bytes', async () => {
+  reset();
+
+  // This is the capability the digest path deliberately does NOT have: a rescan
+  // skips bytes it has already seen, so before reloadPlugin there was no way to
+  // make a plugin start over without editing its file.
+  scanList = [entry('r.demo', 'same', SOURCE('r.demo'))];
+  await scanExternalPlugins({ silent: true });
+  const first = pluginModule('r.demo');
+
+  const readsBefore = reads();
+  const rescan = await scanExternalPlugins({ silent: true });
+  assert.deepEqual(rescan.unchanged, ['r.demo']);
+  assert.equal(reads(), readsBefore, 'a rescan still skips unchanged bytes');
+
+  const out = await reloadPlugin('r.demo', { silent: true });
+  assert.equal(out.origin, Origin.EXTERNAL);
+  assert.equal(reads(), readsBefore + 1, 'the reload re-read the entry file');
+  assert.equal(row('r.demo')?.status, 'active');
+
+  // Deliberately NOT asserted: "a fresh module instance". The first test in this
+  // file CAN assert it, because there the bytes changed and so did the stub's
+  // data URL. Here the bytes are identical, and Node caches a module by its
+  // specifier — so this environment hands back the same instance. Production
+  // does not: a real `createObjectURL` is unique per call, which is exactly why
+  // the loader can revoke it immediately afterwards. The env-independent
+  // difference between Rescan and Reload is the extra read, and that is what is
+  // pinned above.
+  void first;
+});
+
+test('catalogue: reloadPlugin respects a disabled plugin instead of switching it on', async () => {
+  reset();
+  saveKnown(['r2.demo']);
+  saveEnabled([]);
+
+  scanList = [entry('r2.demo', 'd1', SOURCE('r2.demo'))];
+  await scanExternalPlugins({ silent: true });
+  assert.equal(row('r2.demo')?.status, 'inactive');
+
+  await reloadPlugin('r2.demo', { silent: true });
+  assert.ok(pluginModule('r2.demo'), 'the reload loads it');
+  assert.equal(row('r2.demo')?.status, 'inactive', 'but must not enable it');
+});
+
+test('catalogue: reloadPlugin refuses an id nothing knows about', async () => {
+  reset();
+  await assert.rejects(() => reloadPlugin('nobody.demo'), /not loaded/);
 });

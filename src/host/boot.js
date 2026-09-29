@@ -2,9 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { store, saveSettings, toast, closeToTray } from './store.js';
-import { bootPlugins } from './lifecycle.js';
-import { builtinSources } from './registry.js';
-import { scanExternalPlugins } from './external.js';
+import { Origin, reconcilePlugins } from './plugins.js';
 import { installDebug } from './debug.js';
 import { logger } from '../core/logger.js';
 import { runSelftest } from '../core/selftest.js';
@@ -258,11 +256,16 @@ export async function boot() {
     await report(`message plane: ${hub.transports().join(', ')}`);
     mark('schemes');
 
-    // First enabled plugin's first view becomes the initial screen.
-    const pluginTimings = await bootPlugins(builtinSources());
+    // Two calls, one API. The two `mark()`s below are the only reason: the gap
+    // between them is how you tell a slow bundle from a slow disk scan, and
+    // merging them into one call would erase that distinction from the log.
+    //
+    // Boots the built-ins first so their views exist before external plugins
+    // activate (those may want to publish to a view that is already there).
+    const builtinPhase = await reconcilePlugins({ sources: [Origin.BUILTIN] });
     mark('builtins');
 
-    await scanExternalPlugins(); // drop-in plugins from {appData}/plugins/*
+    await reconcilePlugins({ sources: [Origin.EXTERNAL] }); // drop-in plugins from {appData}/plugins/*
     mark('external');
 
     subscribeSummon();
@@ -278,7 +281,7 @@ export async function boot() {
     // the user is waiting for.
     await report(`boot timing (ms): ${marks.join(' | ')}`);
     await report(
-      `  plugin load (ms): ${pluginTimings
+      `  plugin load (ms): ${builtinPhase.builtin.timings
         .map((t) => `${t.id} ${t.ms}${t.failed ? ' FAILED' : ''}`)
         .join(' | ')}`,
     );

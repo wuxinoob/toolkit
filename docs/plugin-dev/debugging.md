@@ -99,7 +99,7 @@ boot timing (ms): debug 10 | reap 12 | uikit 399 | schemes 402 | builtins 429 | 
   plugin load (ms): builtin.procman 24 | builtin.streamlab 1600 | …
 ```
 
-**`bootPlugins` 是串行 await 的** —— 一个插件的 `activate()` 慢，
+**内置插件的加载是串行 await 的**（`reconcilePlugins` 的 built-in pass）—— 一个插件的 `activate()` 慢，
 **后面所有插件**的视图都要等它。所以「我的插件让别人的插件也出不来」是真会发生的。
 
 **注意 `plugin load` 的一个陷阱**：`activate()` 第一件事是 `await loadUiKit()`

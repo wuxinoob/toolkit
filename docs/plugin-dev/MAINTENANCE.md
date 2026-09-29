@@ -40,6 +40,33 @@
 
 ## 改宿主的操作清单
 
+### 插件从哪来：两个 source，**一份**簿记
+
+插件只有两个来处：**内置**（`src/host/registry.js` 静态 import 的模块）与
+**外部**（`{appData}/plugins` 里的目录，Blob URL 动态 import）。
+
+**「哪些插件被加载了、各自从哪来」只有一个归属地：`src/host/plugins.js`。**
+这条规则是有代价换来的 —— 在此之前 `registry.js` 管内置、`external.js` 管外部，
+于是每个想拿一个插件模块的调用方都得写同一个分支：
+
+```js
+const mod = resolveBuiltin(id) || getExternal(id);   // 旧写法，两处真相
+const mod = pluginModule(id);                        // 现在
+```
+
+所以：
+
+- **加载/重载只有两个入口**：`reconcilePlugins({ sources })` 与 `reloadPlugin(id)`。
+  再加第三个之前，先问它是不是其中一个的特例。
+- `src/host/external.js` **不持有状态** —— 它只剩磁盘那半边（扫描、读入口、撤销授权）。
+  往里加 `Map` = 把两份簿记重新引回来。
+- 两种来源的**差异**必须留在各自的 pass 里，并且是有理由的差异：
+  内置没有 digest（bundle 不会在运行时变）、永不被移除、失败只报一次；
+  外部按 digest 增量、删除要撤销授权、失败要记住到内容变化为止。
+  加第三条差异前，先确认它属于哪一种「因为来源不同」。
+- 守卫：`tests/plugins-catalogue.test.mjs`（外部那半边 + 共用簿记）与
+  `tests/boot.test.mjs`（内置那半边 + 「重扫目录不得卸载内置」那条回归）。
+
 ### 加一个**网关动作**（service action）
 
 1. 在 `src-tauri/src/services/<svc>.rs` 的 `actions()` 数组里加名字；
