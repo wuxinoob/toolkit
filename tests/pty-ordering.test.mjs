@@ -312,3 +312,62 @@ test('close kills once and emits a single end frame', async () => {
   assert.equal(endedFrames[0].kind, 'end');
   assert.deepEqual(hub.openStreamKeys(), [], 'the hub record is released');
 });
+
+/**
+ * The bell, at the only layer that can do anything about it.
+ *
+ * A user reported "the process manager sometimes beeps". Nothing in this app can
+ * ring — no dependency opens an `AudioContext`, and `@xterm/xterm` fires
+ * `onBell` with nothing subscribed — so the byte is consumed at the transport
+ * and reported as a NUMBER instead (`consumeBell` in the pty transport). These
+ * assertions are the contract that makes the number trustworthy: what is
+ * delivered contains no BEL, what is counted is exactly what was removed, and a
+ * chunk that was nothing but bells produces no frame at all.
+ */
+test('BEL is consumed and counted, never delivered', async () => {
+  resetPty();
+  const sink = { frames: [], ended: null };
+  const hub = new MessageHub();
+  const handle = await openPty(hub, 'p7', sink);
+
+  const delivered = () =>
+    sink.frames
+      .filter((f) => f.kind === 'data')
+      .map((f) => new TextDecoder().decode(f.p))
+      .join('');
+
+  output('before\x07\x07after');
+  await tick();
+  assert.equal(delivered(), 'beforeafter', 'the bytes around the bells still arrive');
+  assert.equal(handle.bells(), 2, 'both bells are reported');
+
+  // A chunk that is only bells says nothing and must not become an empty frame:
+  // `{kind:'data', p: <0 bytes>}` downstream would be a frame that carries no
+  // information and every consumer would have to special-case.
+  const before = sink.frames.length;
+  output('\x07');
+  await tick();
+  assert.equal(handle.bells(), 3);
+  assert.equal(sink.frames.length, before, 'an all-bell chunk emits no frame');
+
+  // ... and it must not wedge the stream either.
+  output('still here');
+  await tick();
+  assert.equal(delivered(), 'beforeafterstill here');
+});
+
+/**
+ * The other half of the same contract: zero is a real answer.
+ *
+ * "The count is zero while I can still hear it" is the diagnosis — it says the
+ * sound never entered this stream, so it belongs to the child or to the OS sound
+ * scheme, and no host-side switch could have silenced it. That reading is only
+ * worth anything if a stream that saw no BEL really does report 0.
+ */
+test('a stream that saw no BEL reports zero', async () => {
+  resetPty();
+  const clean = await openPty(new MessageHub(), 'p8', { frames: [], ended: null });
+  output('no bells here');
+  await tick();
+  assert.equal(clean.bells(), 0);
+});

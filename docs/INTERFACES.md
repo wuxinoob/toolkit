@@ -11,7 +11,7 @@
 |---|---|
 | **1. 协议是否统一了？** | **插件侧完全统一**；13 个命令里只有 `plugin_rpc` 是网关，另外 4 个是**插件可调但必须裸命令**的（3 个流 + 原生对话框，各自设闸），其余 8 个是宿主自己的管理操作；窗口控制不在协议内（热键已收敛进 `hotkey` 服务）。 |
 | **2. 新插件能否直接调用已有接口？** | **能，且已验证**。`examples/plugins/probe` 不 import 任何模块、不碰 Tauri API，一次调用覆盖 11 项接口全部通过。 |
-| **3. 接口有哪些？** | 13 个原生命令 · 9 个服务 / 35 个动作 · 8 个方案 · 3 个流提供者。见 §1–§4。 |
+| **3. 接口有哪些？** | 13 个原生命令 · 9 个服务 / 36 个动作 · 8 个方案 · 3 个流提供者。见 §1–§4。 |
 | **4. 有改进空间吗？** | 有。**P1、P2 与 P0 两项均已完成**（见 §8）。剩余的是结构性例外与后续增强，不再是缺口。 |
 
 ---
@@ -122,12 +122,12 @@
 **这三条都不是"优化"，是"别做无关的事"** —— 把不属于插件窗口的模块/样式/文件排除出它的路径。
 **判断标准是「这个窗口真的需要它吗」**，不是「快一点」。
 
-## 2. 网关背后的服务：9 个服务 / 35 个动作
+## 2. 网关背后的服务：9 个服务 / 36 个动作
 
 | 服务 | 动作 | 说明 |
 |---|---|---|
 | `storage` | `get` `set` `remove` `keys` | 每插件独立的磁盘 JSON KV（`plugin-data/<id>/data.json`） |
-| `host` | `info` `write_debug_log` `sessions` **`stop_session`** `plugins` `schema` `unregister` | 路径/元数据、调试落盘、**统一会话表**、**按会话停止（仅宿主）**、已授权插件、**能力协商面**、**撤销授权**（仅宿主可调） |
+| `host` | `info` **`paths`** `write_debug_log` `sessions` **`stop_session`** `plugins` `schema` `unregister` | 路径/元数据、**常用目录（软件 + 系统文件夹）**、调试落盘、**统一会话表**、**按会话停止（仅宿主）**、已授权插件、**能力协商面**、**撤销授权**（仅宿主可调） |
 | `proc` | `spawn` `send` `recv` `kill` `kill_all` `list` | sidecar 行 JSON 管道（`stdio-line` 方案的底层） |
 | `stream` | `close` `providers` `list` `session_open` `session_close` `open_in` `write_in` `close_in` | 推送流生命周期 + 第三方进程的会话登记 + **上行流**（插件按批把帧推给宿主侧 sink） |
 | `bus` | `publish` | 跨窗口广播（宿主 `app.emit` 扇出到所有窗口） |
@@ -197,7 +197,7 @@
 | `event-bus` **订阅** | —（被动监听不构成能力） |
 | `in-process` | —（无 IPC） |
 | 窗口控制 | `win:manage` |
-| `ctx.sessions()` / `ctx.schema()` | `rpc:host` |
+| `ctx.sessions()` / `ctx.schema()` / `ctx.paths()` | `rpc:host` |
 | `ctx.closeStream()` | —（关比开弱，且只能关自己开的流） |
 | `contributes.hotkeys` 声明的热键 | —（清单条目本身就是声明） |
 

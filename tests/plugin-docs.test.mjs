@@ -461,7 +461,7 @@ test('bridge.md is the single list, and it matches the code exactly', () => {
   // from the code too — a "25 capabilities on both sides" that silently became
   // 26 is exactly the class of drift this file exists to stop.
   const shared = [...ctx].filter((k) => bridge.has(k)).length;
-  assert.equal(shared, 26, `the surfaces now share ${shared} capabilities, not 26`);
+  assert.equal(shared, 27, `the surfaces now share ${shared} capabilities, not 27`);
   assert.match(
     read('docs', 'plugin-dev', 'bridge.md'),
     new RegExp(`\\*\\*${shared} 个能力两边都有\\*\\*`),

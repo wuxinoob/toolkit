@@ -400,3 +400,48 @@ node scripts/app-eval.mjs "return { views: window.__toolbox.store.views.length }
 **HMR 整页重载会留下宿主的会话孤儿**（旧 JS 上下文没了但宿主进程还活着）。
 宿主已经在 `boot()` 里自动回收，日志里会有一行 `reaped N session(s)` ——
 **看到它是正常的，不是错误**。
+
+## 子进程「响了一声」——先分清是谁在响
+
+**症状**：用 `ctx.pty` 跑 shell（内置 procman 的 Shell profile 就是
+`powershell.exe`），**偶尔**听到一声蜂鸣／叮，位置在子进程那边。
+
+**第一件事：这个应用本身不会响，而且这是可验证的，不是承诺。**
+
+```bash
+# 整个依赖树里没有任何一处打开音频（0 命中即证明）
+rg -c "new AudioContext|createOscillator|new Audio\(" node_modules --glob "*.js"
+# xterm 只把 BEL 变成一个事件：`onBell` 会 fire，但没有订阅者，也没有 Beep
+rg -o -F "onRequestBell" node_modules/@xterm/xterm/lib/xterm.js
+```
+
+所以 `\x07` 在我们这条链路上是**沉默的**：它从 pty 读出来、写进 xterm、
+只让 `onBell` 空放一枪。**子进程真的想让你听见**，只有两条路：
+
+1. **它自己调 Win32 `Beep()`**（PowerShell 里是 `[console]::beep()`）——
+   这条**根本不经过我们**，任何宿主侧开关都不可能消掉它；
+2. **控制台宿主（conhost）替它响** —— 同样不经过我们。
+
+**第二件事：机器能告诉你是哪一种。** 传输层把 BEL 吃掉并记数
+（`consumeBell`，完整理由写在 `src/protocol/transports/pty.js` 的注释里），
+`handle.bells()` 就是那个数：
+
+| `handle.bells()` | 说明 |
+|---|---|
+| **一直涨** | 字节确实到了我们这里（已经被丢掉、不会渲染）。响声来自**写入终端**的那个程序 |
+| **一直是 0，但还在响** | 声音**没有经过这条流** —— 就是上面第 1／2 条，宿主无能为力 |
+
+内置 procman 把这个数放在右键的 **Config ▾** 抽屉里（`bell` 一行），
+只在非零时出现；通信 trace 里也会有一行 `bell ch=… ×N dropped`。
+
+**根因（本机已核实）**：内置的 `Shell` profile 跑的是 **Windows PowerShell 5.1**，
+它的 PSReadLine `BellStyle` **默认就是 `Audible`** —— 补全歧义、按到没绑定的键序列
+都会响。查你自己的那一份：
+
+```powershell
+powershell -NoProfile -Command '(Get-PSReadLineOption).BellStyle'   # → Audible
+```
+
+想让它闭嘴是**子进程侧**的事（`Set-PSReadLineOption -BellStyle None`，
+写进 `$PROFILE` 或写进 profile 的 args），不是宿主该替你改的设置 ——
+宿主能负责的只有一件事：**不让这个字节经由我们变成声音**，而那是上面那条计数器。

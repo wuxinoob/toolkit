@@ -3,7 +3,7 @@
 面向**写插件的人**。讲的是「我要做一个功能，该怎么落地、怎么排查」。
 
 协议与内部实现不在这里 —— 那些在 `docs/PROTOCOL.md`（信封与方案表）、
-`docs/INTERFACES.md`（13 个原生命令 / 9 服务 35 动作）、`docs/UI.md`（样式与令牌）、
+`docs/INTERFACES.md`（13 个原生命令 / 9 服务 36 动作）、`docs/UI.md`（样式与令牌）、
 `docs/MESSAGE-FRAMEWORK.md`（消息平面的设计来由）。本手册只引用结论，不重复论证。
 
 | 文件 | 内容 |
@@ -37,7 +37,7 @@
 | [architecture.md](architecture.md) | 已更新 | 8 个方案 id、15 项自检、内置插件名单 |
 | [bridge.md](bridge.md) | **本手册的对等权威清单** | 与 `ctx.js` / `pluginwin-host.js` 逐行比对（含 `onDrop` 的 `info` 差异） |
 | [manifest.md](manifest.md) | 已更新 | 权限集合与代码**双向**比对（多写少写都失败） |
-| [api.md](api.md) | 已更新 | 摘要里的 26/4/4 与 `bridge.md` 一致；不得再长出第二张对等表 |
+| [api.md](api.md) | 已更新 | 摘要里的 27/4/4 与 `bridge.md` 一致；不得再长出第二张对等表 |
 | [ui.md](ui.md) | 已更新 | 组件词汇表数量、`.tb-*` 类名必须在 CSS 里真的存在 |
 | [debugging.md](debugging.md) | 已更新 | 15 项自检；`ctx.log` 的落点说法 |
 | [recipes.md](recipes.md) | 已更新 | 引用的示例路径必须存在 |

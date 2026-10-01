@@ -153,6 +153,8 @@ async function spawnFromSpec(spec) {
     replay: '', // decoded output for re-attach replay
     decoder: new TextDecoder('utf-8'), // streaming decoder across chunks
     bytesIn: 0,
+    /** Last seen `handle.bells()` — BEL bytes the transport dropped. */
+    bells: 0,
   };
   state.sessions.set(ch, session);
 
@@ -178,6 +180,19 @@ async function spawnFromSpec(spec) {
         if (frame.kind === Kind.DATA) {
           const chunk = frame.p;
           session.bytesIn += chunk?.byteLength ?? 0;
+          // The transport eats BEL and counts it (`consumeBell` in
+          // `src/protocol/transports/pty.js`). Reading the counter here is what
+          // turns "sometimes the shell beeps" into a number in the facts drawer:
+          // a rising count means the bytes reach us (and are dropped); a count
+          // stuck at zero while the beep is still audible means the sound never
+          // entered this stream — it is the child's or the console host's own.
+          // Note `session.handle` is only assigned once `ctx.pty` resolves, and
+          // a pty can emit before that; 0 is the right answer either way.
+          const bells = session.handle?.bells?.() ?? 0;
+          if (bells !== session.bells) {
+            session.bells = bells;
+            state.log?.('pty', `bell ch=${ch} ×${bells} dropped`);
+          }
           // streaming decode survives UTF-8 chars split across chunks
           session.replay = (session.replay + session.decoder.decode(chunk, { stream: true })).slice(-64 * 1024);
           session.terminal?.write(chunk);
@@ -1140,6 +1155,15 @@ function renderDetail() {
       el('span', { class: 'tb-label' }, label),
       el('span', { class: 'tb-mono', style: 'margin-left:6px;word-break:break-all;' }, value),
     );
+  /**
+   * Shown only when it is not zero, because zero is the common case and a row
+   * that always says "0" teaches a reader to stop reading the grid.
+   *
+   * It is a fact, not a control: nothing in this app can ring, so there is
+   * nothing to turn off. What the number answers is WHOSE sound the user heard —
+   * see `consumeBell` in `src/protocol/transports/pty.js`.
+   */
+  const bells = s?.handle?.bells?.() ?? 0;
 
   /**
    * The header: what you are looking at, and what you can do to it.
@@ -1230,6 +1254,7 @@ function renderDetail() {
       fact('enabled', prof.enabled ? 'yes' : 'no'),
       s ? fact('channel', s.ch) : null,
       s ? fact('scheme', 'pty-stream · raw-binary') : null,
+      bells ? fact('bell', `${bells} × 0x07 — dropped, never rendered`) : null,
     ),
     s
       ? el(

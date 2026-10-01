@@ -158,6 +158,7 @@ const SHARED = [
   'sessions',
   'schemes',
   'schema',
+  'paths',
   'cleanup',
 ];
 

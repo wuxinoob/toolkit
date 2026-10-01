@@ -23,7 +23,7 @@ use std::sync::Arc;
 use toolbox_lib::protocol::codec::{json_envelope, line_json, raw_binary};
 use toolbox_lib::protocol::envelope::{Envelope, Kind};
 use toolbox_lib::protocol::codes;
-use toolbox_lib::services::{external, hotkey, schema, session, stream, table, ServiceError};
+use toolbox_lib::services::{external, hotkey, schema, session, storage, stream, table, ServiceError};
 
 static FAILED: AtomicBool = AtomicBool::new(false);
 static PASSED: AtomicU64 = AtomicU64::new(0);
@@ -331,6 +331,59 @@ fn main() {
             external::info_at(&root, "a.demo").unwrap().is_none()
                 && external::scan_at(&root).unwrap().is_empty(),
             "a plugin whose entry cannot be read is invisible to both",
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---- host/paths: the layout a plugin is told it may rely on ----
+    //
+    // This is the one place a plugin learns where things are, so what matters is
+    // not that three keys exist but that the folders they name are the folders
+    // the host itself uses — a path that merely LOOKS right fails silently: the
+    // plugin writes, or drops a folder, somewhere nobody reads.
+    {
+        use std::fs;
+        use std::path::Path;
+        let root = std::env::temp_dir().join(format!("tb-paths-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let p = storage::paths_at(&root, "a.demo").unwrap();
+        check(
+            "paths-name-the-documented-layout",
+            p["dataDir"] == json!(root.to_string_lossy())
+                && p["pluginDataDir"] == json!(root.join("plugin-data").join("a.demo").to_string_lossy())
+                && p["pluginsDir"] == json!(root.join("plugins").to_string_lossy()),
+            &format!("{p:?}"),
+        );
+
+        // The property, checked by BEHAVIOUR rather than by a shared constant:
+        // drop a plugin exactly where `paths` said to and the scanner must find
+        // it. Two spellings of "plugins" would pass the check above and still
+        // never load anything.
+        let plugins_dir = Path::new(p["pluginsDir"].as_str().unwrap());
+        let dir = plugins_dir.join("a.demo");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("plugin.json"), r#"{"id":"a.demo","entry":"main.js"}"#).unwrap();
+        fs::write(dir.join("main.js"), "export const manifest={id:'a.demo'}").unwrap();
+        check(
+            "paths-point-at-the-folder-the-scanner-reads",
+            external::scan_at(plugins_dir).unwrap().iter().any(|x| x.id == "a.demo"),
+            "a plugin dropped where host/paths says is a plugin the host finds",
+        );
+
+        check(
+            "paths-go-through-the-plugin-id-guard",
+            storage::paths_at(&root, "..").is_err() && storage::paths_at(&root, "").is_err(),
+            "the same id guard `storage/*` uses, so no id can escape the data root",
+        );
+
+        // Asking is not doing: `storage/*` creates these, a question must not.
+        check(
+            "paths-create-nothing",
+            !root.join("plugin-data").exists(),
+            "a question about where files go must not create anything",
         );
 
         let _ = fs::remove_dir_all(&root);

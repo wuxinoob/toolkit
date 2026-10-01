@@ -769,6 +769,23 @@ export function buildCtx(plugin, disposer) {
     /** Every live endpoint the host knows about, across all transports. */
     sessions: () => ctx.rpc('host', 'sessions', {}),
 
+    /**
+     * The host's own folders and the user's well-known folders, as absolute
+     * paths — plus `platform` / `arch` / `appVersion` / `sep`.
+     *
+     * Read-only knowledge, NOT a grant: knowing where `documentsDir` is does not
+     * let a plugin read it (there is no `ctx.fs` — see
+     * `docs/plugin-dev/FILE-ACCESS-PLAN.md`). What it buys is that a plugin stops
+     * GUESSING where its own data lives and starts naming the folder the host
+     * actually uses. A folder the platform cannot answer for is `null`, not an
+     * error.
+     *
+     * `pluginDataDir` is the same directory `ctx.rpc('host', 'info')` reports as
+     * `dataDir`; the two names exist because from the outside one is "my data"
+     * and from here it is one entry in a list of places.
+     */
+    paths: () => ctx.rpc('host', 'paths', {}),
+
     /** The scheme table (local knowledge, no IPC). */
     schemes: () => hub.schemes(),
 

@@ -433,6 +433,18 @@ export function makeBridge(pluginId, label, manifest) {
     },
 
     sessions: () => gate('host', () => hub.sessions(pluginId)),
+
+    /**
+     * The host's folders and the user's well-known folders, as absolute paths —
+     * the same answer `ctx.paths()` gives, from the same action (`host/paths`).
+     *
+     * A window needs it for the same reason a view does, and one more: a window
+     * is where a plugin typically asks the user to save something, so "where
+     * should the default location be" is a question it has to answer. Read-only —
+     * this reports where a folder is, it does not grant access to it.
+     */
+    paths: () => gate('host', () => hub.request(pluginId, 'host', 'paths', {})),
+
     schemes: () => hub.schemes(),
     schema: () => gate('host', () => hub.schema(pluginId)),
 

@@ -113,12 +113,45 @@ test('ctx: unpermitted rpc is rejected before reaching invoke', async () => {
   const ctx = buildCtx({ manifest: { id: 't.noperm', permissions: [] } }, disposerStub);
   await assert.rejects(() => ctx.storage.get('x'), /missing permission/);
   await assert.rejects(() => ctx.rpc('host', 'info', {}), /missing permission/);
+  await assert.rejects(() => ctx.paths(), /missing permission/);
   await assert.rejects(() => ctx.sidecar('c', { exe: 'x' }), /missing permission/);
   await assert.rejects(() => ctx.pty('c', { program: 'x' }), /missing permission/);
   // The permission gate fires BEFORE the label check, so any label does — this
   // one just has to be a plausible one.
   await assert.rejects(() => ctx.windows.exists('plugin-anything'), /missing permission/);
   assert.equal(invokeCalls.length, before, 'no invoke may be issued for unpermitted calls');
+});
+
+/**
+ * `ctx.paths()` is a thin wrapper over `host/paths`, and its whole value is that
+ * the HOST answers: a webview that computes its own idea of "where the plugins
+ * folder is" would name a folder the scanner never reads, and would fail
+ * silently. So the shape it forwards is pinned here, not just the fact that it
+ * resolves.
+ */
+test('ctx: paths() routes host/paths through the gateway', async () => {
+  invokeCalls.length = 0;
+  invokeImpl = async (cmd, { msg }) => ({
+    v: 1,
+    kind: 'res',
+    id: msg.id,
+    p: {
+      pluginDataDir: 'C:\\data\\plugin-data\\t.perm',
+      pluginsDir: 'C:\\data\\plugins',
+      platform: 'windows',
+      sep: '\\',
+    },
+  });
+
+  const ctx = buildCtx({ manifest: { id: 't.perm', permissions: ['rpc:host'] } }, disposerStub);
+  const p = await ctx.paths();
+  assert.equal(p.platform, 'windows');
+  assert.equal(p.sep, '\\');
+
+  const last = invokeCalls.at(-1);
+  assert.equal(last.cmd, 'plugin_rpc');
+  assert.equal(last.args.msg.svc, 'host');
+  assert.equal(last.args.msg.act, 'paths');
 });
 
 test('ctx: storage routes a req envelope through plugin_rpc', async () => {

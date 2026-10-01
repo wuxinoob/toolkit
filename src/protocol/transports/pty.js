@@ -35,6 +35,15 @@
  *      does not tell us, so the honest thing is a short bounded wait rather than
  *      a claim of determinism.
  *
+ * ## The bell
+ *
+ * BEL (0x07) is consumed here and never reaches a consumer; `handle.bells()`
+ * reports how many were consumed. Deciding this at the transport rather than in
+ * one consumer is deliberate: "there is no bell in this app" is a fact about the
+ * host, not a preference of any one plugin, and a wire that keeps a byte nobody
+ * can act on is a byte that eventually gets echoed somewhere it CAN be heard.
+ * See `consumeBell` for the full reasoning, including what it does NOT fix.
+ *
  * ## Ownership
  *
  * The value `spawn` returns is the PLUGIN's session HANDLE, not an OS pid —
@@ -54,10 +63,41 @@ import { rpcTransport } from './rpc.js';
 
 const DSR = [0x1b, 0x5b, 0x36, 0x6e]; // ESC [ 6 n
 const CPR = '\x1b[1;1R';
+const BEL = 0x07;
 /** Quiet period after the process exits before the exit frame is emitted. */
 const DRAIN_MS = 120;
 /** Hard cap on that wait, so a still-chatty stream cannot hold the exit back. */
 const DRAIN_MAX_MS = 1000;
+
+/**
+ * Consume BEL (0x07) instead of forwarding it, and count what was consumed.
+ *
+ * The host has no bell. That is not a preference, it is a fact about this app:
+ * nothing in the tree can turn a BEL into a sound — `@xterm/xterm` fires
+ * `onBell` and nothing subscribes to it, and no dependency in the bundle opens
+ * an `AudioContext` (see the "no bell" section in `docs/plugin-dev/debugging.md`
+ * for the two commands that re-check it). So a byte that a real terminal would
+ * ring is, here, dead weight that a consumer might later surface somewhere it
+ * *can* be heard — a copy into a real console, a log file, a `pre` block.
+ *
+ * The information is not lost, it is converted: whatever wrote the BEL is
+ * reported by `handle.bells()`. That is the number that answers "is the shell
+ * ringing us, or is the sound coming from somewhere we never see" — a child can
+ * also beep by calling the Win32 `Beep()` API, which never touches this stream.
+ *
+ * Returns the input array itself when there is nothing to remove. That is the
+ * overwhelmingly common case and the reason this is not a `.filter()`: the
+ * common path should not copy every chunk.
+ */
+function consumeBell(u8) {
+  if (u8.indexOf(BEL) < 0) return { data: u8, bells: 0 };
+  let bells = 0;
+  for (let i = 0; i < u8.length; i += 1) if (u8[i] === BEL) bells += 1;
+  const out = new Uint8Array(u8.length - bells);
+  let w = 0;
+  for (let i = 0; i < u8.length; i += 1) if (u8[i] !== BEL) out[w++] = u8[i];
+  return { data: out, bells };
+}
 
 function toU8(chunk) {
   if (chunk instanceof Uint8Array) return chunk;
@@ -188,18 +228,27 @@ export const ptyStreamTransport = {
     let cprHandled = false;
     let dsrSeen = false;
     let dsrTimer = null;
+    let bellCount = 0;
     const isWindows = /win/i.test(globalThis.navigator?.platform ?? '');
 
     const emitData = (u8) => {
       if (stopped) return;
       lastDataAt = Date.now();
+      // Asked of the bytes as they ARRIVED: the watchdog answers what the child
+      // sent, and the BEL pass below only ever removes a byte the child cannot
+      // have meant as part of the query.
       if (isWindows && !dsrSeen && hasDsr(u8)) {
         dsrSeen = true;
         dsrTimer = setTimeout(() => {
           if (!cprHandled) invoke('plugin:pty|write', { pid, data: CPR }).catch(() => {});
         }, 250);
       }
-      onFrame?.(Envelope.data(ch, u8));
+      const chunk = consumeBell(u8);
+      bellCount += chunk.bells;
+      // Nothing left to render (a chunk that was only bells) — an empty data
+      // frame would be a frame that says nothing.
+      if (chunk.data.length === 0) return;
+      onFrame?.(Envelope.data(ch, chunk.data));
     };
 
     // ---- fact 1: the output stream (may never end; see the header) ----
@@ -245,6 +294,19 @@ export const ptyStreamTransport = {
       pid,
       cols: params.cols ?? 80,
       rows: params.rows ?? 24,
+
+      /**
+       * How many BEL bytes this stream has consumed and NOT delivered.
+       *
+       * Read it when a user reports a beep: a rising count means the thing
+       * making the noise is writing to the terminal, so the bytes are ours to
+       * see (and to drop, which is what this does). A count that stays at zero
+       * while the beep is still audible means the sound never entered this
+       * stream — a child calling `Beep()` directly, or the console host on its
+       * behalf. No app-side switch can silence that one; it belongs to the
+       * program or to the OS sound scheme.
+       */
+      bells: () => bellCount,
 
       write(data) {
         cprHandled = true; // the consumer answered the cursor query itself

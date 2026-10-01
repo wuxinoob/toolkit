@@ -48,9 +48,20 @@ pub(crate) fn plugins_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .path()
         .app_data_dir()
         .map_err(|e| format!("app data dir: {e}"))?;
-    let dir = base.join("plugins");
+    let dir = plugins_dir_at(&base);
     fs::create_dir_all(&dir).map_err(|e| format!("create plugins dir: {e}"))?;
     Ok(dir)
+}
+
+/// Where third-party plugins are discovered: `{app_data}/plugins`.
+///
+/// Split out from [`plugins_root`] because `host/paths` has to NAME this
+/// directory without creating it — asking a plugin where the plugin folder is
+/// must not be the thing that creates it. Two spellings of "plugins" in two
+/// files is how a plugin ends up dropping its folder somewhere the scanner never
+/// reads, and quietly never loading.
+pub(crate) fn plugins_dir_at(data_root: &Path) -> PathBuf {
+    data_root.join("plugins")
 }
 
 /// One plugin's location, without the digest.

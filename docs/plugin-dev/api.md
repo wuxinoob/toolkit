@@ -263,6 +263,7 @@ await ctx.rpc('host', 'plugins')     // 插件表
 await ctx.rpc('host', 'schema')      // 服务/动作/权限词表 —— 可自省
 await ctx.sessions()                 // = rpc('host','sessions')
 await ctx.schema()                   // = rpc('host','schema')
+await ctx.paths()                    // = rpc('host','paths')
 ```
 
 **权限**：`rpc:host`。
@@ -270,6 +271,33 @@ await ctx.schema()                   // = rpc('host','schema')
 **`ctx.schema()` 值得先看** —— 它公布服务、动作、权限的完整词表，
 所以你不用猜有什么可调。这也是 `docs/INTERFACES.md` 里说的
 「动作清单权威：`Service::actions()` 同时用于网关校验与 `host/schema`，不可能漂移」。
+
+### `ctx.paths()` —— 常用目录与运行环境
+
+**什么时候用**：你要告诉用户「文件存哪儿了」，要给保存框一个合理的默认目录，
+要按平台分支，或者要写自己插件的数据。**返回值是一张扁平的对象**，
+每个值都是**绝对路径字符串**（平台没有这个目录时是 `null`，不是报错）：
+
+| 键 | 是什么 |
+|---|---|
+| `pluginDataDir` | **你自己的目录**。和 `ctx.rpc('host','info')` 的 `dataDir` 是同一个 |
+| `pluginsDir` | **插件文件夹**：宿主扫描外置插件的地方，把插件目录丢进去再 Rescan |
+| `dataDir` | 宿主的整个数据目录（上面两个的父级） |
+| `configDir` / `cacheDir` / `logDir` / `localDataDir` | 宿主的配置 / 缓存 / 日志 / 本地数据目录 |
+| `exeDir` / `resourcesDir` | 程序所在目录 / 打包进安装包的资源目录 |
+| `homeDir` / `desktopDir` / `documentsDir` / `downloadsDir` / `picturesDir` / `tempDir` | 用户自己的常用目录 |
+| `platform` / `arch` / `appVersion` / `sep` | `"windows"` · `"x86_64"` · 宿主版本 · 路径分隔符 |
+
+```js
+const { pluginsDir, pluginDataDir, sep } = await ctx.paths();
+// 不需要自己拼分隔符 —— 但要用的时候 `sep` 就是权威的那个（Windows 是 `\`）
+ctx.log.info(`drop a plugin folder into ${pluginsDir}`);
+```
+
+**它是知识，不是权限。** 知道 `documentsDir` 在哪，不等于能读它 ——
+读文件仍然只有两条路：`ctx.files` 让**用户**给你一个文件，
+或 `ctx.onDrop` 让**用户**把文件拖进来（见下面两节，以及
+[FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md)）。
 
 通用出口：`ctx.rpc(svc, act, params)`，权限按 `rpc:<svc>` 判。
 
@@ -741,9 +769,9 @@ async function closeMe() {
 |---|---|---|
 | 能力 | `ui` · `windows` · `registerView` · `focusView` | `label` · `close` · `drag` · `dispose` |
 
-**其余 26 个能力两边都有**，包括 `storage` / `bus` / `events` / `onHotkey` / `onDrop` /
+**其余 27 个能力两边都有**，包括 `storage` / `bus` / `events` / `onHotkey` / `onDrop` /
 `stream` / `streamRaw` / `uplink` / `sidecar` / `pty` / `clipboard` / `screen` /
-`files` / `log` / `closeStream` / `sessions` / `schemes` / `schema` / `protocol` /
+`files` / `log` / `closeStream` / `sessions` / `schemes` / `schema` / `paths` / `protocol` /
 `cleanup`。
 两者是**同一套信封、同一个网关、同一个权限注册表**，所以「插件窗口里少一项能力」
 从来不是因为管道不同，而是因为那一项**本来就只属于某个窗口**。

@@ -260,7 +260,7 @@ re-deployed. Built-in plugins ship with the host and cannot go stale, which is
 why only external examples declare `api`.
 
 A secondary window gets **almost** the same surface through `bridge`
-(`src/host/pluginwin-host.js`): 26 capabilities on both sides, and exactly 8
+(`src/host/pluginwin-host.js`): 27 capabilities on both sides, and exactly 8
 one-sided — `ui` / `windows` / `registerView` / `focusView` exist only
 on `ctx`, while `label` / `close` / `drag` / `dispose` exist only on `bridge`.
 The differences are deliberate except for `ui.notifyOS`, which is collateral.

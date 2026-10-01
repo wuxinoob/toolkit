@@ -95,6 +95,93 @@ fn data_root(app: &tauri::AppHandle) -> Result<PathBuf, ServiceError> {
         .map_err(|e| ServiceError::io(format!("app data dir: {e}")))
 }
 
+/// The half of `host/paths` that is a function of the data root alone.
+///
+/// No `AppHandle`, so `examples/host-checks.rs` can pin it: `dataDir` is the
+/// whole host data directory, `pluginsDir` is where the scanner looks for
+/// third-party plugins (`external::plugins_dir_at` — the SAME directory, not a
+/// second opinion about where it is), and `pluginDataDir` is the asking
+/// plugin's own.
+///
+/// Deliberately does NOT create anything: "where would it go" and "make it so"
+/// are different questions, and only `storage/*` needs the second one.
+///
+/// `pub` for the same reason `external::scan_at` is: `cargo test` cannot load on
+/// Windows in this crate (see `examples/host-checks.rs`), so the RUNNABLE checks
+/// live in an example, and an example is a separate crate that only sees `pub`
+/// items.
+pub fn paths_at(data_root: &Path, plugin_id: &str) -> Result<Map<String, Value>, ServiceError> {
+    validate_plugin_id(plugin_id)?;
+    let mut obj = Map::new();
+    let s = |p: PathBuf| Value::String(p.to_string_lossy().into_owned());
+    obj.insert("dataDir".into(), s(data_root.to_path_buf()));
+    obj.insert("pluginsDir".into(), s(super::external::plugins_dir_at(data_root)));
+    obj.insert(
+        "pluginDataDir".into(),
+        s(data_root.join("plugin-data").join(plugin_id)),
+    );
+    Ok(obj)
+}
+
+/// One `PathResolver` answer into the object, as a path or as `null`.
+///
+/// A directory the platform cannot answer for is a fact about the machine (no
+/// Pictures folder, no log dir), not a failure of the question — so it is
+/// reported per key instead of failing the whole call and hiding every other
+/// answer with it.
+fn put_dir(obj: &mut Map<String, Value>, key: &str, dir: tauri::Result<PathBuf>) {
+    let value = match dir {
+        Ok(p) => Value::String(p.to_string_lossy().into_owned()),
+        Err(_) => Value::Null,
+    };
+    obj.insert(key.to_string(), value);
+}
+
+/// The whole `host/paths` answer: the host's folders, the user's folders, and
+/// the handful of runtime facts a plugin needs to render a path correctly.
+///
+/// Asked for as `ctx.paths()` / `bridge.paths()`. Permission: `rpc:host` — the
+/// same read grant `ctx.sessions()` needs, because this is the same kind of
+/// thing: the host telling a plugin what the host already knows.
+fn app_paths(app: &tauri::AppHandle, plugin_id: &str) -> Result<Value, ServiceError> {
+    let mut obj = paths_at(&data_root(app)?, plugin_id)?;
+    let p = app.path();
+
+    // This app's own folders — "软件文件夹".
+    put_dir(&mut obj, "configDir", p.app_config_dir());
+    put_dir(&mut obj, "cacheDir", p.app_cache_dir());
+    put_dir(&mut obj, "logDir", p.app_log_dir());
+    put_dir(&mut obj, "localDataDir", p.app_local_data_dir());
+    put_dir(&mut obj, "exeDir", p.executable_dir());
+    put_dir(&mut obj, "resourcesDir", p.resource_dir());
+
+    // The user's folders — "系统文件夹". Read-only knowledge: this action
+    // reports where they are, it does not grant access to them (there is no
+    // `fs`; see docs/plugin-dev/FILE-ACCESS-PLAN.md).
+    put_dir(&mut obj, "homeDir", p.home_dir());
+    put_dir(&mut obj, "desktopDir", p.desktop_dir());
+    put_dir(&mut obj, "documentsDir", p.document_dir());
+    put_dir(&mut obj, "downloadsDir", p.download_dir());
+    put_dir(&mut obj, "picturesDir", p.picture_dir());
+    put_dir(&mut obj, "tempDir", p.temp_dir());
+
+    // Facts that make the paths above usable rather than merely present:
+    // `sep` so a plugin can build a path without guessing, `platform`/`arch`
+    // so it can branch, `appVersion` so it can gate on the host it runs in.
+    obj.insert("platform".into(), Value::String(std::env::consts::OS.to_string()));
+    obj.insert("arch".into(), Value::String(std::env::consts::ARCH.to_string()));
+    obj.insert(
+        "appVersion".into(),
+        Value::String(env!("CARGO_PKG_VERSION").to_string()),
+    );
+    obj.insert(
+        "sep".into(),
+        Value::String(std::path::MAIN_SEPARATOR.to_string()),
+    );
+
+    Ok(Value::Object(obj))
+}
+
 impl Service for StorageService {
     fn name(&self) -> &'static str {
         "storage"
@@ -120,6 +207,7 @@ impl Service for HostService {
     fn actions(&self) -> &'static [&'static str] {
         &[
             "info",
+            "paths",
             "write_debug_log",
             "sessions",
             "stop_session",
@@ -136,6 +224,9 @@ impl Service for HostService {
         params: Value,
     ) -> Result<Value, ServiceError> {
         match action {
+            // Where things are. Read-only, and the same grant as `info` /
+            // `sessions`: a plugin asking the host about the host.
+            "paths" => app_paths(app, plugin_id),
             // The unified session list: one view over sidecars, streams and
             // PTYs, whichever mechanism created them. A host-wide query, hence
             // the `host` service (session *lifecycle* lives with the data plane

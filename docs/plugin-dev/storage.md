@@ -19,6 +19,10 @@
 **宿主里只有两个服务碰文件系统**：`storage` 和 `external`（插件目录扫描）。
 `session` / `proc` / `stream` / `uplink` / `bus` / `hotkey` **全是纯内存**。
 
+> **这些路径不要硬编码。** 插件可以直接问宿主：`ctx.paths()`（`bridge.paths()`，
+> 权限 `rpc:host`）返回 `pluginDataDir` / `pluginsDir` / `dataDir` 等**绝对路径**，
+> 和上面这张表用的是同一个 `PathResolver` —— 详见 [api.md](api.md)。
+
 ### 关于 `sidecar` / `pty` 这条出口
 
 它们不是"文件 API"，但效果上**能读写任何东西** —— 你跑一个进程，那个进程的权限就是
