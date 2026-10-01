@@ -401,47 +401,72 @@ node scripts/app-eval.mjs "return { views: window.__toolbox.store.views.length }
 宿主已经在 `boot()` 里自动回收，日志里会有一行 `reaped N session(s)` ——
 **看到它是正常的，不是错误**。
 
-## 子进程「响了一声」——先分清是谁在响
+## 子进程「响了一声」——查到哪一步了
 
-**症状**：用 `ctx.pty` 跑 shell（内置 procman 的 Shell profile 就是
-`powershell.exe`），**偶尔**听到一声蜂鸣／叮，位置在子进程那边。
+**症状**：跑着进程时在插件页之间来回切，偶尔听到一声「滴」（约 120 ms）。
 
-**第一件事：这个应用本身不会响，而且这是可验证的，不是承诺。**
+### 一、这个应用自己不会响 —— 可验证，不是承诺
 
 ```bash
-# 整个依赖树里没有任何一处打开音频（0 命中即证明）
+# 依赖树里没有任何一处打开音频（0 命中即证明）
 rg -c "new AudioContext|createOscillator|new Audio\(" node_modules --glob "*.js"
 # xterm 只把 BEL 变成一个事件：`onBell` 会 fire，但没有订阅者，也没有 Beep
 rg -o -F "onRequestBell" node_modules/@xterm/xterm/lib/xterm.js
 ```
 
-所以 `\x07` 在我们这条链路上是**沉默的**：它从 pty 读出来、写进 xterm、
-只让 `onBell` 空放一枪。**子进程真的想让你听见**，只有两条路：
+所以 `\x07` 在这条链路上是**沉默的**：从 pty 读出来、交给 xterm、让 `onBell`
+空放一枪。传输层顺手把它吃掉并记数（`consumeBell`，理由写在
+`src/protocol/transports/pty.js`），值公布为 `handle.bells()`，procman 把它显示在
+**Config ▾** 抽屉里（`bell` 一行，只在非零时出现）。
 
-1. **它自己调 Win32 `Beep()`**（PowerShell 里是 `[console]::beep()`）——
-   这条**根本不经过我们**，任何宿主侧开关都不可能消掉它；
-2. **控制台宿主（conhost）替它响** —— 同样不经过我们。
+**读这个数**：一直涨 = 字节到过我们这里；**一直是 0 却还能听见** = 声音没经过这条流，
+只可能来自子进程自己（Win32 `Beep()`）或控制台宿主（conhost）。
 
-**第二件事：机器能告诉你是哪一种。** 传输层把 BEL 吃掉并记数
-（`consumeBell`，完整理由写在 `src/protocol/transports/pty.js` 的注释里），
-`handle.bells()` 就是那个数：
+### 二、已经修掉的一个真 bug：切页面时往运行中的子进程里灌「幽灵输入」
 
-| `handle.bells()` | 说明 |
+**实测**（一次一量，不是推理）：每次切回 procman 视图，新造出来的 xterm 都会把
+回放里的内容当成**实时会话**——于是往仍然在跑的 shell 的 stdin 里写进两段过期转义序列：
+
+| 写进去的 | 它是怎么来的 |
 |---|---|
-| **一直涨** | 字节确实到了我们这里（已经被丢掉、不会渲染）。响声来自**写入终端**的那个程序 |
-| **一直是 0，但还在响** | 声音**没有经过这条流** —— 就是上面第 1／2 条，宿主无能为力 |
+| `ESC[1;1R` | 回放里有开机时那条 DSR（`ESC[6n`）查询，新终端**又回答了一次** |
+| `ESC[O` | 回放里有 `ESC[?1004h`（焦点上报开关），新终端因此把模糊当成事件上报 |
 
-内置 procman 把这个数放在右键的 **Config ▾** 抽屉里（`bell` 一行），
-只在非零时出现；通信 trace 里也会有一行 `bell ch=… ×N dropped`。
+5 次切换 = 10 段；修好后 3 次切换 = **0 段**。修法在
+`src/plugins/procman.js`：回放时**静音终端的应答通道**（`session.replaying`），
+并从回放里剥掉「会让终端回话」的序列（`REPLAY_STRIP`）。
 
-**根因（本机已核实）**：内置的 `Shell` profile 跑的是 **Windows PowerShell 5.1**，
-它的 PSReadLine `BellStyle` **默认就是 `Audible`** —— 补全歧义、按到没绑定的键序列
-都会响。查你自己的那一份：
+**为什么这无论如何都得修**：回放是「画面」，不是「对话」。回答历史里的提问，
+等于往一个还在运行的进程 stdin 里塞垃圾——任何把回放当实时的终端都有这个问题。
+
+### 三、怎么量「到底有没有响」
+
+耳朵不能复现，探针能。`scripts/audio-peak.ps1` 轮询默认播放设备的峰值表
+（WASAPI），把每一次响声变成一条带时间戳的记录：
 
 ```powershell
-powershell -NoProfile -Command '(Get-PSReadLineOption).BellStyle'   # → Audible
+powershell -File scripts/audio-peak.ps1 -Seconds 4 -SelfTest   # 先自检，再相信它
+powershell -File scripts/audio-peak.ps1 -Seconds 30            # 然后一边复现一边监听
 ```
 
-想让它闭嘴是**子进程侧**的事（`Set-PSReadLineOption -BellStyle None`，
-写进 `$PROFILE` 或写进 profile 的 args），不是宿主该替你改的设置 ——
-宿主能负责的只有一件事：**不让这个字节经由我们变成声音**，而那是上面那条计数器。
+**自检必须过**：第一版探针只放 `Console.Beep()`，结果**一声都没看到**——
+也就是说这台机器上「听得到的」是系统方案的 WAV 事件，不是合成音。
+一把没有刻度的尺子会「证明」任何结论，所以自检放在用法里。
+
+驱动界面用 `scripts/app-eval.mjs`，**注意要指定窗口**：插件窗口也是 CDP 里的一个
+page，不指定就会评估到它身上（那里没有 `window.__toolbox`，每个探针都报 undefined）：
+
+```bash
+node scripts/app-eval.mjs --target Toolbox "return [...window.__toolbox.procman.state.sessions.values()]"
+```
+
+### 四、还没证明的部分（写清楚，别当结论）
+
+- 现象侧：修之前两个监听窗口各测到 **2–3 声**，修完之后四个窗口（每次 6–9 回切换）
+  全部**静默**。
+- 但把同样的字节按同样的时机重新注入（18 段），以及把终端压到当时的 26 行，
+  **都没能复现那一声**。
+
+所以目前的结论是：**幽灵输入是真 bug、也确实按你描述的时机发生，而且它消失了；
+但它是不是那一声「滴」，还没有被证明。** 要收口只需要一次带数据的复现：
+用上面的探针监听 30 秒、同时复现一次，把输出（时间戳 + 次数）发回来。

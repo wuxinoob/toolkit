@@ -117,6 +117,32 @@ const state = {
 
 const enc = new TextEncoder();
 
+/**
+ * Sequences that make a terminal TALK BACK, stripped out of a replay.
+ *
+ * A replay is HISTORY, and the queries inside it were asked once — live — and
+ * answered then. Writing that history into a FRESH terminal asks them again:
+ * xterm answers immediately, and the answer leaves through `onData` into a shell
+ * that is still running. That is not a theory; it was measured on this repo's own
+ * PowerShell session, on every return to this view:
+ *
+ *   `ESC[1;1R`  a cursor-position report, answering a DSR replayed from startup
+ *   `ESC[O`     a focus-out, because the replayed stream had turned focus
+ *               reporting ON and the new terminal believed it
+ *
+ * Stray escape sequences landing at an interactive prompt are exactly what an
+ * audible PSReadLine bell rings for — the user's "滴" when switching pages.
+ *
+ *   `ESC[6n`       DSR / cursor-position query  -> xterm replies `ESC[r;cR`
+ *   `ESC[?1004h/l` focus reporting on / off     -> xterm reports focus later
+ *
+ * The mute in `onData` covers the first class in general (any reply — DA,
+ * XTWINOPS, … — is dropped while the replay parses); this covers the second,
+ * which is not a reply at all but a MODE the terminal would keep and act on
+ * long after the replay finished.
+ */
+const REPLAY_STRIP = /\x1b\[\?1004[hl]|\x1b\[6n/g;
+
 /* ---------------------------------- sessions ---------------------------------- */
 
 async function spawnFromSpec(spec) {
@@ -155,6 +181,8 @@ async function spawnFromSpec(spec) {
     bytesIn: 0,
     /** Last seen `handle.bells()` — BEL bytes the transport dropped. */
     bells: 0,
+    /** True while the replay is being parsed: nothing it says is input. */
+    replaying: false,
   };
   state.sessions.set(ch, session);
 
@@ -508,6 +536,14 @@ function attachTerminal(session, container) {
   term.loadAddon(fit);
   term.open(container);
   term.onData((data) => {
+    // `onData` is NOT "the user typed". It also carries every reply xterm
+    // produces on its own — cursor reports, device attributes, focus — and while
+    // the replay is being parsed those belong to a conversation that ended long
+    // ago. Forwarding them writes stale escape sequences into a live shell.
+    if (session.replaying) {
+      state.log?.('pty', `dropped replay reply ch=${session.ch}`);
+      return;
+    }
     if (session.status === 'running') session.handle?.write?.(data);
   });
   const ro = new ResizeObserver(() => scheduleFit(session));
@@ -518,11 +554,28 @@ function attachTerminal(session, container) {
   session.termHost = container;
 
   scheduleFit(session);
-  if (session.replay) term.write(session.replay);
+  if (session.replay) {
+    // The write callback fires when the parser has consumed the text, so the
+    // flag covers exactly the replay — not one keystroke more.
+    session.replaying = true;
+    try {
+      term.write(session.replay.replace(REPLAY_STRIP, ''), () => {
+        session.replaying = false;
+      });
+    } catch (e) {
+      session.replaying = false;
+      state.log?.('pty', `replay failed ch=${session.ch}: ${e.message ?? e}`);
+    }
+  }
   return term;
 }
 
 function detachTerminal(session) {
+  // Belt and braces: `replaying` is cleared by the replay's own write callback,
+  // and this is the other end — if a terminal is torn down mid-write the
+  // callback never runs, and a session-level flag left true would make the NEXT
+  // terminal permanently deaf to the keyboard.
+  session.replaying = false;
   if (session.resizeObs) {
     session.resizeObs.disconnect();
     session.resizeObs = null;

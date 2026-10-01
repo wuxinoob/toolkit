@@ -14,16 +14,30 @@
  *
  *   node scripts/app-eval.mjs "<expression>"        # expression, awaited
  *   node scripts/app-eval.mjs --file probe.js       # expression from a file
+ *   node scripts/app-eval.mjs --target eyecare "…"  # pick the window to run in
  *
  * The expression is evaluated as an async function body, so `await` and `return`
  * both work. The result is printed as JSON.
+ *
+ * WHICH window it runs in used to be "the first page target", which was fine
+ * while the app had exactly one window. It does not any more: a plugin window
+ * (`pluginwin.html?plugin=…`) is a page target too, and CDP does not promise an
+ * order — so the tool silently evaluated in whichever window happened to be
+ * listed first, where `window.__toolbox` does not exist and every probe reports
+ * "undefined". The default is now the MAIN window (any page that is not a plugin
+ * window), `--target <substring>` matches url or title, and the choice is echoed
+ * on stderr so a wrong guess is visible instead of looking like a broken probe.
  *
  * Zero dependencies: Node's built-in WebSocket speaks CDP directly.
  */
 const PORT = Number(process.env.CDP_PORT ?? 9222);
 
-const arg = process.argv[2];
-const fileArg = process.argv[3];
+const argv = process.argv.slice(2);
+const targetFlag = argv.indexOf('--target');
+const wanted = (targetFlag >= 0 ? argv.splice(targetFlag, 2)[1] : process.env.CDP_TARGET ?? '').toLowerCase();
+
+const arg = argv[0];
+const fileArg = argv[1];
 let expr;
 if (arg === '--file') {
   const { readFileSync } = await import('node:fs');
@@ -32,7 +46,7 @@ if (arg === '--file') {
   expr = arg;
 }
 if (!expr) {
-  console.error('usage: node scripts/app-eval.mjs "<expression>" | --file <path>');
+  console.error('usage: node scripts/app-eval.mjs [--target <substring>] "<expression>" | --file <path>');
   process.exit(2);
 }
 
@@ -51,11 +65,17 @@ try {
   process.exit(1);
 }
 
-const page = list.find((t) => t.type === 'page');
+const pages = list.filter((t) => t.type === 'page');
+const matches = (t) => `${t.title ?? ''} ${t.url ?? ''}`.toLowerCase().includes(wanted);
+const page = wanted
+  ? pages.find(matches)
+  : pages.find((t) => !(t.url ?? '').includes('pluginwin.html')) ?? pages[0];
 if (!page) {
-  console.error('no page target — is the window open?');
+  console.error(wanted ? `no page target matches ${JSON.stringify(wanted)} — saw:` : 'no page target — is the window open?');
+  for (const t of pages) console.error(`  ${t.title} ${t.url}`);
   process.exit(1);
 }
+console.error(`target: ${page.title} — ${page.url}`);
 
 const ws = new WebSocket(page.webSocketDebuggerUrl);
 let seq = 0;
