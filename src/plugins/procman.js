@@ -42,6 +42,7 @@ import {
   shouldRestart,
   describeSchedule,
   describeRestart,
+  pickSession,
   DEFAULT_PROFILE,
 } from './procman-supervisor.js';
 import { Terminal } from '@xterm/xterm';
@@ -289,9 +290,15 @@ function persistProfiles() {
   ctx.storage.set(PROFILES_KEY, state.profiles).catch((e) => ctx.log.warn('profiles persist failed', e));
 }
 
-/** The session belonging to a profile, whatever its status — one profile owns one. */
+/**
+ * The session a profile owns right now.
+ *
+ * NOT "the first entry with this id": Stop keeps its entry, so after Stop + Run
+ * there are two, and the first is the dead one. The rule (and the four bugs it
+ * fixes) lives in `pickSession`, where it is testable.
+ */
 function sessionOf(profileId) {
-  return [...state.sessions.values()].find((s) => s.profileId === profileId) ?? null;
+  return pickSession(state.sessions.values(), profileId);
 }
 
 /**

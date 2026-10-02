@@ -19,6 +19,7 @@ import {
   shouldRestart,
   describeSchedule,
   describeRestart,
+  pickSession,
 } from '../src/plugins/procman-supervisor.js';
 
 const at = (h, m = 0, day = 18) => new Date(2026, 8, day, h, m, 0, 0).getTime();
@@ -164,4 +165,44 @@ test('the defaults are internally consistent', () => {
   assert.deepEqual(p, { ...DEFAULT_PROFILE, id: '', name: '' });
   assert.equal(p.schedule.kind, 'none', 'a new profile does not run itself');
   assert.equal(p.autoStart, false);
+});
+
+// ------------------------------ session lookup -------------------------------
+
+/**
+ * Stop + Run leaves TWO entries for one profile — Stop keeps its session on
+ * purpose, and Run adds a new one. Everything that asks "which session is this
+ * profile's?" then has to decide between a dead entry and a live one, and the
+ * report from the field was exactly that: after Stop + Run the row still said
+ * `stopped`, the header offered **Run** for something already running, typing
+ * went nowhere, and pressing Run again only flashed "already running".
+ */
+const dead = { ch: 'old', profileId: 'p', status: 'stopped' };
+const live = { ch: 'new', profileId: 'p', status: 'running' };
+
+test('pickSession prefers the live session, in either order', () => {
+  assert.equal(pickSession([dead, live], 'p')?.ch, 'new', 'the Stop-then-Run case');
+  assert.equal(pickSession([live, dead], 'p')?.ch, 'new', 'order must not decide it');
+  assert.equal(
+    pickSession([dead, { ch: 'starting', profileId: 'p', status: 'starting' }], 'p')?.ch,
+    'starting',
+    'a starting session is live too',
+  );
+});
+
+test('pickSession falls back to the newest entry when nothing is live', () => {
+  const older = { ch: 'a', profileId: 'p', status: 'exited' };
+  const newer = { ch: 'b', profileId: 'p', status: 'stopped' };
+  assert.equal(pickSession([older, newer], 'p')?.ch, 'b', 'the one the user last looked at');
+  assert.equal(pickSession([newer, older], 'p')?.ch, 'a', 'insertion order is age');
+});
+
+test('pickSession answers "nothing" for other profiles and absent ids', () => {
+  assert.equal(pickSession([{ ch: 'x', profileId: 'other', status: 'running' }], 'p'), null);
+  assert.equal(pickSession([live], null), null, 'no id, no session');
+  assert.equal(pickSession([live], ''), null);
+  assert.equal(pickSession([live], undefined), null);
+  assert.equal(pickSession([], 'p'), null);
+  // Sessions with no profile (a one-off spawn) belong to no profile either.
+  assert.equal(pickSession([{ ch: 'y', profileId: null, status: 'running' }], 'p'), null);
 });

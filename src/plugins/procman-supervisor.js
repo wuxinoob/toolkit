@@ -163,3 +163,33 @@ export function describeRestart(restart) {
   const what = r.policy === 'always' ? 'always' : 'on failure';
   return `${what}, up to ${r.maxRetries}×`;
 }
+
+/**
+ * Which of a profile's sessions is THE one, right now.
+ *
+ * A profile can own more than one entry, and that is by design: Stop keeps its
+ * session so the output stays readable, and a later Run adds a second one. So
+ * "the first match" is the DEAD one — and every consumer of that answer is then
+ * wrong in the same way, which is one bug wearing four faces:
+ *
+ *   the row keeps saying `stopped` while a process is running;
+ *   the pane shows the old run's output instead of the live one;
+ *   the header offers **Run** for something that is already running;
+ *   and typing goes nowhere, because that session is not running any more.
+ *
+ * A live session therefore always wins, whatever its position. With nothing
+ * live, the NEWEST entry is the one the user last looked at (iteration order is
+ * insertion order, which is age).
+ *
+ * Takes any iterable so callers can pass `state.sessions.values()` directly.
+ */
+export function pickSession(sessions, profileId) {
+  if (!profileId) return null;
+  let newest = null;
+  for (const s of sessions) {
+    if (!s || s.profileId !== profileId) continue;
+    if (s.status === 'running' || s.status === 'starting') return s;
+    newest = s;
+  }
+  return newest;
+}
