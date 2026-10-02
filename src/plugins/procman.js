@@ -43,6 +43,7 @@ import {
   describeSchedule,
   describeRestart,
   pickSession,
+  endedSessions,
   DEFAULT_PROFILE,
 } from './procman-supervisor.js';
 import { Terminal } from '@xterm/xterm';
@@ -327,6 +328,28 @@ function runningFor(profileId) {
   );
 }
 
+/**
+ * Forget a profile's ended sessions.
+ *
+ * The other half of "Stop keeps its entry": those records would otherwise live
+ * for as long as the window does, and once a new round has started they are
+ * unreachable — the row, the header and the drawer all follow the picked
+ * session, so nothing can clear them any more. Dropped only when a NEW round
+ * starts (see `launchProfile`), never while one is still live.
+ */
+function dropEnded(profileId) {
+  const ended = endedSessions(state.sessions.values(), profileId);
+  for (const s of ended) {
+    detachTerminal(s);
+    state.sessions.delete(s.ch);
+    if (state.selectedCh === s.ch) state.selectedCh = null;
+  }
+  if (ended.length) {
+    state.log?.('profile', `dropped ${ended.length} ended session(s) of ${profileId}`);
+  }
+  return ended.length;
+}
+
 async function launchProfile(rawProfile, reason = 'manual') {
   const p = normalizeProfile(rawProfile);
   if (!p.program) {
@@ -344,6 +367,11 @@ async function launchProfile(rawProfile, reason = 'manual') {
     if (reason === 'manual') selectProfile(p.id);
     return live[0];
   }
+  // A manual Run starts a new round, so the previous round's record goes with
+  // it. Only manual: a restart or a schedule firing must not take away the
+  // output of the session the user is currently looking at (those paths
+  // deliberately leave the selection alone).
+  if (reason === 'manual') dropEnded(p.id);
   state.lastFired.set(p.id, Date.now());
   const session = await spawnFromSpec({
     name: p.name || p.program,

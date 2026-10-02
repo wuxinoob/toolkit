@@ -193,3 +193,27 @@ export function pickSession(sessions, profileId) {
   }
   return newest;
 }
+
+/**
+ * A profile's sessions that have ENDED — the leftovers a new round replaces.
+ *
+ * Stop keeps its session on purpose (so the output stays readable), which is
+ * what makes `pickSession` necessary; the other half of that decision is that
+ * those records accumulate forever. A manual Run is the point where they stop
+ * being reachable — the selection moves to the new session — so that is where
+ * they are dropped.
+ *
+ * Live sessions are never returned, whatever else is wrong with the list: this
+ * answer is used to DELETE things, so "nothing that could still be running"
+ * is the property that matters.
+ */
+export function endedSessions(sessions, profileId) {
+  const out = [];
+  if (!profileId) return out;
+  for (const s of sessions) {
+    if (!s || s.profileId !== profileId) continue;
+    if (s.status === 'running' || s.status === 'starting') continue;
+    out.push(s);
+  }
+  return out;
+}

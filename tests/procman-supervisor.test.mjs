@@ -20,6 +20,7 @@ import {
   describeSchedule,
   describeRestart,
   pickSession,
+  endedSessions,
 } from '../src/plugins/procman-supervisor.js';
 
 const at = (h, m = 0, day = 18) => new Date(2026, 8, day, h, m, 0, 0).getTime();
@@ -205,4 +206,36 @@ test('pickSession answers "nothing" for other profiles and absent ids', () => {
   assert.equal(pickSession([], 'p'), null);
   // Sessions with no profile (a one-off spawn) belong to no profile either.
   assert.equal(pickSession([{ ch: 'y', profileId: null, status: 'running' }], 'p'), null);
+});
+
+// ------------------------------ ended records --------------------------------
+
+/**
+ * Stop keeps its session (that is what makes `pickSession` necessary), so the
+ * records pile up until something drops them. A manual Run is that something,
+ * and the list it acts on is used to DELETE — hence the one rule that matters:
+ * nothing that could still be running may ever appear in it.
+ */
+test('endedSessions returns every finished entry and never a live one', () => {
+  const sessions = [
+    { ch: 'a', profileId: 'p', status: 'exited' },
+    { ch: 'b', profileId: 'p', status: 'running' },
+    { ch: 'c', profileId: 'p', status: 'stopped' },
+    { ch: 'd', profileId: 'p', status: 'starting' },
+    { ch: 'e', profileId: 'p', status: 'error' },
+    { ch: 'f', profileId: 'other', status: 'stopped' },
+    { ch: 'g', profileId: null, status: 'exited' },
+  ];
+  assert.deepEqual(
+    endedSessions(sessions, 'p').map((s) => s.ch),
+    ['a', 'c', 'e'],
+    'ended means ended: exited / stopped / error, for THIS profile only',
+  );
+});
+
+test('endedSessions answers an empty list when there is nothing to drop', () => {
+  assert.deepEqual(endedSessions([], 'p'), []);
+  assert.deepEqual(endedSessions([live], 'p'), [], 'a live session is not a leftover');
+  assert.deepEqual(endedSessions([{ ch: 'a', profileId: 'p', status: 'exited' }], null), []);
+  assert.deepEqual(endedSessions([{ ch: 'a', profileId: 'p', status: 'exited' }], ''), []);
 });
