@@ -31,6 +31,7 @@ arboard = "3.6.1"
 xcap = "0.9.8"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 base64 = "0.23.1"
+tauri-plugin-updater = "2.13.1"
 
 # Console control handler, so Ctrl+C (the usual way a dev session ends) reaps
 # live sessions instead of orphaning them. Already in the tree via tauri.

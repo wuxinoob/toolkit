@@ -9,6 +9,7 @@ import { runSelftest } from '../core/selftest.js';
 import { hub, setTraceSink } from '../protocol/hub.js';
 import { events, DROP_TOPIC } from './events.js';
 import { loadUiKit } from './ui.js';
+import { checkForUpdate } from './updater.js';
 
 /** Global hotkey that summons (shows + focuses) the main window. */
 /** Host identity: the only caller allowed to revoke a plugin registration. */
@@ -294,6 +295,12 @@ export async function boot() {
       const note = p.note ? ` [${p.note}]` : '';
       await report(`  plugin ${p.manifest.id}: ${p.status}${p.error ? ` — ${p.error}` : ''}${note}`);
     }
+
+    // 更新检查是"顺带知道"，不是启动的一部分：**不 await**，失败也不吵
+    // （没网、端点未配、公司代理都会失败，那些都不该看起来像启动出问题）。
+    // 有更新时只更新状态，装不装由用户在设置页决定 —— 见 host/updater.js。
+    void checkForUpdate({ silent: true });
+
     // `import.meta.env` is injected by Vite; the optional chain keeps this
     // module importable outside a bundler (node --test boot smoke test).
     if (import.meta.env?.DEV) await runStartupSelftest();

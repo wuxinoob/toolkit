@@ -9,6 +9,7 @@ import { activate, deactivate, saveEnabled } from '../host/lifecycle.js';
 import { Origin, originOf, pluginModule, reconcilePlugins, reloadPlugin } from '../host/plugins.js';
 import { hub } from '../protocol/hub.js';
 import { getResolvedTheme, getThemePref, onThemeChange, setTheme } from '../host/theme.js';
+import { checkForUpdate, installUpdate, updateState } from '../host/updater.js';
 
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -388,6 +389,46 @@ async function setAutostart(enabled) {
 }
 
 onMounted(loadAutostart);
+
+/* ---------------------------------- updates ---------------------------------- */
+
+/**
+ * 更新检查在启动时已经静默跑过一次（见 `host/boot.js`），这里只负责"再问一次"
+ * 与"装不装"。装是全局且不可逆的动作（会停掉所有子进程、替换应用并重启），
+ * 确认框在 `installUpdate` 里，界面这一层绕不过去。
+ */
+const updateResult = ref(updateState.result);
+const updateBusy = ref(false);
+// `updateState` 是普通对象，模板读它不会触发重渲染 —— 失败信息必须自己拿一份 ref。
+const updateError = ref(updateState.error);
+
+async function checkUpdates() {
+  updateBusy.value = true;
+  try {
+    // 手动点的时候不静默：失败要说出来，否则按钮看起来像没反应。
+    updateResult.value = (await checkForUpdate({ silent: false })) ?? updateResult.value;
+    updateError.value = updateState.error;
+  } finally {
+    updateBusy.value = false;
+  }
+}
+
+async function installUpdateNow() {
+  updateBusy.value = true;
+  try {
+    const result = await installUpdate();
+    if (result?.cancelled) return;
+    updateError.value = updateState.error;
+    if (result?.installed === false && result.reason === 'up to date') {
+      toast('已经是最新版本');
+      updateResult.value = { ...(updateResult.value ?? {}), available: false };
+    }
+    // 安装成功后进程会被替换并重启，通常执行不到这里。
+    updateResult.value = updateState.result;
+  } finally {
+    updateBusy.value = false;
+  }
+}
 </script>
 
 <template>
@@ -419,6 +460,45 @@ onMounted(loadAutostart);
           <template v-else-if="autostart">Starts with the system</template>
           <template v-else>Does not start with the system</template>
         </span>
+      </CardContent>
+    </Card>
+
+    <Card>
+      <CardHeader>
+        <CardTitle>Updates</CardTitle>
+        <CardDescription>
+          Toolbox checks the release feed quietly on startup and says nothing unless there is
+          something new. Installing stops every running process first, then replaces the app and
+          restarts it.
+        </CardDescription>
+      </CardHeader>
+      <CardContent class="flex flex-col gap-3">
+        <div class="flex flex-wrap items-center gap-3">
+          <span class="text-sm text-muted-foreground">
+            Version <span class="font-mono">{{ updateResult?.current ?? '—' }}</span>
+          </span>
+          <Button variant="outline" size="sm" :disabled="updateBusy" @click="checkUpdates">
+            {{ updateBusy ? 'Working…' : 'Check for updates' }}
+          </Button>
+          <Button
+            v-if="updateResult?.available"
+            variant="default"
+            size="sm"
+            :disabled="updateBusy"
+            @click="installUpdateNow"
+          >
+            Install {{ updateResult.version }} and restart
+          </Button>
+        </div>
+        <p class="text-xs text-muted-foreground">
+          <template v-if="updateError">Last check failed: {{ updateError }}</template>
+          <template v-else-if="updateResult?.available">
+            {{ updateResult.version }} is available.
+            <template v-if="updateResult.notes">{{ updateResult.notes }}</template>
+          </template>
+          <template v-else-if="updateResult">Up to date.</template>
+          <template v-else>Not checked yet.</template>
+        </p>
       </CardContent>
     </Card>
 

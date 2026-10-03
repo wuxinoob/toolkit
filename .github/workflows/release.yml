@@ -7,21 +7,19 @@ name: Release
 # ## 现在能产出什么
 #
 #   NSIS 安装器（.exe）+ MSI（.msi）—— 两者都由 `tauri build` 按配置产出
-#   *.sig —— 只有开了"更新制品签名"才会有；今天还不是（见下）
+#   *.sig —— 配置里已打开"更新制品签名"，但**只有配了密钥才会真的产出**（见下）
+#   latest.json —— 自动更新端点要的清单，由这次发布的产物推导（见 scripts/make-latest-json.mjs）
 #
-# ## 之后接自动更新时要补三处（这里已经预留，不会拦住今天的构建）
+# ## 自动更新：还差的两件事都在仓库之外
 #
-#   1. 依赖与配置：加 updater 插件，配置里开 `bundle.createUpdaterArtifacts`，
-#      填 `plugins.updater.pubkey` 与 `plugins.updater.endpoints`（指向下列 Release 资产里的 latest.json）。
-#      **Windows 上只有 NSIS 支持自更新，MSI 不支持** —— 所以更新指向的是 NSIS 那份产物。
-#   2. 密钥：本地 `tauri signer generate` 生成一对，公钥进配置（可以提交），
-#      私钥与口令进仓库 Secrets：`TAURI_SIGNING_PRIVATE_KEY`（整份文件内容）与
-#      `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。下面的步骤会在**这两个 Secret 存在时**自动启用，
-#      没有时静默跳过 —— 这样工作流今天就能跑，接上插件那天不用改它。
-#   3. `latest.json`：更新端点要的那个清单（版本 / 发布时间 / 每平台 的 签名 + 产物 URL）。
-#      它可以由这一份 Release 的资产拼出来（建议在 `tauri build` 之后加一步生成并一起上传）。
-#      **不在本文件里预先写好**：更新制品的确切命名要等第一次真正签名构建的产物出来才对得上，
-#      凭猜测写一个"看起来对"的清单，比没有更危险。
+#   1. **签名密钥进 Secrets**：`TAURI_SIGNING_PRIVATE_KEY`（私钥文件的整份内容）
+#      与 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（无口令则留空、不建这条也行）。
+#      下面的步骤在**这两个 Secret 存在时**自动启用，没有时静默跳过 ——
+#      所以今天没配密钥也能出包，配好那天不用改这个文件。
+#   2. **第一次带更新器的版本必须手动装**：没有更新器的旧版本不会自己更新自己。
+#
+# 端点由下面一步从 `github.repository` 注入到应用配置里 —— 仓库里那份配置留的是占位符，
+# 因为本地开发构建不该指向某个真实仓库，而仓库改名时也不该需要改两处。
 on:
   push:
     tags: ['v*']
@@ -77,6 +75,14 @@ jobs:
 
       # 发布前的门禁：测试不过就不出包。测试是秒级的，省不得。
       - run: npm test
+
+      # 更新端点指向"这个仓库的最新发布"，所以在构建之前把地址写进应用配置。
+      # 构建产物里嵌的是这一次写进去的值，之后改仓库地址不影响已经发出去的版本。
+      - name: Point the updater at this repository
+        shell: bash
+        run: |
+          node -e "const f='src-tauri/tauri.conf.json';const c=require('./'+f);c.plugins.updater.endpoints=['https://github.com/${{ github.repository }}/releases/latest/download/latest.json'];require('fs').writeFileSync(f,JSON.stringify(c,null,2)+'\n')"
+          node -p "require('./src-tauri/tauri.conf.json').plugins.updater.endpoints[0]"
 
       # 有了签名密钥才启用签名（见文件头的第 2 条）。
       # 多行密钥必须用 GITHUB_ENV 的 heredoc 写法，直接 echo 会把换行吃掉。
@@ -137,12 +143,22 @@ jobs:
             gh release create "$TAG" $FILES $SIGS --title "$TAG" --generate-notes
           fi
 
-# 还没做、但很快会需要的一步（等更新插件接上以后再打开）：
-#
-#   - name: updater manifest
-#     if: hashFiles('src-tauri/target/release/bundle/**/*.sig') != ''
-#     run: |
-#       # 由这一份 Release 的资产拼出 latest.json：
-#       # { version, notes, pub_date, platforms: { 'windows-x86_64': { signature, url } } }
-#       # 其中 signature 是 .sig 文件的内容、url 是**更新制品**（NSIS 那份）的下载地址。
-#       # 生成后同样用 gh release upload --clobber 传上去。
+      # 更新清单。没有签名文件时脚本会打印告警并成功退出 —— 更新签名是可选的，
+      # 不该拦住一次普通发布；配好密钥之后这一份就会自动出现在资产里。
+      - name: Publish the updater manifest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          gh release view "$TAG" --json body -q .body > "$RUNNER_TEMP/notes.md" 2>/dev/null || : > "$RUNNER_TEMP/notes.md"
+          node scripts/make-latest-json.mjs \
+            --bundle src-tauri/target/release/bundle \
+            --version "$VERSION" \
+            --repo "${{ github.repository }}" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --out "$RUNNER_TEMP/latest.json"
+          if [ -f "$RUNNER_TEMP/latest.json" ]; then
+            gh release upload "$TAG" "$RUNNER_TEMP/latest.json" --clobber
+          fi

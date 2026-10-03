@@ -365,6 +365,79 @@ async fn host_autostart_set(
     .map_err(|e| format!("autostart task failed: {e}"))?
 }
 
+/// 有没有新版本。
+///
+/// **主窗口专用**，与其它宿主自管理命令同一道闸门（应用自定义命令不受 ACL 保护，
+/// 更新的后果又是全局的，所以用窗口标签兜底）。
+///
+/// 只回答，不改任何状态：装不装由用户决定。
+#[tauri::command]
+async fn host_update_check(window: tauri::WebviewWindow) -> Result<Value, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    require_main(&window)?;
+    let app = window.app_handle().clone();
+    let current = app.package_info().version.to_string();
+    match app
+        .updater()
+        .map_err(|e| format!("updater unavailable: {e}"))?
+        .check()
+        .await
+    {
+        Ok(Some(update)) => Ok(serde_json::json!({
+            "available": true,
+            "current": current,
+            "version": update.version,
+            "notes": update.body,
+        })),
+        Ok(None) => Ok(serde_json::json!({ "available": false, "current": current })),
+        Err(e) => Err(format!("update check failed: {e}")),
+    }
+}
+
+/// 下载并安装更新，然后由安装器把新版本拉起来。
+///
+/// 三个平台事实决定了这个函数长什么样（都在更新器 crate 的 Windows 实现里）：
+///
+/// 1. **它装完会用 `std::process::exit(0)` 结束自己**，也就是**不走 Tauri 的退出事件** ——
+///    本应用"退出时统一收会话"那条路在这里是断的。所以下面先手动跑一遍同一个函数，
+///    否则更新这一下会把用户正在跑的子进程变成孤儿。
+/// 2. 安装器默认被要求**装完自动启动新版本**，所以这里不需要自己重启。
+/// 3. 它接受安装器本身或它的 zip 形态；我们发布的是 NSIS 的 setup.exe。
+///
+/// 重新 `check()` 一次而不是复用前端那份结果：用户可能隔了一会儿才点确认，
+/// 这中间上游可能已经发了别的版本。确认的是"要不要装"，不是"装哪一个"。
+#[tauri::command]
+async fn host_update_install(window: tauri::WebviewWindow) -> Result<Value, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    require_main(&window)?;
+    let app = window.app_handle().clone();
+
+    // 清场：更新会硬退出，退出钩子不跑。阻塞式工作交给线程池。
+    tauri::async_runtime::spawn_blocking(crate::services::session::kill_all)
+        .await
+        .map_err(|e| format!("reap before update failed: {e}"))?;
+
+    let updater = app
+        .updater()
+        .map_err(|e| format!("updater unavailable: {e}"))?;
+    let Some(update) = updater
+        .check()
+        .await
+        .map_err(|e| format!("update check failed: {e}"))?
+    else {
+        return Ok(serde_json::json!({ "installed": false, "reason": "up to date" }));
+    };
+
+    let version = update.version.clone();
+    update
+        .download_and_install(|_chunk, _total| {}, || {})
+        .await
+        .map_err(|e| format!("update install failed: {e}"))?;
+
+    // Windows 上通常到不了这里：安装器已经被拉起，进程随即退出。
+    Ok(serde_json::json!({ "installed": true, "version": version }))
+}
+
 /// App commands are not ACL-gated, so the window label is the gate.
 fn require_main(window: &tauri::WebviewWindow) -> Result<(), String> {
     if window.label() == "main" {
@@ -418,6 +491,14 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_pty::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        // Rust API only, like the dialog and notification plugins: the frontend
+        // never imports the updater's JS package, so its own commands stay
+        // un-permissioned and the only way in is the two host commands below
+        // (both main-window gated).
+        //
+        // Why the plugin at all instead of a hand-rolled HTTP check: it owns the
+        // signature verification. That is exactly the part not to reimplement.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             plugin_rpc,
             plugin_register,
@@ -427,6 +508,8 @@ pub fn run() {
             plugin_reap_orphans,
             host_autostart_get,
             host_autostart_set,
+            host_update_check,
+            host_update_install,
             plugin_dialog,
             services::external::plugin_scan,
             services::external::plugin_info,
