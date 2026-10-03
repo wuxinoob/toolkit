@@ -78,7 +78,9 @@ jobs:
             exit 1
           fi
 
-      - run: npm ci
+      # 与 CI 同一条命令、同一个理由：`npm ci` 的"可选平台包"校验随 npm 版本变，
+      # 而发布不该因为 runner 自带哪个 npm 而红。详见 ci.yml 里那段注释。
+      - run: npm install --no-audit --no-fund
 
       # 发布前的门禁：测试不过就不出包。测试是秒级的，省不得。
       - run: npm test

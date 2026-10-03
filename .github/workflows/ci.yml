@@ -48,15 +48,20 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
 
-      # `npm ci` 校验的是"package.json ↔ lock 是否自洽"，**包括各平台的可选包**：
-      # `@tauri-apps/cli`、`@rolldown/binding-*`、`lightningcss-*` 都会按平台声明一份
-      # 可选依赖，而"在某个平台上生成的 lock"可能只记下那一个平台，换台机器就报
-      # `Missing: … from lock file`（第一次跑 CI 就是这么红掉的）。现在 lock 里带全了。
+      # 用 `npm install` 而不是 `npm ci`。
       #
-      # 另外：`@emnapi/wasi-threads` 被**故意**写进 devDependencies 固定 1.2.2 ——
-      # npm 的解析器不肯把这条 wasm 专用条目写进 lock，而校验又要求它在。
-      # 它不是"多余的依赖"，别顺手删；删了 CI 立刻会红。
-      - run: npm ci
+      # 两者对"可选平台包"的校验强度不同，而且这个强度**随 npm 版本变**：同一份 lock，
+      # npm 11.6 判它自洽，11.5 及更早则要求 tailwind 的 wasm 子树里还得有
+      # `@emnapi/core` / `@emnapi/runtime` —— 那些包在 Windows 上永远不会被用到，
+      # 却足以让 `npm ci` 直接 EUSAGE（第一次 CI 我们就是被这类报错挡住的：
+      # `Missing: @tauri-apps/cli-darwin-arm64@… from lock file`，24 条）。
+      # `npm install` 尊重 lock、不做这项校验，于是 CI 不再取决于 runner 自带哪个 npm；
+      # 版本仍然由 lock 钉住。
+      #
+      # lock 里那些平台条目（`@tauri-apps/cli` ×11、`@rolldown/binding-*` ×15）是**必要的**，
+      # 以及 `@emnapi/wasi-threads` 那条固定版本也是**有意**的（它让本地 `npm ci` 在 11.6 上通过）。
+      # 这两样都别清理。
+      - run: npm install --no-audit --no-fund
       - run: npm test
       - run: npm run build
       - name: Rust checks (the runnable ones)
