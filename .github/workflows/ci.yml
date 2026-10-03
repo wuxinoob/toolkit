@@ -48,6 +48,14 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
 
+      # `npm ci` 校验的是"package.json ↔ lock 是否自洽"，**包括各平台的可选包**：
+      # `@tauri-apps/cli`、`@rolldown/binding-*`、`lightningcss-*` 都会按平台声明一份
+      # 可选依赖，而"在某个平台上生成的 lock"可能只记下那一个平台，换台机器就报
+      # `Missing: … from lock file`（第一次跑 CI 就是这么红掉的）。现在 lock 里带全了。
+      #
+      # 另外：`@emnapi/wasi-threads` 被**故意**写进 devDependencies 固定 1.2.2 ——
+      # npm 的解析器不肯把这条 wasm 专用条目写进 lock，而校验又要求它在。
+      # 它不是"多余的依赖"，别顺手删；删了 CI 立刻会红。
       - run: npm ci
       - run: npm test
       - run: npm run build

@@ -41,11 +41,15 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@emnapi/wasi-threads": "1.2.2",
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2",
     "@vitejs/plugin-vue": "^6.0.7",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.9.3",
     "vite": "^8.0.16"
+  },
+  "overrides": {
+    "@emnapi/wasi-threads": "1.2.2"
   }
 }
