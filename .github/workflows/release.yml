@@ -82,7 +82,14 @@ jobs:
       # 而发布不该因为 runner 自带哪个 npm 而红。详见 ci.yml 里那段注释。
       - run: npm install --no-audit --no-fund
 
-      # 发布前的门禁：测试不过就不出包。测试是秒级的，省不得。
+      # 发布前的门禁：测试不过就不出包。但测试**需要**一个 Rust 构建产物：
+      # 权限审计读 `src-tauri/gen/schemas/acl-manifests.json`（tauri-build 生成、
+      # 写在源码树里、被 gitignore）。所以先强制构建脚本跑一遍 —— 不清这个包的话，
+      # 缓存命中时它是 no-op，那个文件就永远不出现。清它只影响本包，依赖仍走缓存。
+      - run: cargo clean --manifest-path src-tauri/Cargo.toml -p toolbox
+      - name: Generate the ACL schemas the tests read
+        run: cargo check --manifest-path src-tauri/Cargo.toml
+
       - run: npm test
 
       # 更新端点指向"这个仓库的最新发布"，所以在构建之前把地址写进应用配置。

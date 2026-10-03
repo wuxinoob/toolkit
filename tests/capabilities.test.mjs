@@ -29,9 +29,34 @@ import { join } from 'node:path';
 register('./browser-stubs-loader.mjs', import.meta.url);
 
 
-const MANIFEST = JSON.parse(
-  readFileSync(new URL('../src-tauri/gen/schemas/acl-manifests.json', import.meta.url), 'utf8'),
-);
+/**
+ * The ACL manifest is a BUILD ARTIFACT, not a source file: `tauri-build` writes
+ * `src-tauri/gen/schemas/` and `.gitignore` keeps it out of the repo. So it is
+ * present on a machine that has built the app and **absent in a fresh clone** —
+ * which is exactly how this test crashed the first time CI ran, with nothing but
+ * an `ENOENT` and a stack to explain it.
+ *
+ * Hence the explicit message: whoever hits it should be told the one command
+ * that fixes it, not left to infer that a *test* needs a *build* to run first.
+ * (`ci.yml` runs the Rust step before `npm test` for the same reason.)
+ */
+function readManifest() {
+  const path = new URL('../src-tauri/gen/schemas/acl-manifests.json', import.meta.url);
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch (e) {
+    if (e?.code !== 'ENOENT') throw e;
+    throw new Error(
+      'src-tauri/gen/schemas/acl-manifests.json is missing — tauri-build generates it, so a ' +
+        'fresh checkout does not have it. Run `cargo check --manifest-path src-tauri/Cargo.toml`. ' +
+        'If the Rust side has been built before, the build script may be cached and do nothing — ' +
+        'in that case force it: `cargo clean --manifest-path src-tauri/Cargo.toml -p toolbox` ' +
+        '(or touch any of its inputs, e.g. src-tauri/tauri.conf.json) and run it again.',
+    );
+  }
+}
+
+const MANIFEST = readManifest();
 const capability = (name) =>
   JSON.parse(readFileSync(new URL(`../src-tauri/capabilities/${name}`, import.meta.url), 'utf8'));
 

@@ -9,7 +9,9 @@ name: CI
 #                   （`cargo test` 在本项目里起不来：tauri-build 只把清单嵌进 bin 目标，
 #                     测试二进制一加载就 STATUS_ENTRYPOINT_NOT_FOUND）
 #
-# **步骤顺序不可换**：Tauri 的编译期上下文要读前端产物目录，前端不先构建，Rust 编不过。
+# **步骤顺序是有原因的，别随手调**：
+#   前端 → Rust：Tauri 的编译期上下文要读前端产物目录，前端不先构建，Rust 编不过；
+#   Rust → 测试：这条测试会读 tauri-build 生成的 ACL schema（见下）。
 on:
   push:
     branches: [main]
@@ -62,7 +64,20 @@ jobs:
       # 以及 `@emnapi/wasi-threads` 那条固定版本也是**有意**的（它让本地 `npm ci` 在 11.6 上通过）。
       # 这两样都别清理。
       - run: npm install --no-audit --no-fund
-      - run: npm test
       - run: npm run build
-      - name: Rust checks (the runnable ones)
+
+      # Rust 步骤在测试之前，而且它顺便生成一个**测试要读的构建产物**：
+      # `npm test` 里的权限审计会读 `src-tauri/gen/schemas/acl-manifests.json`，
+      # 那是 tauri-build 生成的、被 gitignore 的 —— 干净检出里没有，本地早就有了，
+      # 所以"我这儿绿、CI 红"（第一次跑就是这么崩在那个守卫里的）。
+      #
+      # 而且它写在**源码树**里（gen/schemas），不在 target 里 —— 我们缓存了 target，
+      # 于是缓存命中时构建脚本可能是 no-op，那个文件永远不出现（间歇性红，最难查）。
+      # 先只清这个包，强制构建脚本真的跑一遍，产物才是确定的。
+      - name: Force the build script to run (it writes src-tauri/gen/schemas)
+        run: cargo clean --manifest-path src-tauri/Cargo.toml -p toolbox
+
+      - name: Rust checks (the runnable ones — also generate the ACL schemas)
         run: cargo run --manifest-path src-tauri/Cargo.toml --example host-checks
+
+      - run: npm test
