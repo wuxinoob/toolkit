@@ -72,30 +72,37 @@ const viewIcons = computed(() => {
 });
 
 /**
- * A nav row. `ghost` for the resting state and a tinted variant when active —
- * expressed with token utilities rather than a bespoke class, so it follows the
- * theme and `contributes.theme` overrides like everything else.
+ * A nav row. `ghost` for the resting state, and when active a **3px pill on the
+ * left edge plus brand-coloured content** — not a filled block.
+ *
+ * The fill was the old marker, and it is the reason the rail read as heavy: a
+ * tinted rectangle competes with the label it is supposed to point at, and it
+ * made the active row the brightest thing in a column of otherwise quiet rows.
+ * The pill marks the row without shouting, and it matches what `.tb-nav-item`
+ * does in the design system (see `src/assets/design-system.css`).
  */
 const navClass = (active) =>
   cn(
-    'w-full justify-start gap-2.5 px-2.5 font-normal',
+    'relative w-full justify-start gap-2.5 px-2.5 font-normal transition-colors',
+    "before:absolute before:left-0 before:top-1/2 before:h-[60%] before:w-[3px] before:-translate-y-1/2 before:rounded-full before:content-['']",
     active
-      ? 'bg-primary/10 text-foreground ring-1 ring-primary/30 hover:bg-primary/15'
-      : 'text-muted-foreground',
+      ? 'before:bg-primary bg-primary/8 text-foreground'
+      : 'before:bg-transparent text-muted-foreground hover:text-foreground',
   );
 </script>
 
 <template>
   <TooltipProvider :delay-duration="400">
     <div class="relative flex h-full">
-      <aside class="flex w-[216px] shrink-0 flex-col border-r bg-card">
-        <div class="flex items-center gap-2 px-4 pt-4 pb-3 font-medium tracking-wide">
-          <span class="size-2.5 rounded-[3px] bg-primary shadow-[0_0_12px] shadow-primary/60"></span>
-          Toolbox
-        </div>
-
+      <!--
+        No brand row here on purpose. The window's own title bar already shows
+        the app icon and name a few pixels above, so a second "Toolbox" in the
+        rail was the same word twice in 30px — and it LOOKED like a nav item
+        without being one. The rail starts straight at its first group label.
+      -->
+      <aside class="flex w-[216px] shrink-0 flex-col border-r bg-sidebar">
         <ScrollArea class="min-h-0 flex-1">
-          <nav class="flex flex-col gap-0.5 px-2 pb-2">
+          <nav class="flex flex-col gap-0.5 px-2 pt-3 pb-2">
             <!-- Where the plugin rows will appear. Saying nothing here while
                  they load looks like an empty list rather than a pending one. -->
             <div v-if="!store.booted" class="px-2.5 py-2 text-xs text-muted-foreground">
@@ -115,7 +122,11 @@ const navClass = (active) =>
                     :aria-current="store.activeViewId === v.viewId"
                     @click="store.activeViewId = v.viewId"
                   >
-                    <span class="flex size-[18px] shrink-0 items-center justify-center" aria-hidden="true">
+                    <span
+                      class="flex size-[18px] shrink-0 items-center justify-center"
+                      :class="store.activeViewId === v.viewId ? 'text-primary' : ''"
+                      aria-hidden="true"
+                    >
                       <component :is="viewIcons.get(v.viewId)" v-if="viewIcons.get(v.viewId)" class="size-4" />
                       <span v-else>{{ v.icon }}</span>
                     </span>
@@ -140,7 +151,11 @@ const navClass = (active) =>
             :aria-current="store.activeViewId === '__settings'"
             @click="store.activeViewId = '__settings'"
           >
-            <span class="flex size-[18px] shrink-0 items-center justify-center" aria-hidden="true">
+            <span
+              class="flex size-[18px] shrink-0 items-center justify-center"
+              :class="store.activeViewId === '__settings' ? 'text-primary' : ''"
+              aria-hidden="true"
+            >
               <component :is="shellIcon('settings')" class="size-4" />
             </span>
             <span class="truncate">Settings</span>

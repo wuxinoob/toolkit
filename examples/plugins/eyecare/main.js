@@ -1794,9 +1794,11 @@ function renderPanel() {
               { variant: 'default', onClick: () => showRuntime().catch((e) => S.ctx.ui.notify('创建失败: ' + msg(e), 'error')) },
               '显示悬浮窗',
             ),
-            el('button', { variant: 'outline', onClick: () => hideRuntime().catch(() => {}) }, '隐藏'),
-            el('button', { variant: 'outline', onClick: () => enterRest(false).catch(() => {}) }, '预览休息'),
-            el('button', { variant: 'outline', onClick: () => recenter().catch(() => {}) }, '复位到右上角'),
+            // 辅助动作一律 ghost：这一行同时有主操作与破坏性操作，
+            // 三个描边按钮并排会把视线扯成一片，主次反而看不出来。
+            el('button', { variant: 'ghost', onClick: () => hideRuntime().catch(() => {}) }, '隐藏'),
+            el('button', { variant: 'ghost', onClick: () => enterRest(false).catch(() => {}) }, '预览休息'),
+            el('button', { variant: 'ghost', onClick: () => recenter().catch(() => {}) }, '复位到右上角'),
             el('button', { variant: 'destructive', onClick: () => closeAll().catch(() => {}) }, '销毁全部窗口'),
           ),
           el(
