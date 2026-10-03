@@ -37,7 +37,14 @@ jobs:
     name: build + publish (windows)
     runs-on: windows-latest
     steps:
+      # Tag push: `github.ref` IS the tag, which is what we want to build.
+      # Manual dispatch: the input names an EXISTING tag — building the default
+      # branch instead would attach different bytes to that tag's name, which is
+      # the one thing a release must never do. (This was the behaviour until a
+      # review pass caught it: the dispatch path checked out `main`.)
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - uses: actions/setup-node@v4
         with:
