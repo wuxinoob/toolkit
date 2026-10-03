@@ -22,7 +22,7 @@
 | `ctx.rpc('host','info')` 通了 | 权限闸放行 |
 
 **任何一项失败，插件行会是 `error` 而不是 `active`** —— 启动日志直接告诉你，
-不用点任何东西。（这个模式抄自 `examples/plugins/probe/`。）
+不用点任何东西。（这个模式抄自 `tests/fixtures/plugins/probe/`。）
 
 **需要你动手的**（点按钮，然后看日志区）：
 

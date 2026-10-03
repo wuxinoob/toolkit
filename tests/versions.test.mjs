@@ -81,12 +81,13 @@ test('the plugin API version is a number the host can actually serve', () => {
   // API 上；声明得比宿主旧，说明接口升级时忘了更新样本（宿主只会告警，不会拒绝，
   // 于是这种陈旧要等到有人真去跑它才暴露）。两边都要求相等。
   const manifests = [];
-  const examples = path.join(root, 'examples');
-  for (const dir of readdirSync(examples, { withFileTypes: true })) {
+  // 仓库自带的插件现在住在测试夹具里（它们不再是对外的样例，只被测试加载）。
+  const fixtures = path.join(root, 'tests', 'fixtures');
+  for (const dir of readdirSync(fixtures, { withFileTypes: true })) {
     if (!dir.isDirectory()) continue;
-    for (const inner of readdirSync(path.join(examples, dir.name), { withFileTypes: true })) {
+    for (const inner of readdirSync(path.join(fixtures, dir.name), { withFileTypes: true })) {
       if (!inner.isDirectory()) continue;
-      const file = path.join(examples, dir.name, inner.name, 'plugin.json');
+      const file = path.join(fixtures, dir.name, inner.name, 'plugin.json');
       if (existsSync(file)) manifests.push([`${dir.name}/${inner.name}`, JSON.parse(readFileSync(file, 'utf8'))]);
     }
   }

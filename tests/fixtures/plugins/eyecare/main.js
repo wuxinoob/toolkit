@@ -31,7 +31,7 @@
  * The main-window view is rendered with the component factory and `.tb-*`, so
  * it uses TOKENS and follows the app theme. The plugin's own windows are
  * separate documents that ship their own stylesheet (the documented escape
- * hatch, same as examples/calc-plugin), so the four Eye Care palettes below are
+ * hatch, same as tests/fixtures/calc-plugin), so the four Eye Care palettes below are
  * literals — that is what a "theme" means here, and it is why they must NOT be
  * used in the view.
  */

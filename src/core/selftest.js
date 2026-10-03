@@ -319,12 +319,12 @@ const tests = [
     async () => {
       // The `stdio-line` scheme end to end against a REAL native helper.
       // Requires a plugin that ships one: the bundled example is
-      // examples/calc-plugin, deployed as `calc.demo`. When it is not
+      // tests/fixtures/calc-plugin, deployed as `calc.demo`. When it is not
       // installed this reports SKIPPED rather than passing quietly, so the
       // difference between "not exercised" and "verified" stays visible.
       const known = (await hub.request(HOST, 'host', 'plugins'))?.plugins ?? [];
       if (!known.includes('calc.demo')) {
-        return 'SKIPPED (calc.demo not installed — see examples/calc-plugin)';
+        return 'SKIPPED (calc.demo not installed — see tests/fixtures/calc-plugin)';
       }
 
       const ch = 'selftest-calc';

@@ -70,7 +70,7 @@ await ctx.windows.create('plugin-my-win', {
   外部地址与 `/x`、`../x` 这类路径也一律拒绝。
 - 窗口选项走**白名单**，不在名单上的会被拒绝并告诉你名字
 - 自绘标题栏：传 `decorations: false`，然后自己画一条，用 `bridge.drag()` 拖。
-  参考 `examples/plugins/eyecare/`
+  参考 `tests/fixtures/plugins/eyecare/`
 - 窗口的尺寸/位置/置顶/透传**归创建它的窗口**（主窗口），不在插件窗口自己的权限里 ——
   「能改自己尺寸」和「能被拖动」不是一回事
 
@@ -210,7 +210,7 @@ window.__toolbox.hub         // ⚠️ 见下
 它比你的功能测试更早知道哪里断了。
 
 **它覆盖不到什么**：需要**真人**的东西 —— 原生对话框、系统拖放、OS 通知。
-那部分用 [`examples/plugins/fileprobe/`](../../examples/plugins/fileprobe/)。
+那部分用 [`tests/fixtures/plugins/fileprobe/`](../../tests/fixtures/plugins/fileprobe/)。
 
 ### 把检查放进 `activate()`，让它自己报错
 
@@ -224,7 +224,7 @@ export async function activate(ctx) {
 }
 ```
 
-`examples/plugins/probe/` 就是这么做的：一次跑完 11 项接口检查。
+`tests/fixtures/plugins/probe/` 就是这么做的：一次跑完 11 项接口检查。
 **插件最容易坏的地方是「宿主接口悄悄变了」，而它只在插件真被打开时才暴露。**
 
 ## 边界速查

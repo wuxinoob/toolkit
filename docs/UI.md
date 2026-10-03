@@ -107,7 +107,7 @@ plugin <style>     body { background: rgb(1, 2, 3) }          /* unlayered   */
 -> computed body background is rgb(1, 2, 3)
 ```
 
-`examples/calc-plugin` is the working demonstration: it injects a stylesheet
+`tests/fixtures/calc-plugin` is the working demonstration: it injects a stylesheet
 with its own hardcoded palette and looks nothing like the app, and that is a
 legitimate choice for a window that belongs entirely to it.
 
@@ -335,7 +335,7 @@ The host (`src/host/pluginTheme.js`) turns that into one scoped rule per theme:
 :root[data-theme='light'] [data-plugin='x'] { --color-brand: #6d3fc4; }
 ```
 
-`examples/plugins/fileprobe` uses it — that plugin is green, and its `main.js` has no
+`tests/fixtures/plugins/fileprobe` uses it — that plugin is green, and its `main.js` has no
 CSS in it at all. Five properties make this worth having rather than just letting
 a plugin ship a stylesheet:
 
@@ -478,7 +478,7 @@ deliberately **not** `position:absolute` and does **not** set
 
 Your overlay element positions *itself* (`position:fixed; inset:0` for a
 full-screen takeover) and is handed to the host with `ctx.ui.mountOverlay(el)` —
-see `examples/plugins/eyecare/` for a working example.
+see `tests/fixtures/plugins/eyecare/` for a working example.
 
 ## Adding a primitive
 

@@ -1,7 +1,14 @@
-# Example plugins
+# Test fixtures: the plugins the tests drive
 
-Three complete drop-in plugins. None of them requires a single change to the
-host — that is the whole point of the plugin contract.
+这些是 **`node --test` 的输入**，不是给人安装的样例。它们原先是 `examples/`，
+于是每个读者（以及每次发布）都会把它们当成 demo —— 它们在这里，是因为有五个测试文件
+加载它们来检查宿主契约：接口扫描、窗口选项白名单、主题贡献、清单词汇表，
+以及一个插件的整套多窗口行为。
+
+它们**不会被部署、也不会进包**。想亲眼看其中一个，用 `npm run deploy:fixtures`
+把它复制到应用的插件目录里即可。
+
+共同点是：**没有一个需要改动宿主** —— 这正是插件契约要证明的事。
 
 ## `plugins/probe` — the interface prober
 
@@ -19,7 +26,7 @@ the host, framed with the `line-json` codec. Shows that a plugin's own native
 helper is not a special case: it is a `stdio-line` stream.
 
 ```powershell
-cd examples/calc-plugin
+cd tests/fixtures/calc-plugin
 gcc -O2 -o calc.exe calc.c        # calc.exe is committed; rebuild if you edit calc.c
 ```
 

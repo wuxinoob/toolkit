@@ -49,7 +49,7 @@
  * can reach those, so it is not part of "the host's stylesheet".
  *
  * See `docs/UI.md` → "Where each half of the app gets its styles", and
- * `examples/calc-plugin` for a window that takes this path.
+ * `tests/fixtures/calc-plugin` for a window that takes this path.
  */
 
 import { invoke } from '@tauri-apps/api/core';

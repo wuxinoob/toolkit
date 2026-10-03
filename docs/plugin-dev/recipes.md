@@ -4,15 +4,15 @@
 
 | 想做的事 | 现成参考 |
 |---|---|
-| 最小插件（一个视图） | `examples/plugins/fileprobe/` |
-| 一次跑完所有接口（活的集成检查） | `examples/plugins/probe/` |
-| 组件词汇表大全（tag 名单用 `ctx.ui.components()` 查） | `examples/plugins/gallery/` |
-| 文件访问（选择器 / 拖放）的现场验证 | `examples/plugins/fileprobe/` |
-| 剪贴板 / 截屏 / 拖放的现场验证 | `examples/plugins/senses/` |
+| 最小插件（一个视图） | `tests/fixtures/plugins/fileprobe/` |
+| 一次跑完所有接口（活的集成检查） | `tests/fixtures/plugins/probe/` |
+| 组件词汇表大全（tag 名单用 `ctx.ui.components()` 查） | `tests/fixtures/plugins/gallery/` |
+| 文件访问（选择器 / 拖放）的现场验证 | `tests/fixtures/plugins/fileprobe/` |
+| 剪贴板 / 截屏 / 拖放的现场验证 | `tests/fixtures/plugins/senses/` |
 | 内嵌终端 | `src/plugins/streamlab.js` |
 | 管进程 + 定时 + 重启 | `src/plugins/procman.js` |
-| 自绘标题栏的独立窗口 | `examples/plugins/eyecare/`（多窗口 + 自绘 chrome） |
-| 独立窗口（普通） | `examples/calc-plugin/` |
+| 自绘标题栏的独立窗口 | `tests/fixtures/plugins/eyecare/`（多窗口 + 自绘 chrome） |
+| 独立窗口（普通） | `tests/fixtures/calc-plugin/` |
 
 ---
 
@@ -122,7 +122,7 @@ ctx.onHotkey('toggle', () => { /* … */ });
 
 **用户改键不用改你的代码** —— `onHotkey` 按 `action` 订阅，不认 key。
 
-参考 `examples/plugins/probe/`（它用 `hotkey/list` 验证注册结果）。
+参考 `tests/fixtures/plugins/probe/`（它用 `hotkey/list` 验证注册结果）。
 
 ## 用热键把插件叫出来
 
@@ -227,7 +227,7 @@ async activate(ctx) {
 - `url` 必须是 **`pluginwin.html?plugin=<你的 id>&label=<你的 label>`** ——
   不是 `index.html`。两个页面是两个应用：`index.html` 是外壳，`pluginwin.html`
   才会加载你的 `mountWindow(bridge)`。传错会在 `create()` 当场被拒。
-- 窗口里跑的是 `pluginwin-host.js`，它会 Blob-import 你的入口 —— 参考 `examples/calc-plugin/`。
+- 窗口里跑的是 `pluginwin-host.js`，它会 Blob-import 你的入口 —— 参考 `tests/fixtures/calc-plugin/`。
 - ⚠️ **窗口里什么样式都没有。** `pluginwin.html` **不引任何样式表**，所以
   `flex` / `gap-2` 这类类名、`.tb-*`、`var(--color-*)` 令牌**全都不存在**，而且**都不报错** ——
   元素就是没样式。在窗口里注入自己的 `<style>`，并不忘写 `box-sizing: border-box`、
@@ -266,7 +266,7 @@ bar.addEventListener('mousedown', (e) => {
 - **尺寸/位置/置顶/透传归创建它的窗口**（主窗口），不在插件窗口自己的权限里
 - ⚠️ **窗口里没有 Tailwind 工具类**（同上）—— 自绘就用 `.tb-*`、内联 `style`、
   或自己注入 `<style>`
-- 完整参考 `examples/plugins/eyecare/`（创建方 + 窗口页都在一个文件里）
+- 完整参考 `tests/fixtures/plugins/eyecare/`（创建方 + 窗口页都在一个文件里）
 
 ---
 
@@ -287,7 +287,7 @@ window.addEventListener('resize', () => {
 **Windows 在拖拽/缩放期间是连续发 `WM_SIZE` 的**，不是发一次。所以上面的写法
 在用户拖窗口的那一秒里跑了**几十遍**，每一遍：
 
-1. `getBoundingClientRect()` —— **强制同步布局**（`examples/plugins/eyecare/main.js` 里
+1. `getBoundingClientRect()` —— **强制同步布局**（`tests/fixtures/plugins/eyecare/main.js` 里
    关于这点的注释是真的：它当场触发布局计算）
 2. 一次 `publish` —— 广播到**每一个**窗口
 3. 创建方窗口收到后调 `ctx.windows.control(label, 'size')` → 一次 `plugin_rpc`
@@ -313,7 +313,7 @@ window.addEventListener('resize', scheduleReports);
 
 - **rAF 合并** —— 挡住"值还在变的时候跑得比有用更快"。下一帧再量一次也是同样的像素。
 - **去重**（记住上次的值，相同就 return）—— 挡住"值已经停了但事件还在来"，
-  也就是回路的收敛。`examples/plugins/eyecare/main.js` 的 `sizeReporter` 就是这一层。
+  也就是回路的收敛。`tests/fixtures/plugins/eyecare/main.js` 的 `sizeReporter` 就是这一层。
 
 同理，**拖拽**也要按帧合并（`pointermove` 本身每帧可能来好几次）：
 
@@ -355,7 +355,7 @@ async activate(ctx) {
 
 **这样启动日志里这个插件就是 `error` 而不是 `active` —— 不用点任何东西。**
 
-`examples/plugins/probe/` 就是这么做的：一次调用跑完 11 项接口检查。
+`tests/fixtures/plugins/probe/` 就是这么做的：一次调用跑完 11 项接口检查。
 它既是「新插件零改动复用接口」的证据，也是一个**活的集成检查**。
 
 **这个模式值得抄** —— 插件最容易坏的地方是「宿主接口悄悄变了」，

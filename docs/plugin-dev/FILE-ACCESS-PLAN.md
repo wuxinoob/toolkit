@@ -275,7 +275,7 @@ A 还顺带保住「所有插件能力都走网关」这个统一性 —— 于�
 - **第二期**：二进制（走 `channel-raw`）、批量、`watch`
 - **不做**：`remove` / `rename` / `mkdir`
 - 配套：`ctx.fs` **和** `bridge.fs` 都要有（否则又是「看界面放哪」）；
-  加一个 `examples/plugins/` 下的现场验证插件（像 `senses` 那样，激活即跑一遍读写检查）
+  加一个 `tests/fixtures/plugins/` 下的现场验证插件（像 `senses` 那样，激活即跑一遍读写检查）
 
 ### 7.4 顺带查明的两件事
 

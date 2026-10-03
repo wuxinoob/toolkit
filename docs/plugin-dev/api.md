@@ -226,7 +226,7 @@ const s = await ctx.sidecar('helper1', {
 **权限**：`pty` → `rpc:stream`；`sidecar` → `rpc:proc`。
 **两个不同的权限是刻意的** —— 「开一个流」和「运行我自带的二进制」不是一回事。
 
-参考实现：`builtin.procman`（pty）、`examples/` 里的 sidecar 示例。
+参考实现：`builtin.procman`（pty）、`tests/fixtures/` 里的 sidecar 示例。
 
 ---
 
@@ -456,7 +456,7 @@ const s = await ctx.sidecar('read', { exe: 'my-reader.exe', args: paths });
 ## 我要读剪贴板 / 截屏 / 接文件拖放
 
 三个「伸手出应用」的接口。它们都需要**真机 + 真人**，所以**内置自检覆盖不了** ——
-`examples/plugins/senses/` 就是给它们准备的现场检查（启动时跑，失败即抛 → 启动日志变红）。
+`tests/fixtures/plugins/senses/` 就是给它们准备的现场检查（启动时跑，失败即抛 → 启动日志变红）。
 
 ```json
 // plugin.json —— 用哪个就声明哪个，少一个会在调用处直接失败
@@ -692,7 +692,7 @@ ctx.windows.onCloseRequested(async () => { /* 清理 */ });
 
    **旧写法 `index.html?mode=pluginwin&…` 仍然可用**（已废弃）。宿主会在边界处把它
    **翻译**成新写法再创建窗口 —— 翻译而不是拒绝，是因为发布之后改契约会让**已经装好的
-   插件**全部失效，而第三方插件你改不到、插件目录里那份是**副本**（改 `examples/` 不影响它）。
+   插件**全部失效，而第三方插件你改不到、插件目录里那份是**副本**（改 `tests/fixtures/` 不影响它）。
    翻译发生在 `create()` 里，所以窗口**不会**先加载外壳那 166 KB 再跳转。
    新代码请直接用 `pluginwin.html?…`。
 
@@ -759,7 +759,7 @@ async function closeMe() {
 
 自绘标题栏时，插件窗口的 capability 恰好给两个权限：
 `core:window:allow-start-dragging` + `allow-close`。
-用 `bridge.drag()` 拖。参考 `examples/plugins/eyecare/`（多窗口 + 自绘 chrome）。
+用 `bridge.drag()` 拖。参考 `tests/fixtures/plugins/eyecare/`（多窗口 + 自绘 chrome）。
 
 ### `bridge`（独立窗口）≠ `ctx`（主窗口）
 

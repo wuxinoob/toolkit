@@ -1,5 +1,5 @@
 /*
- * idle.exe — the sidecar backend for examples/plugins/eyecare (Eye Care).
+ * idle.exe — the sidecar backend for tests/fixtures/plugins/eyecare (Eye Care).
  *
  * Why a native helper at all: "is the user touching the keyboard?" is an OS
  * question (GetLastInputInfo), and a plugin has no syscall surface — no fs, no

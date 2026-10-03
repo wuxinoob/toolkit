@@ -16,7 +16,7 @@
  * Loading is `loadPlugin` (lifecycle.js) either way. The one thing that makes an
  * external plugin different is that its bytes arrive over IPC and become a Blob
  * URL — so it can import nothing, which is why every capability it uses has to
- * be handed to it. See `examples/README.md`.
+ * be handed to it. See `tests/fixtures/README.md`.
  */
 
 import { invoke } from '@tauri-apps/api/core';

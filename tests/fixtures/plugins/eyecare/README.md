@@ -295,7 +295,7 @@ If `idle.exe` is absent the plugin still loads; only idle detection degrades.
 ## Deploy
 
 ```powershell
-npm run deploy:examples      # discovers every folder with a plugin.json
+npm run deploy:fixtures      # discovers every folder with a plugin.json
 ```
 
 or copy the folder by hand:

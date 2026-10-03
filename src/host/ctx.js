@@ -58,7 +58,7 @@ import { createUiKit } from './ui.js';
  * it, so the plugin loaded, activated, showed up in Settings, and its windows
  * simply never appeared. A third-party plugin cannot be edited (one asks for
  * the old URL in five places), and the copy in the plugins directory is a COPY,
- * so fixing `examples/` does not fix what is installed.
+ * so fixing `tests/fixtures/` does not fix what is installed.
  *
  * So the old shape is translated rather than rejected. Translating HERE, at the
  * boundary, is what makes it free: the window is created with the right URL, so

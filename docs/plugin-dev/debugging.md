@@ -338,7 +338,7 @@ end   <- my.plugin pty-stream ch=term
 
 **`host/write_debug_log` 不记** —— trace 自己就是靠它写日志的，记它会无限递归。
 
-## 现场验证插件：`examples/plugins/fileprobe/`
+## 现场验证插件：`tests/fixtures/plugins/fileprobe/`
 
 自检跑在 webview 里、没有用户，所以**原生对话框**和**系统拖放**它覆盖不到。
 `fileprobe` 就是那另一半：装上去点几个按钮、拖一个文件，

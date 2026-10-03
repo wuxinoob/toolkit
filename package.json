@@ -10,7 +10,7 @@
     "test": "node --test",
     "tauri": "tauri",
     "bench": "node bench/codec.mjs",
-    "deploy:examples": "node scripts/deploy-examples.mjs",
+    "deploy:fixtures": "node scripts/deploy-fixtures.mjs",
     "preview:theme": "node scripts/build-theme-preview.mjs",
     "shadcn:pull": "node scripts/shadcn-pull.mjs",
     "shot": "node scripts/shot.mjs"

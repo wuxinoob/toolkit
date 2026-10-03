@@ -158,10 +158,10 @@ test('windows.create: the allow-list covers every option the built-ins pass', ()
   // forget to include a plugin.
   const files = [
     ...readdirSync(new URL('../src/plugins/', import.meta.url)).map((f) => `src/plugins/${f}`),
-    ...readdirSync(new URL('../examples/plugins/', import.meta.url)).map(
-      (d) => `examples/plugins/${d}/main.js`,
+    ...readdirSync(new URL('../tests/fixtures/plugins/', import.meta.url)).map(
+      (d) => `tests/fixtures/plugins/${d}/main.js`,
     ),
-    'examples/calc-plugin/main.js',
+    'tests/fixtures/calc-plugin/main.js',
   ].filter((f) => f.endsWith('.js') && existsSync(new URL(`../${f}`, import.meta.url)));
 
   const problems = [];
@@ -448,7 +448,7 @@ test('the legacy plugin-window URL is translated, not rejected', () => {
   // NOTHING AT ALL: `create` rejected the URL, every caller had a `catch` around
   // it, so the plugin loaded, activated, showed up in Settings, and its windows
   // simply never appeared. A third-party plugin cannot be edited, and the copy in
-  // the plugins directory is a COPY, so fixing `examples/` does not fix what is
+  // the plugins directory is a COPY, so fixing `tests/fixtures/` does not fix what is
   // installed.
   //
   // So the old shape is translated at the boundary. Translating there is what

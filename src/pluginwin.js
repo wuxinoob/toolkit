@@ -35,7 +35,7 @@
  *     project's own default-border-colour fix. The window got LESS than the
  *     stylesheet promised.
  *   - Nothing in the repo needed it. Both shipped window examples
- *     (`examples/calc-plugin`, `examples/plugins/eyecare`) bring their own reset
+ *     (`tests/fixtures/calc-plugin`, `tests/fixtures/plugins/eyecare`) bring their own reset
  *     and palette, so the host was paying 19 KB per window to fight them.
  *
  * **The consequence to know when authoring a window**: there is no

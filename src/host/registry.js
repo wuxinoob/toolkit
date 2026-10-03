@@ -16,7 +16,7 @@
  * here too — three working demos, but demos: a notepad, a break-timer overlay
  * and a floating widget are not parts of the message plane, and each one cost
  * every boot. A plugin a user wants is a plugin a user can install; the place
- * to learn the framework from is `examples/plugins/`.
+ * to learn the framework from is `tests/fixtures/plugins/`.
  *
  * So the rule for adding one: **it must exercise a scheme that nothing else in
  * this table exercises.** "It is a nice feature" is not a reason — that is what

@@ -25,8 +25,8 @@ import { describeSchemes } from '../src/protocol/registry.js';
 
 const modules = {
   ...import.meta.glob('../src/plugins/*.js'),
-  ...import.meta.glob('../examples/plugins/*/main.js'),
-  ...import.meta.glob('../examples/calc-plugin/main.js'),
+  ...import.meta.glob('../tests/fixtures/plugins/*/main.js'),
+  ...import.meta.glob('../tests/fixtures/calc-plugin/main.js'),
 };
 
 const q = new URLSearchParams(location.search);
@@ -152,9 +152,9 @@ async function main() {
   await loadUiKit();
 
   const entries = Object.entries(modules).filter(([p]) => !/-(supervisor|shared|widget)\.js$/.test(p));
-  // `src/plugins/foo.js` -> `foo`, `examples/plugins/bar/main.js` -> `bar`
+  // `src/plugins/foo.js` -> `foo`, `tests/fixtures/plugins/bar/main.js` -> `bar`
   const nameOf = (p) => {
-    const m = p.match(/examples\/plugins\/([^/]+)\/main\.js$/);
+    const m = p.match(/tests\/fixtures\/plugins\/([^/]+)\/main\.js$/);
     return m ? m[1] : p.replace(/.*\/([^/]+)\.js$/, '$1');
   };
   const names = entries.map(([p]) => nameOf(p));

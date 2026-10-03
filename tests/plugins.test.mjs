@@ -46,18 +46,18 @@ const EXAMPLES = [
   // The two live-check plugins. They are here because they exercise the parts
   // of the surface nothing else does — native dialogs, OS drops, OS
   // notifications, and the communication trace.
-  { id: 'fileprobe.demo', dir: 'examples/plugins/fileprobe' },
-  { id: 'msglog.demo', dir: 'examples/plugins/msglog' },
-  { id: 'calc.demo', dir: 'examples/calc-plugin' },
-  { id: 'probe.demo', dir: 'examples/plugins/probe' },
-  { id: 'gallery.demo', dir: 'examples/plugins/gallery' },
+  { id: 'fileprobe.demo', dir: 'tests/fixtures/plugins/fileprobe' },
+  { id: 'msglog.demo', dir: 'tests/fixtures/plugins/msglog' },
+  { id: 'calc.demo', dir: 'tests/fixtures/calc-plugin' },
+  { id: 'probe.demo', dir: 'tests/fixtures/plugins/probe' },
+  { id: 'gallery.demo', dir: 'tests/fixtures/plugins/gallery' },
   // The three interfaces that reach OUT of the app: clipboard, screen capture
   // and OS file drops. Audited here like any other plugin, and the reason it
   // exists is that none of them can be covered by the in-app selftest.
-  { id: 'senses.demo', dir: 'examples/plugins/senses' },
+  { id: 'senses.demo', dir: 'tests/fixtures/plugins/senses' },
   // The widest example: five of its own windows, a shipped sidecar, and a
   // main-window view — so it is the one most worth auditing statically.
-  { id: 'eyecare.demo', dir: 'examples/plugins/eyecare' },
+  { id: 'eyecare.demo', dir: 'tests/fixtures/plugins/eyecare' },
 ];
 
 /** The permission vocabulary the host understands. */
@@ -213,7 +213,7 @@ function requiredPermissions(source) {
   recv(/\bctx\.windows\./g, () => 'win:manage');
 
   // The sensing surface. These were missing here for exactly one release, and
-  // the gap was not theoretical: `examples/plugins/senses` used `ctx.screen.*`
+  // the gap was not theoretical: `tests/fixtures/plugins/senses` used `ctx.screen.*`
   // without declaring `rpc:screen`, passed this audit, and then failed its own
   // activation with `missing permission "rpc:screen"`. The audit's whole promise
   // is "every capability the source uses is declared" — a namespace it does not
@@ -379,7 +379,7 @@ test('example plugins: plugin.json and the in-code manifest agree', () => {
 });
 
 test('example plugins: the window entry exports mountWindow, as the window host requires', () => {
-  const calc = read('examples/calc-plugin/main.js');
+  const calc = read('tests/fixtures/calc-plugin/main.js');
   assert.match(calc, /export async function mountWindow/, 'calc.demo must export mountWindow(bridge)');
   // it must take the envelope constructors from the host, not hard-code the shape
   assert.match(calc, /\.protocol\b/, 'the window UI should use the host-provided protocol, not a literal');

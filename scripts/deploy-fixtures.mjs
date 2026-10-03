@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 /**
- * Deploy the example plugins into the running app's plugins directory.
+ * Deploy the test fixtures into the running app's plugins directory.
  *
- * The examples are the app's integration check: `probe.demo` runs its whole
- * interface sweep inside `activate()`, so if it is stale the app reports a
- * failure that was fixed days ago. Copying by hand has caused exactly that
- * twice, so it is a script now:
+ * The fixtures are the app's integration check: `probe.demo` runs its whole
+ * interface sweep inside `activate()`, so if the deployed copy is stale the app
+ * reports a failure that was fixed days ago. Copying by hand has caused exactly
+ * that twice, so it is a script now — and the script is also how you LOOK at a
+ * fixture, since none of them live in the plugins directory otherwise:
  *
- *   npm run deploy:examples
+ *   npm run deploy:fixtures
  *
  * The target is derived from the app identifier in tauri.conf.json, so this
  * follows the app rather than hard-coding a path.
@@ -31,7 +32,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
  */
 async function discoverExamples() {
   const out = [];
-  for (const root of ['examples/plugins', 'examples']) {
+  for (const root of ['tests/fixtures/plugins', 'tests/fixtures']) {
     const abs = join(ROOT, root);
     if (!existsSync(abs)) continue;
     for (const entry of await readdir(abs, { withFileTypes: true })) {

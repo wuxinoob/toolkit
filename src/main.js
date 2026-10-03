@@ -31,7 +31,7 @@ initTheme();
  *
  *   - a third-party plugin cannot be edited at all (`moment-notes` asks for the
  *     old URL in five places, and it is 686 KB of someone else's bundle),
- *   - and the copy in the plugins directory is a COPY, so fixing `examples/` does
+ *   - and the copy in the plugins directory is a COPY, so fixing `tests/fixtures/` does
  *     not fix what is installed.
  *
  * The symptom was not "the plugin is missing" — the plugin loaded, activated, and

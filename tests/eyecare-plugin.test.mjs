@@ -24,7 +24,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const ENTRY = path.join(root, 'examples/plugins/eyecare/main.js');
+const ENTRY = path.join(root, 'tests/fixtures/plugins/eyecare/main.js');
 
 const Kind = { REQ: 'req', RES: 'res', ERR: 'err', EVT: 'evt', DATA: 'data', END: 'end', EXIT: 'exit' };
 

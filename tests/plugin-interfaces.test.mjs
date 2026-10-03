@@ -2,7 +2,7 @@
  * "Can a new plugin drive the existing interfaces?" — answered by actually
  * doing it.
  *
- * This loads the real `examples/plugins/probe/main.js`, builds it a real `ctx`
+ * This loads the real `tests/fixtures/plugins/probe/main.js`, builds it a real `ctx`
  * (the same `buildCtx` the host uses), and runs its `activate()`. The plugin
  * throws if ANY interface step fails, so a clean resolve is the assertion.
  *
@@ -110,7 +110,7 @@ globalThis.cancelAnimationFrame ||= (id) => clearTimeout(id);
 // dynamic imports AFTER shims are in place
 const { buildCtx } = await import('../src/host/ctx.js');
 const { store } = await import('../src/host/store.js');
-const probe = await import('../examples/plugins/probe/main.js');
+const probe = await import('../tests/fixtures/plugins/probe/main.js');
 
 /** A gateway that answers exactly what the probe's sweep needs. */
 function installGateway() {

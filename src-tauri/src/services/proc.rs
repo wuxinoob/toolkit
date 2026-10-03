@@ -753,19 +753,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// End-to-end: a REAL plugin backend (examples/calc-plugin) that speaks the
+    /// End-to-end: a REAL plugin backend (tests/fixtures/calc-plugin) that speaks the
     /// unified envelope over the `line-json` codec. This is the test that proves
     /// the sidecar data plane is not a bespoke protocol — the helper answers in
     /// exactly the shapes the host uses.
     ///
     /// Skipped when calc.exe has not been built:
-    ///   cd examples/calc-plugin && gcc -O2 -o calc.exe calc.c
+    ///   cd tests/fixtures/calc-plugin && gcc -O2 -o calc.exe calc.c
     #[cfg(windows)]
     #[test]
     fn real_sidecar_speaks_the_unified_envelope_protocol() {
-        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/calc-plugin/calc.exe");
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/calc-plugin/calc.exe");
         if !src.is_file() {
-            eprintln!("SKIP: build examples/calc-plugin/calc.exe first (gcc -O2 -o calc.exe calc.c)");
+            eprintln!("SKIP: build tests/fixtures/calc-plugin/calc.exe first (gcc -O2 -o calc.exe calc.c)");
             return;
         }
         let _g = crate::services::serial();

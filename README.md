@@ -97,7 +97,7 @@ src-tauri/src/
   services/{mod,storage,proc,stream,session,external,bus}.rs
   host/registry.rs               the authoritative permission registry
   lib.rs                         three table-driven entry points
-examples/
+tests/fixtures/          plugins the TESTS drive — not shipped, not deployed
   calc-plugin/              window frontend + native sidecar backend
   plugins/eyecare/          multi-window + self-drawn chrome
   plugins/fileprobe/        native dialogs and OS drag-and-drop, by hand
@@ -126,23 +126,23 @@ exercises. That leaves two:
 | StreamLab | `builtin.streamlab` | the scheme table, and one experiment per scheme side by side |
 
 `notepad`, `eyecare` and `floatwin` used to be built-ins. They were working
-demos rather than parts of the message plane, and they moved to `examples/` —
+demos rather than parts of the message plane, and they moved to `tests/fixtures/` —
 where a user who wants one can install it. See `src/host/registry.js` for the
 rule this table encodes.
 
 See `docs/INTERFACES.md` for the full interface inventory, what each feature
-uses, and the known gaps. `examples/plugins/probe` is a new plugin that drives
+uses, and the known gaps. `tests/fixtures/plugins/probe` is a new plugin that drives
 every interface in one pass — it is both the proof that a drop-in plugin needs
 no host changes and a living integration check.
 
 External plugins need no host changes: drop a folder with `plugin.json` + a
 single-file ESM entry into `{appData}/plugins/` and click **Rescan** in Settings.
-See `examples/plugins/probe` (the interface sweep) and `examples/calc-plugin`
+See `tests/fixtures/plugins/probe` (the interface sweep) and `tests/fixtures/calc-plugin`
 (a window frontend plus a native sidecar backend).
 
 Rescan **reconciles** rather than only discovering — new folders load, changed
 ones reload in place (no app restart), deleted ones unload and lose their host
-grant, and unchanged ones are left alone. See `examples/README.md`.
+grant, and unchanged ones are left alone. See `tests/fixtures/README.md`.
 
 ## Trust model
 
