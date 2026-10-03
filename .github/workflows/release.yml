@@ -1,0 +1,148 @@
+name: Release
+
+# 打 tag 就出一个带安装包的 GitHub Release。
+#
+# 为什么是 Windows 单平台：应用重度依赖 WebView2 与 ConPTY，别的平台上"编译成功"证明不了可交付。
+#
+# ## 现在能产出什么
+#
+#   NSIS 安装器（.exe）+ MSI（.msi）—— 两者都由 `tauri build` 按配置产出
+#   *.sig —— 只有开了"更新制品签名"才会有；今天还不是（见下）
+#
+# ## 之后接自动更新时要补三处（这里已经预留，不会拦住今天的构建）
+#
+#   1. 依赖与配置：加 updater 插件，配置里开 `bundle.createUpdaterArtifacts`，
+#      填 `plugins.updater.pubkey` 与 `plugins.updater.endpoints`（指向下列 Release 资产里的 latest.json）。
+#      **Windows 上只有 NSIS 支持自更新，MSI 不支持** —— 所以更新指向的是 NSIS 那份产物。
+#   2. 密钥：本地 `tauri signer generate` 生成一对，公钥进配置（可以提交），
+#      私钥与口令进仓库 Secrets：`TAURI_SIGNING_PRIVATE_KEY`（整份文件内容）与
+#      `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。下面的步骤会在**这两个 Secret 存在时**自动启用，
+#      没有时静默跳过 —— 这样工作流今天就能跑，接上插件那天不用改它。
+#   3. `latest.json`：更新端点要的那个清单（版本 / 发布时间 / 每平台 的 签名 + 产物 URL）。
+#      它可以由这一份 Release 的资产拼出来（建议在 `tauri build` 之后加一步生成并一起上传）。
+#      **不在本文件里预先写好**：更新制品的确切命名要等第一次真正签名构建的产物出来才对得上，
+#      凭猜测写一个"看起来对"的清单，比没有更危险。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（形如 v0.1.0），必须与配置里的版本号一致'
+        required: true
+
+permissions:
+  contents: write # gh release 需要
+
+jobs:
+  release:
+    name: build + publish (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Rust toolchain
+        run: rustup show
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: cargo-release-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: cargo-release-${{ runner.os }}-
+
+      # 版本号只有一个地方说了算（配置里的版本），tag 只是它的别名。
+      # 两者不一致时**立刻失败**：否则会发出一个"安装包说 0.1.0、release 叫 v0.2.0"的版本，
+      # 而自动更新是靠比版本号工作的，这种漂移要等到用户端才暴露。
+      - name: Check the tag matches the configured version
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          echo "tag=$TAG version=$VERSION"
+          if [ "v$VERSION" != "$TAG" ]; then
+            echo "::error::tag $TAG 与配置里的版本 $VERSION 不一致 —— 先改版本号，或者用对的 tag 重跑"
+            exit 1
+          fi
+
+      - run: npm ci
+
+      # 发布前的门禁：测试不过就不出包。测试是秒级的，省不得。
+      - run: npm test
+
+      # 有了签名密钥才启用签名（见文件头的第 2 条）。
+      # 多行密钥必须用 GITHUB_ENV 的 heredoc 写法，直接 echo 会把换行吃掉。
+      - name: Enable updater signing (only when the key is configured)
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "updater signing: skipped (no TAURI_SIGNING_PRIVATE_KEY)"
+            exit 0
+          fi
+          {
+            echo 'TAURI_SIGNING_PRIVATE_KEY<<__KEY__'
+            echo "$KEY"
+            echo '__KEY__'
+            echo 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD<<__PW__'
+            echo "$KEY_PASSWORD"
+            echo '__PW__'
+          } >> "$GITHUB_ENV"
+          echo "updater signing: enabled"
+
+      # `tauri build` 会自己先跑前端构建（配置里的 beforeBuildCommand），不必手动再跑一次。
+      - name: Build bundles
+        run: npm run tauri build
+
+      - name: Show what was produced
+        shell: bash
+        run: find src-tauri/target/release/bundle -type f | sort
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: toolbox-windows
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/**/*.sig
+
+      - name: Publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          FILES=$(ls src-tauri/target/release/bundle/nsis/*.exe src-tauri/target/release/bundle/msi/*.msi 2>/dev/null || true)
+          SIGS=$(ls src-tauri/target/release/bundle/**/*.sig 2>/dev/null || true)
+          if [ -z "$FILES" ]; then
+            echo "::error::没有产出任何安装包，检查上面的构建步骤"
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG 已存在，改为补充/覆盖资产"
+            gh release upload "$TAG" $FILES $SIGS --clobber
+          else
+            gh release create "$TAG" $FILES $SIGS --title "$TAG" --generate-notes
+          fi
+
+# 还没做、但很快会需要的一步（等更新插件接上以后再打开）：
+#
+#   - name: updater manifest
+#     if: hashFiles('src-tauri/target/release/bundle/**/*.sig') != ''
+#     run: |
+#       # 由这一份 Release 的资产拼出 latest.json：
+#       # { version, notes, pub_date, platforms: { 'windows-x86_64': { signature, url } } }
+#       # 其中 signature 是 .sig 文件的内容、url 是**更新制品**（NSIS 那份）的下载地址。
+#       # 生成后同样用 gh release upload --clobber 传上去。

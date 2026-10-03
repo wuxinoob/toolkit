@@ -1,0 +1,55 @@
+name: CI
+
+# 这个仓库此前没有任何 CI —— 验证一直是"在开发机上跑一遍"。
+# 这里跑的就是那几条命令，没有额外的东西：
+#
+#   npm test        自动化测试（含守卫：文档 ↔ 代码、跨语言契约、主线程规则…）
+#   npm run build   前端能否构建
+#   host-checks     Rust 侧**唯一能跑起来**的校验入口
+#                   （`cargo test` 在本项目里起不来：tauri-build 只把清单嵌进 bin 目标，
+#                     测试二进制一加载就 STATUS_ENTRYPOINT_NOT_FOUND）
+#
+# **步骤顺序不可换**：Tauri 的编译期上下文要读前端产物目录，前端不先构建，Rust 编不过。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支连推两次，取消前一次 —— 这个仓库的测试是秒级的，不值得排队。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: tests + build (windows)
+    # Windows 优先：应用重度依赖 WebView2 与 ConPTY，别的平台上"能编译"证明不了什么。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Rust toolchain
+        # 运行器自带 stable；这一行只是把它打进日志，出问题时省一次猜测。
+        run: rustup show
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Rust checks (the runnable ones)
+        run: cargo run --manifest-path src-tauri/Cargo.toml --example host-checks
