@@ -102,3 +102,34 @@ test('the plugin API version is a number the host can actually serve', () => {
     `示例插件声明的接口版本与宿主（HOST_API=${host}）不一致 —— 它们是当前接口的样本：\n  ${stale.join('\n  ')}`,
   );
 });
+
+test('the npm tauri package and the Rust crate stay on the same minor', () => {
+  // Tauri CLI 把这条当成**错误**（不是警告），并在 `tauri build` 真正开始之前终止：
+  //
+  //   Found version mismatched Tauri packages. Make sure the NPM package and
+  //   Rust crate versions are on the same major/minor releases:
+  //   tauri (v2.12.1) : @tauri-apps/api (v2.11.1)
+  //
+  // 而这道检查**只有 `tauri dev` / `tauri build` 才会跑**，CI 里既不 dev 也不打包 ——
+  // 于是"CI 全绿、打 tag 就红"，而且是在 Release 里红。这条守卫把两者钉在一起：
+  // 它们不可能再各自漂走（上次是 `cargo add tauri-plugin-updater` 把 Rust 侧带到了
+  // 2.12，而 npm 侧还停在 lock 里的 2.11）。
+  //
+  // 读 lock 而不是 node_modules：lock 才是 CI 里 `npm install` 之后会得到的版本，
+  // 而且它总是存在（node_modules 不一定）。
+  const lock = JSON.parse(read('package-lock.json'));
+  const npmApi = lock.packages?.['node_modules/@tauri-apps/api']?.version;
+  assert.ok(npmApi, 'package-lock.json 里找不到 @tauri-apps/api —— 抽取规则过期了');
+
+  const cargo = read('src-tauri', 'Cargo.lock').match(/^name = "tauri"\nversion = "([^"]+)"/m);
+  assert.ok(cargo, 'src-tauri/Cargo.lock 里找不到 tauri —— 抽取规则过期了');
+
+  const minor = (v) => v.split('.').slice(0, 2).join('.');
+  assert.equal(
+    minor(npmApi),
+    minor(cargo[1]),
+    `@tauri-apps/api ${npmApi} 与 tauri ${cargo[1]} 的 major/minor 必须一致，否则 tauri build 会直接失败。\n` +
+      `  修法：把 package.json 里的范围改成 ~${cargo[1]}（~ 只放补丁，正好是这道检查的要求）后 npm install；\n` +
+      '  或者反过来把 Rust 侧对齐到 npm 那个 minor。',
+  );
+});
