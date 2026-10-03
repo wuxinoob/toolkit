@@ -10,12 +10,12 @@ import { Origin, originOf, pluginModule, reconcilePlugins, reloadPlugin } from '
 import { hub } from '../protocol/hub.js';
 import { getResolvedTheme, getThemePref, onThemeChange, setTheme } from '../host/theme.js';
 import { checkForUpdate, installUpdate, updateState } from '../host/updater.js';
+import { comboFromEvent, isModifierKey, shortcutKeys } from '../host/hotkey-keys.js';
 
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
 import {
   Table,
   TableBody,
@@ -25,8 +25,6 @@ import {
   TableRow,
 } from '@/components/ui/table';
 
-const shortcut = ref(store.settings.summonShortcut);
-const saved = ref(false);
 const scanning = ref(false);
 /** id of the plugin whose reload is in flight, so its button can show it. */
 const reloading = ref(null);
@@ -49,14 +47,6 @@ const offTheme = onThemeChange((pref, resolved) => {
   resolvedTheme.value = resolved;
 });
 onUnmounted(offTheme);
-
-async function saveHotkey() {
-  store.settings.summonShortcut = shortcut.value.trim();
-  saveSettings();
-  await applySummonShortcut();
-  saved.value = true;
-  setTimeout(() => (saved.value = false), 1500);
-}
 
 const pluginRows = computed(() =>
   store.plugins.map((p) => ({
@@ -262,34 +252,11 @@ const hotkeyBusy = ref('');
 
 /** The row currently capturing a keystroke, or ''. */
 const capturing = ref('');
+/** Why the last keystroke did not become a binding — shown in the field itself. */
+const captureHint = ref('');
 
-/**
- * Turn a keydown into a Tauri `Shortcut` string, or null if it is not one yet.
- *
- * Modifier-only presses return null: the user is on the way to a combination,
- * and committing "ctrl" the moment they press it would make the field useless.
- * The combination is committed on the first NON-modifier key.
- *
- * Key names follow Tauri's `Code` enum (`ArrowUp`, `Space`, `Enter`, `F1`…),
- * which is what `parse_shortcut` on the Rust side accepts.
- */
-function comboFrom(e) {
-  if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return null;
-
-  const parts = [];
-  if (e.ctrlKey) parts.push('ctrl');
-  if (e.altKey) parts.push('alt');
-  if (e.shiftKey) parts.push('shift');
-  if (e.metaKey) parts.push('super');
-
-  // A printable key arrives as the character; everything else as its code name.
-  let key = e.key;
-  if (key === ' ') key = 'Space';
-  else if (key.length === 1) key = key.toLowerCase();
-
-  parts.push(key);
-  return parts.join('+');
-}
+/** 只有一处能处于捕获态，所以两处共用一个标记位（见下面的 `SUMMON`）。 */
+const SUMMON = '__summon';
 
 /**
  * Handle a keystroke while the field is capturing.
@@ -307,21 +274,30 @@ function comboFrom(e) {
 function onCaptureKey(row, event) {
   if (event.key === 'Escape') {
     capturing.value = '';
+    captureHint.value = '';
     event.target.blur();
     return;
   }
   if (event.key === 'Backspace' || event.key === 'Delete') {
     event.preventDefault();
     capturing.value = '';
+    captureHint.value = '';
     applyHotkey(row, { key: '' });
     return;
   }
 
   const combo = comboFrom(event);
-  if (!combo) return; // still assembling modifiers
+  if (!combo) {
+    // 「还在凑修饰键」与「这个键不能单独绑」都是 null，但只有后者需要解释 ——
+    // 否则用户按下一个字母、界面毫无反应，会以为输入框坏了。
+    // 反过来，重新去按修饰键说明他读懂了提示，那行字就该消失。
+    captureHint.value = isModifierKey(event.key) ? '' : 'needs a modifier, or an F-key';
+    return;
+  }
 
   event.preventDefault();
   capturing.value = '';
+  captureHint.value = '';
   event.target.blur();
   applyHotkey(row, { key: combo });
 }
@@ -344,6 +320,66 @@ async function applyHotkey(row, { key = null, enabled = null }) {
   } finally {
     hotkeyBusy.value = '';
   }
+}
+
+/* ------------------------------- summon shortcut ------------------------------ */
+
+/**
+ * 宿主自己的"召唤"热键，输入方式与上面的插件行**完全一致**：点一下、按组合键。
+ *
+ * 它以前是一个文本框加一个 Apply 按钮 —— 那要求用户先知道拼法（`Ctrl+Alt+T`），
+ * 而且按不对也没有反馈。两处输入方式一旦不同，"同一个操作怎么用"就得学两遍。
+ *
+ * 没有 Apply：按下即生效。注册失败会 toast，但设置照留（和插件行同一条规矩：
+ * 悄悄显示"已绑定"而实际没注册，比失败更糟）。Backspace/Delete 清空 = 不要召唤键；
+ * 窗口仍然可以从托盘图标打开。
+ */
+const summonKeys = computed(() => shortcutKeys(store.settings.summonShortcut));
+
+function startSummonCapture() {
+  capturing.value = SUMMON;
+  captureHint.value = '';
+}
+
+function startCapture(id) {
+  capturing.value = id;
+  captureHint.value = '';
+}
+
+function endCapture() {
+  capturing.value = '';
+  captureHint.value = '';
+}
+
+async function applySummon(combo) {
+  store.settings.summonShortcut = combo;
+  saveSettings();
+  await applySummonShortcut(); // 失败时它自己会 toast
+  toast(combo ? `Summon shortcut: ${combo}` : 'Summon shortcut cleared');
+}
+
+async function onSummonKey(event) {
+  if (event.key === 'Escape') {
+    endCapture();
+    event.target.blur();
+    return;
+  }
+  if (event.key === 'Backspace' || event.key === 'Delete') {
+    event.preventDefault();
+    endCapture();
+    event.target.blur();
+    await applySummon('');
+    return;
+  }
+  const combo = comboFromEvent(event);
+  if (!combo) {
+    captureHint.value = isModifierKey(event.key) ? '' : 'needs a modifier, or an F-key';
+    return;
+  }
+  event.preventDefault();
+  endCapture();
+  event.target.blur();
+  await applySummon(combo);
 }
 
 /**
@@ -543,13 +579,15 @@ async function installUpdateNow() {
             class="tb-input tb-mono w-[190px] text-xs"
             :class="capturing === row.composite ? 'ring-2 ring-primary/40' : ''"
             :value="capturing === row.composite ? '' : row.key"
-            :placeholder="capturing === row.composite ? 'press a combination…' : 'click to set'"
+            :placeholder="
+              capturing === row.composite ? captureHint || 'press a combination…' : 'click to set'
+            "
             :readonly="capturing === row.composite"
             :disabled="hotkeyBusy === row.composite"
             spellcheck="false"
             autocomplete="off"
-            @focus="capturing = row.composite"
-            @blur="capturing = ''"
+            @focus="startCapture(row.composite)"
+            @blur="endCapture"
             @keydown="onCaptureKey(row, $event)"
           />
           <span v-if="row.error" class="w-full text-xs text-destructive">Not registered: {{ row.error }}</span>
@@ -588,17 +626,43 @@ async function installUpdateNow() {
       <CardHeader>
         <CardTitle>Global hotkey</CardTitle>
         <CardDescription>
-          Summons the main window from anywhere, e.g.
-          <kbd
-            class="rounded border border-b-2 bg-secondary px-1.5 py-px font-mono text-[11px] text-muted-foreground"
-            >Ctrl+Alt+T</kbd
-          >.
+          Summons the main window from anywhere. Click the field and press the combination you want —
+          any modifier works (Ctrl, Alt, Shift, Super), and it takes effect immediately. Backspace
+          clears it, Escape cancels.
         </CardDescription>
       </CardHeader>
-      <CardContent class="flex flex-wrap items-center gap-2">
-        <Input v-model="shortcut" class="max-w-[220px]" placeholder="Ctrl+Alt+T" spellcheck="false" />
-        <Button @click="saveHotkey">Apply</Button>
-        <span v-if="saved" class="text-xs text-primary">saved</span>
+      <CardContent class="flex flex-wrap items-center gap-3">
+        <!--
+          The same control the plugin rows use. It replaced a text field + Apply:
+          that required knowing the spelling, and gave nothing back when the
+          spelling was wrong. What the OS actually got is the keycaps beside it.
+        -->
+        <input
+          class="tb-input tb-mono w-[190px] text-xs"
+          :class="capturing === SUMMON ? 'ring-2 ring-primary/40' : ''"
+          :value="capturing === SUMMON ? '' : store.settings.summonShortcut"
+          :placeholder="
+            capturing === SUMMON ? captureHint || 'press a combination…' : 'click to set'
+          "
+          :readonly="capturing === SUMMON"
+          spellcheck="false"
+          autocomplete="off"
+          aria-label="Summon shortcut"
+          @focus="startSummonCapture"
+          @blur="endCapture"
+          @keydown="onSummonKey"
+        />
+        <span v-if="summonKeys.length" class="flex flex-wrap items-center gap-1">
+          <kbd
+            v-for="k in summonKeys"
+            :key="k"
+            class="rounded border border-b-2 bg-secondary px-1.5 py-px font-mono text-[11px] text-muted-foreground"
+            >{{ k }}</kbd
+          >
+        </span>
+        <span v-else class="text-xs text-muted-foreground">
+          not bound — the tray icon still opens the window
+        </span>
       </CardContent>
     </Card>
 
