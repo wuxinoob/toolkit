@@ -90,7 +90,7 @@ src/
     events.js               the window-local bus (the `in-process` scheme)
     pluginwin-host.js       secondary plugin windows
   plugins/                  first-party plugins
-    procman  streamlab
+    procman  streamlab  store
   core/logger.js  core/selftest.js
 src-tauri/src/
   protocol/{envelope,codec}.rs   the same contract, native side
@@ -118,12 +118,13 @@ docs/
 
 **A built-in is code the user cannot uninstall and every boot pays for**, so the
 bar is deliberately high: it has to exercise a scheme nothing else in the table
-exercises. That leaves two:
+exercises. That leaves three:
 
 | plugin | id | what it demonstrates |
 |---|---|---|
 | Processes | `builtin.procman` | `pty-stream` multi-process management with xterm.js |
 | StreamLab | `builtin.streamlab` | the scheme table, and one experiment per scheme side by side |
+| Store | `builtin.store` | the plugin & software marketplace, with download, install & hot-activation |
 
 `notepad`, `eyecare` and `floatwin` used to be built-ins. They were working
 demos rather than parts of the message plane, and they moved to `tests/fixtures/` —

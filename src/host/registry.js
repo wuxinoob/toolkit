@@ -24,9 +24,10 @@
  */
 import procman from '../plugins/procman.js';
 import streamlab from '../plugins/streamlab.js';
+import store from '../plugins/store.js';
 
 const REGISTRY = new Map(
-  [procman, streamlab].map((mod) => [mod.manifest.id, mod]),
+  [procman, streamlab, store].map((mod) => [mod.manifest.id, mod]),
 );
 
 export function resolveBuiltin(id) {

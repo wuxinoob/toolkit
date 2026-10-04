@@ -316,6 +316,7 @@ test('builtin plugins: the declared permission set is not silently over-broad', 
   const expected = {
     procman: ['rpc:storage', 'rpc:stream', 'rpc:host'],
     streamlab: ['rpc:host', 'rpc:stream', 'rpc:bus', 'rpc:storage'],
+    store: ['rpc:host', 'rpc:stream', 'rpc:storage'],
   };
   for (const name of BUILTIN) {
     const manifest = extractManifest(read(`src/plugins/${name}.js`), name);
@@ -507,7 +508,7 @@ function codeOnly(src) {
 const KEYWORDS = new Set([
   'if', 'for', 'while', 'switch', 'catch', 'return', 'typeof', 'await', 'new',
   'do', 'else', 'in', 'of', 'case', 'delete', 'void', 'yield', 'throw', 'with',
-  'function', 'super', 'this', 'async',
+  'function', 'super', 'this', 'async', 'import',
 ]);
 
 /**

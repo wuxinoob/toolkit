@@ -151,7 +151,7 @@ JS 侧只有接收回调、**没有 `send`**。所以别去找「从 JS 推给 R
 
 | | 看什么 | 在哪 |
 |---|---|---|
-| **① 启动日志** | 每个插件的状态、分阶段与**分插件**耗时（内置的只有 `builtin.procman` / `builtin.streamlab`，其余是你自己装的） | `%APPDATA%\com.tan18.toolkit\debug.log` |
+| **① 启动日志** | 每个插件的状态、分阶段与**分插件**耗时（内置的只有 `builtin.procman` / `builtin.streamlab` / `builtin.store`，其余是你自己装的） | `%APPDATA%\com.tan18.toolkit\debug.log` |
 | **② 通信 trace** | 网关层的每一笔往来，**含权限拒绝** | 同一个文件，`hub.setTrace(true)` 打开 |
 | **③ 调试句柄** | 运行时的 store / 事件 / 会话 / 流 | `window.__toolbox`（DevTools 控制台） |
 | **④ 自检** | 15 项底层契约 | `await window.__toolbox.selftest()` |
