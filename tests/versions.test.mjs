@@ -103,6 +103,22 @@ test('the plugin API version is a number the host can actually serve', () => {
   );
 });
 
+/**
+ * `tauri` 的版本，从 `Cargo.lock` 里取。
+ *
+ * **不能假设换行是 `\n`。** 这个仓库没有 `.gitattributes`，而它的 autocrlf 是打开的：
+ * 本地这份 `Cargo.lock` 是 cargo 写出来的（LF），CI 上是**新检出**（CRLF）。
+ * 第一版写的是 `/^name = "tauri"\nversion = …/` —— 只在本地成立，进了 CI 直接变成
+ * "找不到 tauri"，而那条守卫的用意正好是防这种"只在作者机器上成立"的判断。
+ *
+ * 所以：先定位 `name = "tauri"` 那一行（允许行尾有 `\r`），再取紧随其后的 `version = …`。
+ */
+function rustTauriVersion(text) {
+  const at = text.search(/^name = "tauri"[ \t\r]*$/m);
+  if (at < 0) return null;
+  return text.slice(at).match(/^version = "([^"]+)"[ \t\r]*$/m)?.[1] ?? null;
+}
+
 test('the npm tauri package and the Rust crate stay on the same minor', () => {
   // Tauri CLI 把这条当成**错误**（不是警告），并在 `tauri build` 真正开始之前终止：
   //
@@ -121,15 +137,29 @@ test('the npm tauri package and the Rust crate stay on the same minor', () => {
   const npmApi = lock.packages?.['node_modules/@tauri-apps/api']?.version;
   assert.ok(npmApi, 'package-lock.json 里找不到 @tauri-apps/api —— 抽取规则过期了');
 
-  const cargo = read('src-tauri', 'Cargo.lock').match(/^name = "tauri"\nversion = "([^"]+)"/m);
-  assert.ok(cargo, 'src-tauri/Cargo.lock 里找不到 tauri —— 抽取规则过期了');
+  const rust = rustTauriVersion(read('src-tauri', 'Cargo.lock'));
+  assert.ok(rust, 'src-tauri/Cargo.lock 里找不到 tauri —— 抽取规则过期了');
 
   const minor = (v) => v.split('.').slice(0, 2).join('.');
   assert.equal(
     minor(npmApi),
-    minor(cargo[1]),
-    `@tauri-apps/api ${npmApi} 与 tauri ${cargo[1]} 的 major/minor 必须一致，否则 tauri build 会直接失败。\n` +
-      `  修法：把 package.json 里的范围改成 ~${cargo[1]}（~ 只放补丁，正好是这道检查的要求）后 npm install；\n` +
+    minor(rust),
+    `@tauri-apps/api ${npmApi} 与 tauri ${rust} 的 major/minor 必须一致，否则 tauri build 会直接失败。\n` +
+      `  修法：把 package.json 里的范围改成 ~${rust}（~ 只放补丁，正好是这道检查的要求）后 npm install；\n` +
       '  或者反过来把 Rust 侧对齐到 npm 那个 minor。',
   );
+});
+
+test('the Cargo.lock extractor does not assume unix line endings', () => {
+  // 这条守卫第一次进 CI 就是因为它红的：本地 LF、CI CRLF。
+  // 一个"只在作者机器上成立"的抽取规则比没有守卫更糟 —— 它会在别人那里红。
+  const lf = '[[package]]\nname = "tauri"\nversion = "9.9.9"\nsource = "registry+x"\n';
+  assert.equal(rustTauriVersion(lf), '9.9.9');
+  assert.equal(rustTauriVersion(lf.replace(/\n/g, '\r\n')), '9.9.9', 'CRLF 也要读得出来');
+  assert.equal(
+    rustTauriVersion('[[package]]\nname = "tauri-plugin-opener"\nversion = "2.5.5"\n'),
+    null,
+    '别的包不能被当成 tauri（名字必须整行相等）',
+  );
+  assert.equal(rustTauriVersion('nonsense'), null);
 });
