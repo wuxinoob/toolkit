@@ -50,7 +50,7 @@ function readManifest() {
       'src-tauri/gen/schemas/acl-manifests.json is missing — tauri-build generates it, so a ' +
         'fresh checkout does not have it. Run `cargo check --manifest-path src-tauri/Cargo.toml`. ' +
         'If the Rust side has been built before, the build script may be cached and do nothing — ' +
-        'in that case force it: `cargo clean --manifest-path src-tauri/Cargo.toml -p toolbox` ' +
+        'in that case force it: `cargo clean --manifest-path src-tauri/Cargo.toml -p toolkit` ' +
         '(or touch any of its inputs, e.g. src-tauri/tauri.conf.json) and run it again.',
     );
   }
@@ -225,6 +225,6 @@ test('the compiled ACL contains every capability the source declares', () => {
       'capabilities/ directory and Cargo cached the result, so the source looks correct while ' +
       'the running app denies EVERY window permission (event.listen, window.get_all_windows, ' +
       'pty.spawn …) and the plugins look broken. ' +
-      `Fix: \`cargo clean -p toolbox\` then rebuild. (artifact: ${newest.path})`,
+      `Fix: \`cargo clean -p toolkit\` then rebuild. (artifact: ${newest.path})`,
   );
 });

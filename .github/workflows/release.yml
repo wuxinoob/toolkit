@@ -86,7 +86,7 @@ jobs:
       # 权限审计读 `src-tauri/gen/schemas/acl-manifests.json`（tauri-build 生成、
       # 写在源码树里、被 gitignore）。所以先强制构建脚本跑一遍 —— 不清这个包的话，
       # 缓存命中时它是 no-op，那个文件就永远不出现。清它只影响本包，依赖仍走缓存。
-      - run: cargo clean --manifest-path src-tauri/Cargo.toml -p toolbox
+      - run: cargo clean --manifest-path src-tauri/Cargo.toml -p toolkit
       - name: Generate the ACL schemas the tests read
         run: cargo check --manifest-path src-tauri/Cargo.toml
 
@@ -133,7 +133,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: toolbox-windows
+          name: toolkit-windows
           if-no-files-found: error
           path: |
             src-tauri/target/release/bundle/nsis/*.exe

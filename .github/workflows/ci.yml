@@ -75,7 +75,7 @@ jobs:
       # 于是缓存命中时构建脚本可能是 no-op，那个文件永远不出现（间歇性红，最难查）。
       # 先只清这个包，强制构建脚本真的跑一遍，产物才是确定的。
       - name: Force the build script to run (it writes src-tauri/gen/schemas)
-        run: cargo clean --manifest-path src-tauri/Cargo.toml -p toolbox
+        run: cargo clean --manifest-path src-tauri/Cargo.toml -p toolkit
 
       - name: Rust checks (the runnable ones — also generate the ACL schemas)
         run: cargo run --manifest-path src-tauri/Cargo.toml --example host-checks

@@ -200,7 +200,7 @@ test('startup: the hidden-window handshake is intact on all three sides', () => 
   // WebView2 has no caches). Drop either show() and the window never appears at
   // all — the app looks like it failed to start.
   const conf = JSON.parse(readFileSync(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
-  const main = conf.app.windows.find((w) => w.title === 'Toolbox');
+  const main = conf.app.windows.find((w) => w.title === 'Toolkit');
   assert.ok(main, 'no main window in tauri.conf.json');
   assert.equal(main.visible, false, 'the main window must start hidden, or the white flash comes back');
 

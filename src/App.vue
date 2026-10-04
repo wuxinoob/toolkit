@@ -96,7 +96,7 @@ const navClass = (active) =>
     <div class="relative flex h-full">
       <!--
         No brand row here on purpose. The window's own title bar already shows
-        the app icon and name a few pixels above, so a second "Toolbox" in the
+        the app icon and name a few pixels above, so a second "Toolkit" in the
         rail was the same word twice in 30px — and it LOOKED like a nav item
         without being one. The rail starts straight at its first group label.
       -->

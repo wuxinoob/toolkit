@@ -20,10 +20,10 @@ use serde_json::json;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use toolbox_lib::protocol::codec::{json_envelope, line_json, raw_binary};
-use toolbox_lib::protocol::envelope::{Envelope, Kind};
-use toolbox_lib::protocol::codes;
-use toolbox_lib::services::{external, hotkey, schema, session, storage, stream, table, ServiceError};
+use toolkit_lib::protocol::codec::{json_envelope, line_json, raw_binary};
+use toolkit_lib::protocol::envelope::{Envelope, Kind};
+use toolkit_lib::protocol::codes;
+use toolkit_lib::services::{external, hotkey, schema, session, storage, stream, table, ServiceError};
 
 static FAILED: AtomicBool = AtomicBool::new(false);
 static PASSED: AtomicU64 = AtomicU64::new(0);
