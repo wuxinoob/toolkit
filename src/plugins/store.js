@@ -12,9 +12,14 @@
  * - Reactive state discovery: Directly synchronises with `store.plugins` and
  *   triggers `reconcilePlugins` on installation / uninstallation for zero-restart
  *   hot-activation.
+ * - Software downloads & custom install paths: Supports official website jump,
+ *   winget default install, winget interactive install (custom path wizard),
+ *   and direct installer package download to any user-specified folder.
  */
 
+import { h } from 'vue';
 import { Kind } from '../protocol/envelope.js';
+import { resolveIcon } from '../host/icons.js';
 
 let hostStore = null;
 let hostReconcile = null;
@@ -47,12 +52,12 @@ export const manifest = {
       },
     ],
   },
-  permissions: ['rpc:host', 'rpc:stream', 'rpc:storage'],
+  permissions: ['rpc:host', 'rpc:stream', 'rpc:storage', 'rpc:dialog'],
 };
 
-const STORAGE_CATALOG_KEY = 'store_catalog_cache_v1';
-const RAW_CATALOG_URL = 'https://raw.githubusercontent.com/wuxinoob/toolkit_plugins/main/catalog.json';
+const STORAGE_CATALOG_KEY = 'store_catalog_cache_v2';
 const CDN_CATALOG_URL = 'https://cdn.jsdelivr.net/gh/wuxinoob/toolkit_plugins@main/catalog.json';
+const RAW_CATALOG_URL = 'https://raw.githubusercontent.com/wuxinoob/toolkit_plugins@main/catalog.json';
 
 const DEFAULT_CATALOG = {
   version: 1,
@@ -64,12 +69,12 @@ const DEFAULT_CATALOG = {
       version: '0.3.0',
       author: 'Tan18',
       description: 'Windows 常用开发与系统小工具：端口占用探测与清理、目录文件锁排查、进程句柄分析、PATH环境变量诊断、系统防休眠 (Awake)、Hosts文件极简编辑。',
-      icon: '🔧',
+      icon: 'lucide:wrench',
       category: '系统与开发',
       tags: ['端口占用', '文件解锁', 'Hosts编辑', '环境变量', 'Awake'],
       targetDir: 'devtool',
-      downloadUrl: 'https://raw.githubusercontent.com/wuxinoob/toolkit_plugins/main/plugins/devtool/package.zip',
-      mirrorUrl: 'https://cdn.jsdelivr.net/gh/wuxinoob/toolkit_plugins@main/plugins/devtool/package.zip',
+      downloadUrl: 'https://cdn.jsdelivr.net/gh/wuxinoob/toolkit_plugins@main/plugins/devtool/package.zip',
+      mirrorUrl: 'https://raw.githubusercontent.com/wuxinoob/toolkit_plugins/main/plugins/devtool/package.zip',
       size: '260 KB',
     },
     {
@@ -79,12 +84,12 @@ const DEFAULT_CATALOG = {
       version: '0.1.0',
       author: 'Tan18',
       description: '定时护眼：自绘悬浮胶囊 + 穿透锁定 + 全屏休息遮罩；键鼠空闲检测由自带 sidecar 提供。',
-      icon: '👁️',
+      icon: 'lucide:eye',
       category: '健康与效率',
       tags: ['番茄钟', '休息提醒', '防沉迷', '自绘悬浮窗'],
       targetDir: 'eyecare.demo',
-      downloadUrl: 'https://raw.githubusercontent.com/wuxinoob/toolkit_plugins/main/plugins/eyecare/package.zip',
-      mirrorUrl: 'https://cdn.jsdelivr.net/gh/wuxinoob/toolkit_plugins@main/plugins/eyecare/package.zip',
+      downloadUrl: 'https://cdn.jsdelivr.net/gh/wuxinoob/toolkit_plugins@main/plugins/eyecare/package.zip',
+      mirrorUrl: 'https://raw.githubusercontent.com/wuxinoob/toolkit_plugins/main/plugins/eyecare/package.zip',
       size: '81 KB',
     },
     {
@@ -94,12 +99,12 @@ const DEFAULT_CATALOG = {
       version: '2.0.0',
       author: 'Tan18',
       description: '基于 WebDAV 同步的高颜值便签插件，支持独立置顶悬浮窗与跨窗口双向同步、分类归档与历史备份。',
-      icon: '📝',
+      icon: 'lucide:sticky-note',
       category: '办公与效率',
       tags: ['便签', 'WebDAV同步', '独立悬浮窗', '双向通信'],
       targetDir: 'moment-notes',
-      downloadUrl: 'https://raw.githubusercontent.com/wuxinoob/toolkit_plugins/main/plugins/moment-notes/package.zip',
-      mirrorUrl: 'https://cdn.jsdelivr.net/gh/wuxinoob/toolkit_plugins@main/plugins/moment-notes/package.zip',
+      downloadUrl: 'https://cdn.jsdelivr.net/gh/wuxinoob/toolkit_plugins@main/plugins/moment-notes/package.zip',
+      mirrorUrl: 'https://raw.githubusercontent.com/wuxinoob/toolkit_plugins/main/plugins/moment-notes/package.zip',
       size: '292 KB',
     },
   ],
@@ -111,11 +116,13 @@ const DEFAULT_CATALOG = {
       version: '最新稳定版',
       author: 'Microsoft',
       description: '轻量但功能强大的现代化源代码编辑器，拥有庞大的插件生态系统与调试能力。',
-      icon: '💻',
+      icon: 'lucide:code-2',
       category: '开发工具',
       tags: ['IDE', '编辑器', '代码调试', 'Git'],
       website: 'https://code.visualstudio.com/',
       wingetId: 'Microsoft.VisualStudioCode',
+      installerUrl: 'https://code.visualstudio.com/sha/download?build=stable&os=win32-x64-user',
+      installerFileName: 'VSCodeUserSetup-x64.exe',
     },
     {
       id: 'software.git',
@@ -124,11 +131,13 @@ const DEFAULT_CATALOG = {
       version: '最新稳定版',
       author: 'Git Community',
       description: '世界上最流行的分布式版本控制系统，提供 Git Bash、GUI 和 Windows Credential Manager。',
-      icon: '🌿',
+      icon: 'lucide:git-branch',
       category: '开发工具',
       tags: ['版本控制', 'Git', 'Bash', '命令行'],
       website: 'https://git-scm.com/',
       wingetId: 'Git.Git',
+      installerUrl: 'https://registry.npmmirror.com/-/binary/git-for-windows/v2.47.1.windows.1/Git-2.47.1-64-bit.exe',
+      installerFileName: 'Git-64-bit-setup.exe',
     },
     {
       id: 'software.powertoys',
@@ -137,7 +146,7 @@ const DEFAULT_CATALOG = {
       version: '最新版',
       author: 'Microsoft',
       description: '微软官方出品的 Windows 高级系统生产力套件（FancyZones、跑狗启动器、取色器、文本提取等）。',
-      icon: '⚡',
+      icon: 'lucide:cpu',
       category: '系统增强',
       tags: ['微软官方', '窗口分屏', '快速启动', '生产力'],
       website: 'https://github.com/microsoft/PowerToys',
@@ -150,11 +159,13 @@ const DEFAULT_CATALOG = {
       version: '2.9.x',
       author: 'Snipaste',
       description: '极致好用的截图与贴图神级工具，支持像素级取色、图片马赛克、画笔标注与贴图置顶浮动。',
-      icon: '✂️',
+      icon: 'lucide:crop',
       category: '日常效率',
       tags: ['截图', '贴图', '标注', '取色器'],
       website: 'https://www.snipaste.com/',
       wingetId: 'Snipaste.Snipaste',
+      installerUrl: 'https://dl.snipaste.com/win-x64',
+      installerFileName: 'Snipaste-x64.zip',
     },
     {
       id: 'software.devtoys',
@@ -163,7 +174,7 @@ const DEFAULT_CATALOG = {
       version: '2.0.x',
       author: 'DevToys Community',
       description: '开发者 Swiss Army knife（瑞士军刀），涵盖 JSON 格式化、JWT 解码、正则表达式测试、Base64转换等。',
-      icon: '🧰',
+      icon: 'lucide:hammer',
       category: '开发工具',
       tags: ['瑞士军刀', 'JSON格式化', '正则测试', 'JWT'],
       website: 'https://devtoys.app/',
@@ -176,7 +187,7 @@ const DEFAULT_CATALOG = {
       version: '最新版',
       author: 'Clash Verge Rev Team',
       description: '基于 Tauri 打造的高性能现代化网络代理客户端，界面精致流畅，支持丰富的分流规则与订阅管理。',
-      icon: '🌐',
+      icon: 'lucide:globe',
       category: '网络与安全',
       tags: ['网络代理', 'Tauri', '流量分流', '网络诊断'],
       website: 'https://github.com/clash-verge-rev/clash-verge-rev',
@@ -194,6 +205,20 @@ const state = {
   tasks: new Map(),
   rootEl: null,
 };
+
+function renderIcon(rawIcon, defaultEmoji = '🧩') {
+  if (!rawIcon) {
+    return state.ctx.ui.el('span', { class: 'text-2xl shrink-0 select-none' }, defaultEmoji);
+  }
+  const IconComp = resolveIcon(rawIcon);
+  if (IconComp) {
+    return h(IconComp, { class: 'size-7 shrink-0 text-primary' });
+  }
+  if (rawIcon.startsWith('http://') || rawIcon.startsWith('https://') || rawIcon.startsWith('data:')) {
+    return state.ctx.ui.el('img', { src: rawIcon, class: 'size-7 shrink-0 object-contain rounded' });
+  }
+  return state.ctx.ui.el('span', { class: 'text-2xl shrink-0 select-none' }, rawIcon);
+}
 
 function compareSemver(v1, v2) {
   if (!v1 || !v2) return 0;
@@ -263,11 +288,11 @@ async function fetchCatalog(manual = false) {
 
   let fetched = null;
   try {
-    const res = await fetch(RAW_CATALOG_URL, { cache: 'no-cache' });
+    const res = await fetch(CDN_CATALOG_URL, { cache: 'no-cache' });
     if (res.ok) fetched = await res.json();
   } catch (_) {
     try {
-      const res = await fetch(CDN_CATALOG_URL, { cache: 'no-cache' });
+      const res = await fetch(RAW_CATALOG_URL, { cache: 'no-cache' });
       if (res.ok) fetched = await res.json();
     } catch (e) {
       if (manual) ctx.ui.notify(`刷新目录失败: ${e.message ?? e}`, 'error');
@@ -310,30 +335,36 @@ async function installPlugin(item) {
 
     const powershellCommand = `
 $ProgressPreference = 'SilentlyContinue';
-[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12;
 $dest = "${destFolder}";
 $tmp = "${tempZip}";
-$ok = $false;
-try {
-  Invoke-WebRequest -Uri "${primaryUrl}" -OutFile $tmp -UseBasicParsing -TimeoutSec 35;
-  $ok = $true;
-} catch {
-  Write-Host "Primary URL failed, fallback to mirror...";
-  try {
-    Invoke-WebRequest -Uri "${mirrorUrl}" -OutFile $tmp -UseBasicParsing -TimeoutSec 35;
-    $ok = $true;
-  } catch {
-    Write-Error "Download failed: $_";
-    exit 1;
+if (Test-Path $tmp) { Remove-Item -Path $tmp -Force -ErrorAction SilentlyContinue }
+$downloadOk = $false;
+if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+  curl.exe -fLs --connect-timeout 10 --retry 1 "${primaryUrl}" -o $tmp;
+  if ((Test-Path $tmp) -and ((Get-Item $tmp).Length -gt 100)) { $downloadOk = $true }
+  else {
+    curl.exe -fLs --connect-timeout 15 --retry 1 "${mirrorUrl}" -o $tmp;
+    if ((Test-Path $tmp) -and ((Get-Item $tmp).Length -gt 100)) { $downloadOk = $true }
   }
 }
-if ($ok -and (Test-Path $tmp)) {
+if (-not $downloadOk) {
+  [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12;
+  try {
+    Invoke-WebRequest -Uri "${primaryUrl}" -OutFile $tmp -UseBasicParsing -TimeoutSec 20;
+    $downloadOk = $true;
+  } catch {
+    Invoke-WebRequest -Uri "${mirrorUrl}" -OutFile $tmp -UseBasicParsing -TimeoutSec 25;
+    $downloadOk = $true;
+  }
+}
+if ($downloadOk -and (Test-Path $tmp)) {
   if (Test-Path $dest) { Remove-Item -Path $dest -Recurse -Force -ErrorAction SilentlyContinue }
   New-Item -ItemType Directory -Path $dest -Force | Out-Null;
   Expand-Archive -Path $tmp -DestinationPath $dest -Force;
   Remove-Item -Path $tmp -Force -ErrorAction SilentlyContinue;
   exit 0;
 } else {
+  Write-Error "Download or extraction failed";
   exit 1;
 }
 `.trim().replace(/\r?\n/g, ' ');
@@ -397,26 +428,102 @@ async function openWebsite(item) {
   }
 }
 
-async function installWinget(item) {
+async function installWinget(item, { interactive = false } = {}) {
   const { ctx } = state;
   if (!item.wingetId || state.tasks.has(item.id)) return;
 
-  state.tasks.set(item.id, { action: 'winget', label: 'Winget 安装中...', inProgress: true });
+  const modeText = interactive ? '自定义交互安装' : '标准静默安装';
+  state.tasks.set(item.id, { action: 'winget', label: `${modeText}中...`, inProgress: true });
   scheduleRender();
-  ctx.ui.notify(`已启动「${item.name}」的 Winget 安装进程，请关注系统提示`, 'info');
+
+  if (interactive) {
+    ctx.ui.notify(`已呼出「${item.name}」安装向导，可在向导中自选安装盘符与路径`, 'info');
+  } else {
+    ctx.ui.notify(`正在后台安装「${item.name}」，请稍候...`, 'info');
+  }
 
   try {
+    const args = ['-NoProfile', '-Command'];
+    if (interactive) {
+      args.push(`winget install --id "${item.wingetId}" -e --interactive --accept-source-agreements`);
+    } else {
+      args.push(
+        `winget install --id "${item.wingetId}" -e --accept-package-agreements --accept-source-agreements --silent`,
+      );
+    }
+
     const ch = `winget-${Date.now().toString(36)}`;
-    await runPtyCommand(ctx, ch, 'powershell.exe', [
-      '-NoProfile',
-      '-Command',
-      `winget install --id "${item.wingetId}" -e --accept-package-agreements --accept-source-agreements`,
-    ]);
+    await runPtyCommand(ctx, ch, 'powershell.exe', args);
     state.tasks.delete(item.id);
-    ctx.ui.notify(`软件「${item.name}」安装成功！`, 'success');
+    ctx.ui.notify(`软件「${item.name}」安装完成！`, 'success');
   } catch (err) {
     state.tasks.delete(item.id);
-    ctx.ui.notify(`Winget 安装失败: ${err.message ?? err}`, 'error');
+    ctx.ui.notify(`Winget 安装提示: ${err.message ?? err}`, 'error');
+  } finally {
+    scheduleRender();
+  }
+}
+
+async function downloadSoftwareInstaller(item) {
+  const { ctx } = state;
+  if (state.tasks.has(item.id)) return;
+
+  let downloadUrl = item.installerUrl;
+  let fileName = item.installerFileName || `${item.id.replace(/^software\./, '')}-setup.exe`;
+
+  if (!downloadUrl) {
+    openWebsite(item);
+    return;
+  }
+
+  let picked = [];
+  try {
+    picked = await ctx.files.pick({
+      folder: true,
+      title: `选择「${item.name}」安装包保存目录`,
+    });
+  } catch (e) {
+    ctx.ui.notify(`打开选择目录失败: ${e.message ?? e}`, 'error');
+    return;
+  }
+
+  if (!picked || !picked.length || !picked[0]) {
+    return;
+  }
+
+  const saveDir = picked[0];
+  const saveFilePath = `${saveDir}\\${fileName}`;
+
+  state.tasks.set(item.id, { action: 'download', label: '正在下载到指定目录...', inProgress: true });
+  scheduleRender();
+  ctx.ui.notify(`开始下载安装包到：${saveDir}`, 'info');
+
+  try {
+    const powershellCommand = `
+$ProgressPreference = 'SilentlyContinue';
+$target = "${saveFilePath}";
+if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+  curl.exe -fL --connect-timeout 15 -o $target "${downloadUrl}";
+} else {
+  [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12;
+  Invoke-WebRequest -Uri "${downloadUrl}" -OutFile $target -UseBasicParsing;
+}
+if (Test-Path $target) {
+  Start-Process explorer.exe -ArgumentList "/select,\`"$target\`"";
+  exit 0;
+} else {
+  exit 1;
+}
+`.trim().replace(/\r?\n/g, ' ');
+
+    const ch = `dl-${Date.now().toString(36)}`;
+    await runPtyCommand(ctx, ch, 'powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', powershellCommand]);
+
+    state.tasks.delete(item.id);
+    ctx.ui.notify(`「${item.name}」安装包已下载到指定文件夹！`, 'success');
+  } catch (err) {
+    state.tasks.delete(item.id);
+    ctx.ui.notify(`下载失败: ${err.message ?? err}`, 'error');
   } finally {
     scheduleRender();
   }
@@ -502,7 +609,7 @@ function renderStoreView(root) {
       );
     } else if (status.state === 'not_installed') {
       actionButtons.push(
-        el('button', { variant: 'default', size: 'sm', onClick: () => installPlugin(p) }, '📥 一键安装'),
+        el('button', { variant: 'default', size: 'sm', onClick: () => installPlugin(p) }, '📥 一键安装到插件库'),
       );
     } else if (status.state === 'can_update') {
       actionButtons.push(
@@ -539,7 +646,7 @@ function renderStoreView(root) {
           el(
             'div',
             { class: 'flex items-center gap-2.5 min-w-0' },
-            el('span', { class: 'text-2xl shrink-0' }, p.icon || '🧩'),
+            renderIcon(p.icon, '🧩'),
             el(
               'div',
               { class: 'min-w-0' },
@@ -579,14 +686,48 @@ function renderStoreView(root) {
         el('button', { variant: 'outline', size: 'sm', disabled: true }, task.label || '安装中...'),
       );
     } else {
-      if (s.website) {
+      if (s.installerUrl) {
         actionButtons.push(
-          el('button', { variant: 'outline', size: 'sm', onClick: () => openWebsite(s) }, '🌐 官方网站'),
+          el(
+            'button',
+            {
+              variant: 'outline',
+              size: 'sm',
+              title: '自选保存路径，下载安装包到指定文件夹',
+              onClick: () => downloadSoftwareInstaller(s),
+            },
+            '📁 自选路径下载',
+          ),
         );
       }
       if (s.wingetId) {
         actionButtons.push(
-          el('button', { variant: 'default', size: 'sm', onClick: () => installWinget(s) }, '⚡ Winget 安装'),
+          el(
+            'button',
+            {
+              variant: 'outline',
+              size: 'sm',
+              title: '启动安装向导，可在安装窗口中自定义安装盘符与路径',
+              onClick: () => installWinget(s, { interactive: true }),
+            },
+            '⚙️ 交互安装(自选路径)',
+          ),
+        );
+        actionButtons.push(
+          el(
+            'button',
+            {
+              variant: 'default',
+              size: 'sm',
+              title: '使用 Winget 默认静默安装',
+              onClick: () => installWinget(s, { interactive: false }),
+            },
+            '⚡ 默认安装',
+          ),
+        );
+      } else if (s.website) {
+        actionButtons.push(
+          el('button', { variant: 'outline', size: 'sm', onClick: () => openWebsite(s) }, '🌐 官方网站'),
         );
       }
     }
@@ -606,7 +747,7 @@ function renderStoreView(root) {
           el(
             'div',
             { class: 'flex items-center gap-2.5 min-w-0' },
-            el('span', { class: 'text-2xl shrink-0' }, s.icon || '🚀'),
+            renderIcon(s.icon, '🚀'),
             el(
               'div',
               { class: 'min-w-0' },
@@ -630,7 +771,7 @@ function renderStoreView(root) {
       ),
       el(
         'div',
-        { class: 'flex items-center justify-end gap-2 pt-3 mt-3 border-t border-border' },
+        { class: 'flex flex-wrap items-center justify-end gap-2 pt-3 mt-3 border-t border-border' },
         ...actionButtons,
       ),
     );
@@ -653,7 +794,7 @@ function renderStoreView(root) {
           el(
             'p',
             { class: 'text-xs text-muted-foreground m-0 mt-1' },
-            '发现官方扩展与开发者必备软件，支持一键无感安装、自动更新与完整卸载。',
+            '发现官方扩展与开发者必备软件，支持一键无感安装、自选路径下载、交互安装向导与完整卸载。',
           ),
         ),
         el(

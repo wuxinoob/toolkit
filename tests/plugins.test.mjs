@@ -211,6 +211,7 @@ function requiredPermissions(source) {
   recv(/\b(?:ctx|bridge)\.pty\(/g, () => 'rpc:stream');
   recv(/\b(?:ctx|bridge)\.sessions\(/g, () => 'rpc:host');
   recv(/\bctx\.windows\./g, () => 'win:manage');
+  recv(/\b(?:ctx|bridge)\.files\./g, () => 'rpc:dialog');
 
   // The sensing surface. These were missing here for exactly one release, and
   // the gap was not theoretical: `tests/fixtures/plugins/senses` used `ctx.screen.*`
@@ -316,7 +317,7 @@ test('builtin plugins: the declared permission set is not silently over-broad', 
   const expected = {
     procman: ['rpc:storage', 'rpc:stream', 'rpc:host'],
     streamlab: ['rpc:host', 'rpc:stream', 'rpc:bus', 'rpc:storage'],
-    store: ['rpc:host', 'rpc:stream', 'rpc:storage'],
+    store: ['rpc:dialog', 'rpc:host', 'rpc:storage', 'rpc:stream'],
   };
   for (const name of BUILTIN) {
     const manifest = extractManifest(read(`src/plugins/${name}.js`), name);
