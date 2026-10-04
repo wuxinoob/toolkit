@@ -250,6 +250,8 @@ const DEFAULT_CATALOG = {
       tags: ['网络代理', '官方安装包', '流量分流', '网络诊断'],
       website: 'https://github.com/clash-verge-rev/clash-verge-rev',
       wingetId: 'clash-verge-rev.clash-verge-rev',
+      installerUrl: 'https://github.com/clash-verge-rev/clash-verge-rev/releases/latest/download/Clash.Verge_x64_setup.exe',
+      installerFileName: 'Clash.Verge_x64_setup.exe',
     },
   ],
 };
@@ -260,15 +262,21 @@ const state = {
   searchQuery: '',
   refreshing: false,
   catalog: DEFAULT_CATALOG,
+  customSoftware: [],
   tasks: new Map(),
   rootEl: null,
-  directDownload: {
-    url: '',
-    targetDir: '',
-    fileName: '',
-    autoInferred: true,
-    isDownloading: false,
-    progressMsg: '',
+  showAddDialog: false,
+  newSoftwareForm: {
+    name: '',
+    version: '便携版',
+    author: '自定义',
+    description: '',
+    category: '日常工具',
+    icon: 'lucide:package',
+    website: '',
+    installerUrl: '',
+    installerFileName: '',
+    packageType: 'portable',
   },
 };
 
@@ -285,43 +293,69 @@ function inferFileNameFromUrl(url) {
   return '';
 }
 
-const DIRECT_DOWNLOAD_PRESETS = [
-  {
-    name: 'Geek Uninstaller',
-    badge: '绿色单文件',
-    url: 'https://geekuninstaller.com/geek.zip',
-    fileName: 'geek.zip',
-    desc: '单文件免安装，强力深度卸载清理',
-  },
-  {
-    name: 'Everything 全盘搜索',
-    badge: '便携ZIP',
-    url: 'https://www.voidtools.com/Everything-1.4.1.1026.x64.zip',
-    fileName: 'Everything-x64.zip',
-    desc: '秒级极速全盘文件名检索，解压即用',
-  },
-  {
-    name: 'Snipaste 截图贴图',
-    badge: '便携ZIP',
-    url: 'https://dl.snipaste.com/win-x64',
-    fileName: 'Snipaste-x64.zip',
-    desc: '截图、贴图、取色与画笔标注神器',
-  },
-  {
-    name: 'DevToys 瑞士军刀',
-    badge: '便携ZIP',
-    url: 'https://github.com/DevToys-app/DevToys/releases/latest/download/devtoys_win_x64.zip',
-    fileName: 'devtoys_win_x64.zip',
-    desc: '离线开发实用工具集合，免安装',
-  },
-  {
-    name: '7-Zip 压缩解压',
-    badge: '官方安装包EXE',
-    url: 'https://www.7-zip.org/a/7z2409-x64.exe',
-    fileName: '7z2409-x64.exe',
-    desc: '轻量高效知名开源压缩解压工具',
-  },
-];
+async function addCustomSoftware() {
+  const form = state.newSoftwareForm;
+  const name = form.name?.trim();
+  const url = form.installerUrl?.trim();
+  if (!name) {
+    state.ctx.ui.notify('请输入软件名称', 'warning');
+    return;
+  }
+  if (!url || !/^https?:\/\//i.test(url)) {
+    state.ctx.ui.notify('请输入有效的 HTTP / HTTPS 直链下载地址', 'warning');
+    return;
+  }
+
+  let fileName = form.installerFileName?.trim() || inferFileNameFromUrl(url) || `${name}.zip`;
+  fileName = fileName.replace(/[\\/:*?"<>|]/g, '_');
+
+  const item = {
+    id: `custom.soft.${Date.now().toString(36)}`,
+    type: 'software',
+    name,
+    version: form.version?.trim() || '便携版',
+    author: form.author?.trim() || '自定义',
+    description: form.description?.trim() || '用户自定义直链下载工具',
+    icon: form.icon?.trim() || 'lucide:package',
+    category: form.category?.trim() || '自定义工具',
+    packageType: form.packageType || 'portable',
+    tags: ['自定义直链', form.packageType === 'portable' ? '绿色免安装' : '安装包'],
+    website: form.website?.trim() || '',
+    installerUrl: url,
+    installerFileName: fileName,
+    isCustom: true,
+  };
+
+  state.customSoftware.unshift(item);
+  try {
+    await state.ctx.storage.set('store_custom_software', state.customSoftware);
+  } catch (_) {}
+
+  state.showAddDialog = false;
+  state.newSoftwareForm = {
+    name: '',
+    version: '便携版',
+    author: '自定义',
+    description: '',
+    category: '日常工具',
+    icon: 'lucide:package',
+    website: '',
+    installerUrl: '',
+    installerFileName: '',
+    packageType: 'portable',
+  };
+  state.ctx.ui.notify(`已添加自定义直链软件「${item.name}」！`, 'success');
+  scheduleRender();
+}
+
+async function removeCustomSoftware(id) {
+  state.customSoftware = state.customSoftware.filter((s) => s.id !== id);
+  try {
+    await state.ctx.storage.set('store_custom_software', state.customSoftware);
+  } catch (_) {}
+  state.ctx.ui.notify('已删除自定义直链条目', 'info');
+  scheduleRender();
+}
 
 function renderIcon(rawIcon, defaultEmoji = '🧩') {
   if (!rawIcon) {
@@ -610,7 +644,6 @@ async function downloadSoftwareInstaller(item) {
 
   const saveDir = picked[0];
   ctx.storage.set('toolkit_store_last_dl_dir', saveDir).catch(() => {});
-  state.directDownload.targetDir = saveDir;
   const saveFilePath = `${saveDir}\\${fileName}`;
   const isPortable = item.packageType === 'portable';
   const itemTypeLabel = isPortable ? '绿色便携包' : '安装包';
@@ -650,82 +683,6 @@ if (Test-Path $target) {
   }
 }
 
-async function executeDirectDownload() {
-  const { ctx } = state;
-  const { url, targetDir, fileName } = state.directDownload;
-  if (!url || !/^https?:\/\//i.test(url.trim())) {
-    ctx.ui.notify('请输入有效的 HTTP / HTTPS 下载直链', 'warning');
-    return;
-  }
-
-  let dir = targetDir;
-  if (!dir) {
-    try {
-      const picked = await ctx.files.pick({
-        folder: true,
-        title: '选择文件保存目录',
-      });
-      if (picked && picked[0]) {
-        dir = picked[0];
-        state.directDownload.targetDir = dir;
-        ctx.storage.set('toolkit_store_last_dl_dir', dir).catch(() => {});
-        scheduleRender();
-      } else {
-        return;
-      }
-    } catch (e) {
-      ctx.ui.notify(`选择保存目录失败: ${e.message ?? e}`, 'error');
-      return;
-    }
-  }
-
-  let finalName = (fileName || inferFileNameFromUrl(url) || 'downloaded_software.zip').trim();
-  finalName = finalName.replace(/[\\/:*?"<>|]/g, '_');
-  const saveFilePath = `${dir}\\${finalName}`;
-
-  state.directDownload.isDownloading = true;
-  state.directDownload.progressMsg = '正在连接并高速下载...';
-  scheduleRender();
-  ctx.ui.notify(`开始下载「${finalName}」到指定目录...`, 'info');
-
-  try {
-    const powershellCommand = `
-$ProgressPreference = 'SilentlyContinue';
-$target = "${saveFilePath}";
-$url = "${url.trim()}";
-if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
-  curl.exe -fL --connect-timeout 20 --retry 2 -o $target $url;
-} else {
-  [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12;
-  Invoke-WebRequest -Uri $url -OutFile $target -UseBasicParsing;
-}
-if (Test-Path $target) {
-  Start-Process explorer.exe -ArgumentList "/select,\`"$target\`"";
-  exit 0;
-} else {
-  exit 1;
-}
-`.trim().replace(/\r?\n/g, ' ');
-
-    const ch = `directdl-${Date.now().toString(36)}`;
-    await runPtyCommand(ctx, ch, 'powershell.exe', [
-      '-NoProfile',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-Command',
-      powershellCommand,
-    ]);
-
-    ctx.ui.notify(`「${finalName}」下载完成！已在资源管理器中定位，请手动解压或安装`, 'success');
-  } catch (err) {
-    ctx.ui.notify(`下载失败: ${err.message ?? err}`, 'error');
-  } finally {
-    state.directDownload.isDownloading = false;
-    state.directDownload.progressMsg = '';
-    scheduleRender();
-  }
-}
-
 let renderTimer = null;
 function scheduleRender() {
   if (renderTimer) return;
@@ -748,7 +705,10 @@ function renderStoreView(root) {
   };
 
   const allPlugins = (state.catalog.plugins || []).filter(filterItem);
-  const allSoftware = (state.catalog.software || []).filter(filterItem);
+  const allSoftware = [
+    ...(state.catalog.software || []),
+    ...(state.customSoftware || []).map((s) => ({ ...s, isCustom: true })),
+  ].filter(filterItem);
 
   let displayedPlugins = [];
   let displayedSoftware = [];
@@ -884,19 +844,33 @@ function renderStoreView(root) {
         el('button', { variant: 'outline', size: 'sm', disabled: true }, task.label || '处理中...'),
       );
     } else {
+      if (s.website) {
+        actionButtons.push(
+          el(
+            'button',
+            {
+              variant: 'outline',
+              size: 'sm',
+              title: '进入对应的网址（官方主页或发布页）',
+              onClick: () => openWebsite(s),
+            },
+            '🌐 访问网址',
+          ),
+        );
+      }
       if (s.installerUrl) {
         actionButtons.push(
           el(
             'button',
             {
-              variant: isPortable ? 'default' : 'outline',
+              variant: 'default',
               size: 'sm',
               title: isPortable
                 ? '自选保存路径，下载绿色便携包(ZIP)到指定文件夹并定位'
                 : '自选保存路径，下载安装包(EXE)到指定文件夹并定位',
               onClick: () => downloadSoftwareInstaller(s),
             },
-            isPortable ? '📦 便携版下载 (自选目录)' : '📁 自选路径下载 (EXE)',
+            isPortable ? '📦 自选路径下载 (便携包)' : '📁 自选路径下载 (安装包)',
           ),
         );
       }
@@ -907,27 +881,25 @@ function renderStoreView(root) {
             {
               variant: 'outline',
               size: 'sm',
-              title: '启动安装向导，可在安装窗口中自定义安装盘符与路径',
-              onClick: () => installWinget(s, { interactive: true }),
+              title: '使用 Winget 默认静默安装',
+              onClick: () => installWinget(s, { interactive: false }),
             },
-            '⚙️ 交互安装(自选路径)',
+            '⚡ Winget安装',
           ),
         );
+      }
+      if (s.isCustom) {
         actionButtons.push(
           el(
             'button',
             {
-              variant: isPortable ? 'outline' : 'default',
+              variant: 'destructive',
               size: 'sm',
-              title: '使用 Winget 默认静默安装',
-              onClick: () => installWinget(s, { interactive: false }),
+              title: '从列表中删除此自定义条目',
+              onClick: () => removeCustomSoftware(s.id),
             },
-            '⚡ 默认安装',
+            '🗑️ 删除',
           ),
-        );
-      } else if (s.website) {
-        actionButtons.push(
-          el('button', { variant: 'outline', size: 'sm', onClick: () => openWebsite(s) }, '🌐 官方网站'),
         );
       }
     }
@@ -952,13 +924,19 @@ function renderStoreView(root) {
               'div',
               { class: 'min-w-0' },
               el('h3', { class: 'text-sm font-semibold truncate m-0' }, s.name),
-              el('span', { class: 'text-xs text-muted-foreground' }, `${s.author || '精选'} · ${s.version}`),
+              el('span', { class: 'text-xs text-muted-foreground' }, `${s.author || '精选'} · ${s.version || '最新版'}`),
             ),
           ),
           el(
             'span',
-            { class: isPortable ? 'tb-badge tb-t-ok' : 'tb-badge tb-t-brand' },
-            isPortable ? '绿色便携' : '推荐软件',
+            {
+              class: s.isCustom
+                ? 'tb-badge tb-t-brand'
+                : isPortable
+                ? 'tb-badge tb-t-ok'
+                : 'tb-badge tb-t-brand',
+            },
+            s.isCustom ? '自定义直链' : isPortable ? '绿色便携' : '推荐软件',
           ),
         ),
         el(
@@ -981,199 +959,195 @@ function renderStoreView(root) {
     );
   };
 
-  const renderDirectDownloadView = () => {
+  const renderAddSoftwareDialog = () => {
+    const form = state.newSoftwareForm;
     return el(
       'div',
-      { class: 'flex flex-col gap-4 max-w-[800px] mx-auto w-full py-2' },
+      {
+        class: 'tb-card p-4 flex flex-col gap-3 transition-all',
+        style: 'border-radius:8px;',
+      },
       el(
         'div',
-        { class: 'tb-card p-5 flex flex-col gap-4', style: 'border-radius:10px;' },
+        { class: 'flex items-center justify-between border-b border-border pb-2' },
         el(
           'div',
-          { class: 'flex items-start justify-between gap-3 border-b border-border pb-3' },
+          { class: 'flex items-center gap-2' },
+          renderIcon('lucide:plus', '➕'),
+          el('h3', { class: 'text-sm font-semibold m-0' }, '添加自定义直链软件条目'),
           el(
-            'div',
-            { class: 'flex items-center gap-3' },
-            renderIcon('lucide:download', '📥'),
-            el(
-              'div',
-              {},
-              el('h3', { class: 'text-base font-bold m-0' }, '🔗 互联网直链 / 绿色免安装软件高速下载'),
-              el(
-                'p',
-                { class: 'text-xs text-muted-foreground m-0 mt-0.5' },
-                '支持任何网盘直链、CDN 加速、GitHub Release、官网软件等 .exe / .zip / .7z 高速下载。只提供下载并自动打开定位，由您手动解压或安装。',
-              ),
-            ),
+            'span',
+            { class: 'text-xs text-muted-foreground' },
+            '（支持网盘直链、CDN绿化包、官网直链，保存在本地推荐列表）',
           ),
-          el('span', { class: 'tb-badge tb-t-ok shrink-0' }, '纯净下载 · 手动安装'),
+        ),
+        el(
+          'button',
+          {
+            variant: 'outline',
+            size: 'sm',
+            onClick: () => {
+              state.showAddDialog = false;
+              scheduleRender();
+            },
+          },
+          '✕ 取消',
+        ),
+      ),
+      el(
+        'div',
+        { class: 'grid grid-cols-1 md:grid-cols-2 gap-3 text-xs' },
+        el(
+          'div',
+          { class: 'flex flex-col gap-1' },
+          el('label', { class: 'font-semibold' }, '软件名称 *'),
+          el('input', {
+            type: 'text',
+            value: form.name,
+            placeholder: '例如: 我的便携工具箱',
+            class: 'tb-input text-xs',
+            onInput: (e) => {
+              form.name = e.target.value;
+              scheduleRender();
+            },
+          }),
         ),
         el(
           'div',
-          { class: 'flex flex-col gap-3.5' },
+          { class: 'flex flex-col gap-1' },
+          el('label', { class: 'font-semibold' }, '直链下载地址 (URL) *'),
+          el('input', {
+            type: 'text',
+            value: form.installerUrl,
+            placeholder: 'http:// 或 https:// 格式的直链 (支持 .zip / .exe / .7z 等)',
+            class: 'tb-input text-xs font-mono',
+            onInput: (e) => {
+              form.installerUrl = e.target.value;
+              if (!form.installerFileName) {
+                const guessed = inferFileNameFromUrl(e.target.value);
+                if (guessed) form.installerFileName = guessed;
+              }
+              scheduleRender();
+            },
+          }),
+        ),
+        el(
+          'div',
+          { class: 'flex flex-col gap-1' },
+          el('label', { class: 'font-semibold' }, '保存文件名 (可选)'),
+          el('input', {
+            type: 'text',
+            value: form.installerFileName,
+            placeholder: '例如: my-tool.zip (默认从 URL 推断)',
+            class: 'tb-input text-xs font-mono',
+            onInput: (e) => {
+              form.installerFileName = e.target.value;
+              scheduleRender();
+            },
+          }),
+        ),
+        el(
+          'div',
+          { class: 'flex flex-col gap-1' },
+          el('label', { class: 'font-semibold' }, '官网 / 发布页网址 (可选)'),
+          el('input', {
+            type: 'text',
+            value: form.website,
+            placeholder: 'https://... 用于点击「进入对应网址」',
+            class: 'tb-input text-xs font-mono',
+            onInput: (e) => {
+              form.website = e.target.value;
+              scheduleRender();
+            },
+          }),
+        ),
+        el(
+          'div',
+          { class: 'flex flex-col gap-1' },
+          el('label', { class: 'font-semibold' }, '预设图标 (可选)'),
+          el('input', {
+            type: 'text',
+            value: form.icon,
+            placeholder: '例如: lucide:package, lucide:wrench 或 emoji 📦',
+            class: 'tb-input text-xs',
+            onInput: (e) => {
+              form.icon = e.target.value;
+              scheduleRender();
+            },
+          }),
+        ),
+        el(
+          'div',
+          { class: 'flex flex-col gap-1' },
+          el('label', { class: 'font-semibold' }, '软件类型'),
           el(
             'div',
-            { class: 'flex flex-col gap-1.5' },
-            el('label', { class: 'text-xs font-semibold text-foreground' }, '下载直链 URL *'),
-            el('input', {
-              type: 'text',
-              value: state.directDownload.url,
-              placeholder: '粘贴 http:// 或 https:// 直链，如网盘直链、CDN 绿化软件、GitHub Release...',
-              class: 'tb-input w-full text-xs font-mono',
-              onInput: (e) => {
-                const val = e.target.value;
-                state.directDownload.url = val;
-                const guessed = inferFileNameFromUrl(val);
-                if (guessed && (!state.directDownload.fileName || state.directDownload.autoInferred)) {
-                  state.directDownload.fileName = guessed;
-                  state.directDownload.autoInferred = true;
-                }
-                scheduleRender();
-              },
-            }),
-          ),
-          el(
-            'div',
-            { class: 'flex flex-col gap-1.5' },
-            el('label', { class: 'text-xs font-semibold text-foreground' }, '保存目标目录 *'),
-            el(
-              'div',
-              { class: 'flex items-center gap-2' },
-              el('input', {
-                type: 'text',
-                readOnly: true,
-                value: state.directDownload.targetDir || '（尚未指定保存路径，请点击右侧按钮选择）',
-                class: 'tb-input flex-1 text-xs text-muted-foreground',
-              }),
-              el(
-                'button',
-                {
-                  variant: 'outline',
-                  size: 'sm',
-                  onClick: async () => {
-                    try {
-                      const picked = await state.ctx.files.pick({
-                        folder: true,
-                        title: '选择下载文件保存目录',
-                      });
-                      if (picked && picked[0]) {
-                        state.directDownload.targetDir = picked[0];
-                        state.ctx.storage.set('toolkit_store_last_dl_dir', picked[0]).catch(() => {});
-                        scheduleRender();
-                      }
-                    } catch (e) {
-                      state.ctx.ui.notify(`选择目录失败: ${e.message ?? e}`, 'error');
-                    }
-                  },
-                },
-                '📁 自选保存目录',
-              ),
-            ),
-          ),
-          el(
-            'div',
-            { class: 'flex flex-col gap-1.5' },
-            el('label', { class: 'text-xs font-semibold text-foreground' }, '保存文件名 (可选修改)'),
-            el('input', {
-              type: 'text',
-              value: state.directDownload.fileName,
-              placeholder: '例如: my-tool.zip 或 setup.exe (建议保留正确文件扩展名)',
-              class: 'tb-input w-full text-xs font-mono',
-              onInput: (e) => {
-                state.directDownload.fileName = e.target.value;
-                state.directDownload.autoInferred = false;
-                scheduleRender();
-              },
-            }),
-          ),
-          el(
-            'div',
-            { class: 'flex items-center justify-end gap-2 pt-2 border-t border-border mt-1' },
+            { class: 'flex items-center gap-2 mt-1' },
             el(
               'button',
               {
-                variant: 'outline',
+                variant: form.packageType === 'portable' ? 'default' : 'outline',
                 size: 'sm',
                 onClick: () => {
-                  state.directDownload.url = '';
-                  state.directDownload.fileName = '';
-                  state.directDownload.autoInferred = true;
+                  form.packageType = 'portable';
                   scheduleRender();
                 },
               },
-              '↺ 清空',
+              '📦 绿色便携版 (ZIP/免安装)',
             ),
             el(
               'button',
               {
-                variant: 'default',
+                variant: form.packageType === 'installer' ? 'default' : 'outline',
                 size: 'sm',
-                disabled: state.directDownload.isDownloading,
-                onClick: () => executeDirectDownload(),
+                onClick: () => {
+                  form.packageType = 'installer';
+                  scheduleRender();
+                },
               },
-              state.directDownload.isDownloading
-                ? state.directDownload.progressMsg || '⏳ 高速下载中...'
-                : '🚀 开始高速下载到指定目录',
+              '🚀 安装程序 (EXE)',
             ),
           ),
         ),
       ),
       el(
         'div',
-        { class: 'tb-card p-4 flex flex-col gap-3', style: 'border-radius:10px;' },
-        el(
-          'div',
-          { class: 'flex items-center gap-2 text-xs font-semibold text-muted-foreground' },
-          renderIcon('lucide:link', '🔗'),
-          '常用便携软件高速直链 (点击快速填入体验)',
-        ),
-        el(
-          'div',
-          { style: 'display:grid;grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));gap:10px;' },
-          ...DIRECT_DOWNLOAD_PRESETS.map((preset) =>
-            el(
-              'button',
-              {
-                variant: 'outline',
-                class: 'text-left p-2.5 flex flex-col gap-1 transition-all hover:border-primary/50 cursor-pointer',
-                style: 'border-radius:6px;height:auto;align-items:flex-start;',
-                onClick: () => {
-                  state.directDownload.url = preset.url;
-                  state.directDownload.fileName = preset.fileName;
-                  state.directDownload.autoInferred = false;
-                  state.ctx.ui.notify(`已填入「${preset.name}」直链`, 'info');
-                  scheduleRender();
-                },
-              },
-              el(
-                'div',
-                { class: 'flex items-center justify-between w-full' },
-                el('span', { class: 'text-xs font-semibold truncate' }, preset.name),
-                el('span', { class: 'tb-badge tb-t-dim text-[10px]' }, preset.badge),
-              ),
-              el('span', { class: 'text-[11px] text-muted-foreground line-clamp-1' }, preset.desc),
-            ),
-          ),
-        ),
+        { class: 'flex flex-col gap-1 text-xs' },
+        el('label', { class: 'font-semibold' }, '介绍说明 (可选)'),
+        el('input', {
+          type: 'text',
+          value: form.description,
+          placeholder: '简短描述该软件的用途与特点...',
+          class: 'tb-input text-xs',
+          onInput: (e) => {
+            form.description = e.target.value;
+            scheduleRender();
+          },
+        }),
       ),
       el(
         'div',
-        { class: 'tb-card p-3.5 text-xs text-muted-foreground leading-relaxed flex flex-col gap-1.5' },
-        el('div', { class: 'font-semibold text-foreground flex items-center gap-1.5' }, '🛡️ 纯净安全保障声明'),
+        { class: 'flex items-center justify-end gap-2 pt-2 border-t border-border mt-1' },
         el(
-          'div',
-          {},
-          '1. 本工具仅负责将互联网上的合法文件高速落盘到您指定的文件夹，不附加任何广告弹窗或篡改。',
+          'button',
+          {
+            variant: 'outline',
+            size: 'sm',
+            onClick: () => {
+              state.showAddDialog = false;
+              scheduleRender();
+            },
+          },
+          '取消',
         ),
         el(
-          'div',
-          {},
-          '2. 下载完成后，系统将自动呼出 Windows 资源管理器并高亮选中文件，方便您手动解压便携包或运行安装。',
-        ),
-        el(
-          'div',
-          {},
-          '3. 依托系统原生多线程 curl 引擎，支持 301/302 重定向追踪与断点恢复，适用各种网盘与 CDN 直链。',
+          'button',
+          {
+            variant: 'default',
+            size: 'sm',
+            onClick: () => addCustomSoftware(),
+          },
+          '✓ 保存并添加到推荐列表',
         ),
       ),
     );
@@ -1226,66 +1200,58 @@ function renderStoreView(root) {
       ),
       el(
         'div',
-        { class: 'flex flex-wrap items-center gap-2' },
-        tabButton('all', '全部', (state.catalog.plugins?.length || 0) + (state.catalog.software?.length || 0)),
-        tabButton('plugins', '🧩 扩展插件', state.catalog.plugins?.length || 0),
-        tabButton('software', '🚀 推荐软件', state.catalog.software?.length || 0),
-        tabButton('direct', '🔗 自定义直链下载'),
-        tabButton('installed', '✓ 已安装插件', installedCount),
+        { class: 'flex flex-wrap items-center justify-between gap-2' },
+        el(
+          'div',
+          { class: 'flex flex-wrap items-center gap-2' },
+          tabButton('all', '全部', allPlugins.length + allSoftware.length),
+          tabButton('plugins', '🧩 扩展插件', allPlugins.length),
+          tabButton('software', '🚀 推荐软件', allSoftware.length),
+          tabButton('installed', '✓ 已安装插件', installedCount),
+        ),
+        state.activeTab === 'software' || state.activeTab === 'all'
+          ? el(
+              'button',
+              {
+                variant: 'outline',
+                size: 'sm',
+                class: 'text-xs',
+                onClick: () => {
+                  state.showAddDialog = !state.showAddDialog;
+                  scheduleRender();
+                },
+              },
+              state.showAddDialog ? '✕ 收起添加' : '➕ 添加自定义直链软件',
+            )
+          : null,
       ),
       el(
         'div',
         { class: 'flex-1 overflow-auto pr-1' },
-        state.activeTab === 'direct'
-          ? renderDirectDownloadView()
-          : (totalResults === 0
-              ? el(
-                  'div',
-                  { class: 'flex flex-col items-center justify-center p-12 text-center text-muted-foreground gap-2' },
-                  el('span', { class: 'text-3xl' }, '🔍'),
-                  el('p', { class: 'text-sm font-medium m-0' }, '未找到匹配的插件或软件'),
-                  el('p', { class: 'text-xs m-0' }, '尝试调整搜索关键词或点击右上角刷新目录。'),
-                )
-              : el(
-                  'div',
-                  { class: 'flex flex-col gap-3' },
-                  state.activeTab === 'software' || state.activeTab === 'all'
-                    ? el(
-                        'div',
-                        {
-                          class:
-                            'tb-card p-2.5 px-3.5 flex items-center justify-between gap-2 text-xs text-muted-foreground',
-                          style: 'border-radius:6px;',
-                        },
-                        el(
-                          'span',
-                          {},
-                          '💡 想要下载网盘、CDN 或论坛上的绿色便携软件 (.zip / .exe)？可直接使用直链下载器。',
-                        ),
-                        el(
-                          'button',
-                          {
-                            variant: 'outline',
-                            size: 'sm',
-                            onClick: () => {
-                              state.activeTab = 'direct';
-                              scheduleRender();
-                            },
-                          },
-                          '🔗 打开自定义直链下载',
-                        ),
-                      )
-                    : null,
-                  el(
-                    'div',
-                    {
-                      style:
-                        'display:grid;grid-template-columns:repeat(auto-fill, minmax(320px, 1fr));gap:14px;padding-bottom:16px;',
-                    },
-                    ...displayedPlugins.map(renderPluginCard),
-                    ...displayedSoftware.map(renderSoftwareCard),
-                  ),
-                )),
+        el(
+          'div',
+          { class: 'flex flex-col gap-3' },
+          state.showAddDialog && (state.activeTab === 'software' || state.activeTab === 'all')
+            ? renderAddSoftwareDialog()
+            : null,
+          totalResults === 0
+            ? el(
+                'div',
+                { class: 'flex flex-col items-center justify-center p-12 text-center text-muted-foreground gap-2' },
+                renderIcon('lucide:search', '🔍'),
+                el('p', { class: 'text-sm font-medium m-0' }, '未找到匹配的插件或软件'),
+                el('p', { class: 'text-xs m-0' }, '尝试调整搜索关键词或点击右上角刷新目录。'),
+              )
+            : el(
+                'div',
+                {
+                  style:
+                    'display:grid;grid-template-columns:repeat(auto-fill, minmax(320px, 1fr));gap:14px;padding-bottom:16px;',
+                },
+                ...displayedPlugins.map(renderPluginCard),
+                ...displayedSoftware.map(renderSoftwareCard),
+              ),
+        ),
       ),
     ),
   );
@@ -1303,9 +1269,9 @@ export async function activate(ctx) {
   } catch (_) {}
 
   try {
-    const lastDir = await ctx.storage.get('toolkit_store_last_dl_dir');
-    if (lastDir) {
-      state.directDownload.targetDir = lastDir;
+    const custom = await ctx.storage.get('store_custom_software');
+    if (Array.isArray(custom)) {
+      state.customSoftware = custom;
     }
   } catch (_) {}
 
