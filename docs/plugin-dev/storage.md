@@ -37,7 +37,7 @@
 ## 数据落在哪
 
 ```
-%APPDATA%\com.tan18.toolbox\        ← app_data_dir()，Tauri 按 identifier 解析
+%APPDATA%\com.tan18.toolkit\        ← app_data_dir()，Tauri 按 identifier 解析
 ├── debug.log                        ← 宿主诊断日志（追加，1MB 上限）
 ├── plugins\                         ← 插件发现目录（drop-in）
 │   └── <任意子目录>\  plugin.json + main.js
@@ -51,7 +51,7 @@
 **还有第三个位置**（不在 appData，是缓存不是数据）：
 
 ```
-%LOCALAPPDATA%\com.tan18.toolbox\EBWebView\   ← WebView2 的 profile
+%LOCALAPPDATA%\com.tan18.toolkit\EBWebView\   ← WebView2 的 profile
 ```
 
 ### 规划原则（从代码能看出来）
@@ -64,9 +64,7 @@
 
 ### ⚠️ 改 identifier 会换掉整个数据目录
 
-目录名是 `com.tan18.toolbox`。**曾用 `com.tan18.toolkit`，与旧程序 eyecare 冲突
-（共享应用数据目录），所以改了。** 后果是：用户的设置、插件数据全部"消失"——
-**其实在旧目录里**。改 identifier 前先想清楚，改完要么写迁移，要么明确告知。
+目录名是 `com.tan18.toolkit`。后果是：用户的设置、插件数据会根据当前 identifier 进行隔离。改 identifier 前先想清楚，改完要么写迁移，要么明确告知。
 
 ---
 

@@ -3,7 +3,7 @@
 > **这是索引，不是手册**：只放**触发条件 + 规则**，原因/细节一律在 `NOTES.md`（14 节）。
 > 设计文档 `docs/{PROTOCOL,INTERFACES,UI,MESSAGE-FRAMEWORK}.md`、`docs/plugin-dev/`。
 > ⚠️ **约 10 KB 是自动注入上限，超过会被截断** → 加规则前先删或合并。
-> `D:\code\rust\toolkit`（目录名保留），应用名 **Toolbox**，identifier `com.tan18.toolbox`。旧 `ARCHITECTURE.md` 与代码不符，**以代码为准**。主题：统一前后端插件消息传递框架，**不增加主程序复杂度**。
+> `D:\code\rust\toolkit`（目录名保留），应用名 **Toolkit**，identifier `com.tan18.toolkit`。旧 `ARCHITECTURE.md` 与代码不符，**以代码为准**。主题：统一前后端插件消息传递框架，**不增加主程序复杂度**。
 
 ## 架构（不要倒退）
 - **两正交轴** transport × codec，方案 = 组合，登记在 `src/protocol/registry.js`。**一个信封** `{v,kind,id,ch,svc,act,topic,code,msg,p}`，JS/Rust 各一份镜像。

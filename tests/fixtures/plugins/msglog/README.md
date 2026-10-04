@@ -16,7 +16,7 @@
 
 ## 装
 
-复制这个目录到 `%APPDATA%\com.tan18.toolbox\plugins\`，点侧栏 **Rescan**。
+复制这个目录到 `%APPDATA%\com.tan18.toolkit\plugins\`，点侧栏 **Rescan**。
 
 ## 为什么它走 `window.__toolbox` 而不是 `ctx`
 

@@ -4,7 +4,7 @@ A drop-in plugin that renders the whole component vocabulary in the main window.
 Copy this folder into the app's plugins directory and click **Rescan**.
 
 ```
-%APPDATA%\com.tan18.toolbox\plugins\gallery.demo\
+%APPDATA%\com.tan18.toolkit\plugins\gallery.demo\
 ```
 
 ## What it demonstrates

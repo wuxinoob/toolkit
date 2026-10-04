@@ -301,7 +301,7 @@ npm run deploy:fixtures      # discovers every folder with a plugin.json
 or copy the folder by hand:
 
 ```
-%APPDATA%\com.tan18.toolbox\plugins\eyecare.demo\
+%APPDATA%\com.tan18.toolkit\plugins\eyecare.demo\
   plugin.json  main.js  idle.exe
 ```
 

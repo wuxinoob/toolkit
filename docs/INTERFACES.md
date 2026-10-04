@@ -336,4 +336,4 @@ event-bus 广播往返 · in-process 同步投递
 - 不是残留进程：本机 25 个 `msedgewebview2` 全部属于其它程序（QuickClipboard / Clash Verge / cc-switch / SearchHost），与本应用无关。
 - 不是代码：同一份二进制在此之前的运行中曾完整跑通 15/15；`cargo test` 39、`node --test` 42 全绿。
 
-结论：**本机 WebView2 运行时的状态问题**。建议依次尝试：重启机器 → 修复/重装 WebView2 Evergreen Runtime → 再跑 `npm run tauri dev` 并查看 `%APPDATA%\com.tan18.toolbox\debug.log`（应为 15/15）。
+结论：**本机 WebView2 运行时的状态问题**。建议依次尝试：重启机器 → 修复/重装 WebView2 Evergreen Runtime → 再跑 `npm run tauri dev` 并查看 `%APPDATA%\com.tan18.toolkit\debug.log`（应为 15/15）。

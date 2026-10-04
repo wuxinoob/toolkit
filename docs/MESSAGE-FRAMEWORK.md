@@ -5,8 +5,7 @@
 > 说明：`eyecare/docs/ARCHITECTURE.md` 与真实代码已有明显偏差，本文以**实际代码**为准。
 > 采集时间：2026-09-14 20:00（分析过程中 `src-tauri/src/services/*` 正在被并发修改，见 §2）
 >
-> **状态：本设计已在 toolbox 中落地。** 应用名 **Toolbox**，identifier `com.tan18.toolbox`
-> （原 `com.tan18.toolkit` 与 eyecare 冲突，已更名）。协议参考见 [`PROTOCOL.md`](./PROTOCOL.md)，
+> **状态：本设计已在 toolkit 中落地。** 应用名 **Toolkit**，identifier `com.tan18.toolkit`。协议参考见 [`PROTOCOL.md`](./PROTOCOL.md)，
 > 实现位置见 §5 的目录结构。
 > **本文是设计来由（历史），不是现状。** 要了解当前接口，看
 > [`INTERFACES.md`](./INTERFACES.md)（清单）、[`PROTOCOL.md`](./PROTOCOL.md)（契约）、

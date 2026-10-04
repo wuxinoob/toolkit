@@ -203,8 +203,8 @@ export default {
 
 | | 路径 |
 |---|---|
-| 插件目录 | `%APPDATA%\com.tan18.toolbox\plugins\<任意子目录>\` |
-| 你的数据目录 | `%APPDATA%\com.tan18.toolbox\plugin-data\<你的 id>\` |
+| 插件目录 | `%APPDATA%\com.tan18.toolkit\plugins\<任意子目录>\` |
+| 你的数据目录 | `%APPDATA%\com.tan18.toolkit\plugin-data\<你的 id>\` |
 
 放进插件目录后**首次发现即启用**；显式禁用会持久记住。
 开发时改完代码点侧栏的 **Rescan**，不用重启。

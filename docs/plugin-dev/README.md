@@ -57,7 +57,7 @@
 
 ## 五分钟上手
 
-一个插件是**一个目录**，放进 `%APPDATA%\com.tan18.toolbox\plugins\` 即被发现并启用
+一个插件是**一个目录**，放进 `%APPDATA%\com.tan18.toolkit\plugins\` 即被发现并启用
 （首次发现即启用；显式禁用会持久）。两个文件就够：
 
 ```

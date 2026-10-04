@@ -5,7 +5,7 @@
 
 ## 1. 定位
 
-`D:\code\rust\toolkit`（目录名保留），应用名 **Toolbox**，identifier `com.tan18.toolbox`。源自 `D:\code\rust\eyecare\eyecare`；旧 `ARCHITECTURE.md` 与代码不符，**以代码为准**。主题：统一前后端插件消息传递框架，**不增加主程序复杂度**。
+`D:\code\rust\toolkit`（目录名保留），应用名 **Toolkit**，identifier `com.tan18.toolkit`。源自 `D:\code\rust\eyecare\eyecare`；旧 `ARCHITECTURE.md` 与代码不符，**以代码为准**。主题：统一前后端插件消息传递框架，**不增加主程序复杂度**。
 
 ## 2. 架构硬规则（不要倒退）
 
@@ -131,13 +131,13 @@
 
 - **`npm run tauri dev` 的 beforeDevCommand 是 `npm run dev`**。**1420 被占**时 vite 失败，但 `cargo run` 已启动 app —— app 连上那个 server 照常显示，而 CLI 因 beforeDevCommand 非零退出。症状"命令退出了但窗口还在"。**用完 dev server 一定要关。** 后台进程要挂在工具的 task 上（`nohup npx vite &` 起的会随 shell 退出而死）。
 - 本机 `taskkill` 在 Git Bash 里参数被吞；用 PowerShell `Stop-Process -Id <pid> -Force`（该工具不返回 stdout，用 netstat 复核）。
-- **⚠️ 绝对不要硬杀 Tauri 应用**：反复 `Stop-Process -Force` 会累积孤儿 `msedgewebview2` 并弄坏 WebView2 profile（症状：窗口全白、页面不加载）。**要让它自己关**。修复：重启机器，或清 `%LOCALAPPDATA%\com.tan18.toolbox\EBWebView`。
+- **⚠️ 绝对不要硬杀 Tauri 应用**：反复 `Stop-Process -Force` 会累积孤儿 `msedgewebview2` 并弄坏 WebView2 profile（症状：窗口全白、页面不加载）。**要让它自己关**。修复：重启机器，或清 `%LOCALAPPDATA%\com.tan18.toolkit\EBWebView`。
 - **"窗口全白"的判据**（已 A/B）：浏览器里渲染正常 + `cargo check` 与测试都过 + 回退改动重编依然白 + 换新 profile 也没用 ⇒ **不是代码也不是环境，是非交互 shell 启动的产物**。用户自己 `npm run tauri dev` 一切正常。**推论：应用内验证必须由用户在交互终端里做。** 排查顺序：① 进程有没有 `MainWindowHandle` ② 前端能否渲染 ③ 才怀疑环境。
 - **为排查改名 profile 后一定要换回来**（判据是 `du -sh`）：曾把暖 profile 留在 `EBWebView.bak`（新 87M vs 原 234M），导致每次启动多几秒白屏。
 - 本环境：`wmic` 被禁用；`csc.exe` 被拦截（用 mingw `gcc`）；PowerShell 工具不返回 stdout（写文件再读）。**本机无法在 `.git/refs/heads/` 下建目录**：`git branch a/b` 静默失败 → **用不带斜杠的分支名**。
 - **`cargo test` 的测试二进制无法加载**（STATUS_ENTRYPOINT_NOT_FOUND，tauri-build manifest 只链进 bin）→ **用 `cargo run --example host-checks`**（16 项）。**rustc ICE / `拒绝访问`** = 增量缓存被杀软损坏 → `rm -rf target/debug/incremental` + `CARGO_INCREMENTAL=0`。
 - `npm test` = `node --test`（**不要写 `node --test tests/`**）。涉及全局态的 Rust 测试用 `services::serial()`；JS 侧跑真实 boot 前必须 `resetHost()`（清 store + deactivate 释放定时器），否则进程不退出、被 SIGTERM。
-- 应用数据目录：`%APPDATA%\com.tan18.toolbox\{debug.log, plugins/, plugin-data/}`；WebView2 配置 `%LOCALAPPDATA%\com.tan18.toolbox\EBWebView`。
+- 应用数据目录：`%APPDATA%\com.tan18.toolkit\{debug.log, plugins/, plugin-data/}`；WebView2 配置 `%LOCALAPPDATA%\com.tan18.toolkit\EBWebView`。
 - 排查"应用起来了但 JS 不执行"：Rust 侧 `eprintln!` 探针 → `webview.eval()` 写 `document.title` 再 `w.title()` 读回 → `tasklist` 比对 `msedgewebview2` 数量是否随应用启动而增加。
 
 ## 13. 验证命令

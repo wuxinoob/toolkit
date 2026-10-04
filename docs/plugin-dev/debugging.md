@@ -6,7 +6,7 @@
 
 ## 0. 三个观测点，按顺序用
 
-### ① `%APPDATA%\com.tan18.toolbox\debug.log`
+### ① `%APPDATA%\com.tan18.toolkit\debug.log`
 
 **排查运行期问题，先看这个文件。** 它是唯一在 webview 之外留痕的通道。
 
@@ -62,7 +62,7 @@ window.__toolbox.selftest()
 
 | 查什么 | 怎么看 |
 |---|---|
-| 1. 目录对吗 | `%APPDATA%\com.tan18.toolbox\plugins\<你的目录>\` |
+| 1. 目录对吗 | `%APPDATA%\com.tan18.toolkit\plugins\<你的目录>\` |
 | 2. `plugin.json` 在吗 | 宿主靠它发现你 |
 | 3. 被禁用了吗 | 显式禁用是**持久**的，会在日志里说明 |
 | 4. 加载抛错了吗 | 日志里 `plugin <id>: error — <原因>` |

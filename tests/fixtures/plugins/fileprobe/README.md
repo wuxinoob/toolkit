@@ -8,7 +8,7 @@
 
 ## 装
 
-复制这个目录到 `%APPDATA%\com.tan18.toolbox\plugins\`，然后点侧栏 **Rescan**。
+复制这个目录到 `%APPDATA%\com.tan18.toolkit\plugins\`，然后点侧栏 **Rescan**。
 
 ## 它检查什么
 

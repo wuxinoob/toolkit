@@ -46,7 +46,7 @@ Building `calc.exe` also enables the end-to-end Rust test
 Copy the whole folder to the app's plugins directory and click **Rescan**:
 
 ```
-%APPDATA%\com.tan18.toolbox\plugins\calc.demo\
+%APPDATA%\com.tan18.toolkit\plugins\calc.demo\
   plugin.json  main.js  calc.exe
 ```
 
