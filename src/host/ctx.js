@@ -421,8 +421,8 @@ export function buildCtx(plugin, disposer) {
               params: {
                 title: options.title ?? null,
                 multiple: !!options.multiple,
-                folder: !!options.folder,
-                directory: options.directory ?? null,
+                folder: !!(options.folder || options.directory === true),
+                directory: typeof options.directory === 'string' ? options.directory : null,
                 filters: options.filters ?? null,
               },
             }),

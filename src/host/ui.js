@@ -268,9 +268,20 @@ function toVNode(node) {
   if (!node.__uiNative) {
     const Comp = components.get(node.tag);
     if (Comp) {
+      const props = { ...node.props };
+      if (node.tag === 'input' && props.value !== undefined) {
+        if (props.defaultValue === undefined) props.defaultValue = props.value;
+        if (props.modelValue === undefined) props.modelValue = props.value;
+        if (!props['onUpdate:modelValue']) {
+          const orig = props.oninput || props.onInput;
+          if (typeof orig === 'function') {
+            props['onUpdate:modelValue'] = (val) => orig({ target: { value: val } });
+          }
+        }
+      }
       // Slot function, so a component that renders its slot lazily still works
       // (and so a portalled child is only built when it actually opens).
-      return h(Comp, node.props, () => toVNode(node.children));
+      return h(Comp, props, () => toVNode(node.children));
     }
   }
 
