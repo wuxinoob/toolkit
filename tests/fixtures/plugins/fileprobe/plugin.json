@@ -2,7 +2,7 @@
   "id": "fileprobe.demo",
   "name": "File Probe",
   "version": "0.1.0",
-  "api": 3,
+  "api": 4,
   "entry": "main.js",
   "description": "Exercises the file-access surface: native picker / save / message and OS drag-and-drop. A live check, not a mock.",
   "contributes": {

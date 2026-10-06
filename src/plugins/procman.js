@@ -835,7 +835,10 @@ function renderProfiles(root) {
           el('checkbox', {
             'data-act': 'profile-toggle',
             title: 'Enabled',
-            defaultValue: p.enabled,
+            // Live value, not an initial one: rows are patched now, so an
+            // uncontrolled checkbox would keep whatever the user last toggled
+            // even after `redraw()` put a different profile in this row.
+            modelValue: p.enabled,
             'onUpdate:modelValue': (v) => {
               upsertProfile({ ...p, enabled: !!v });
               redraw();
@@ -910,31 +913,55 @@ function renderProfileEditor(root) {
 
   const editing = state.profiles.find((p) => p.id === state.editingId) ?? null;
   const p = editing ?? { ...DEFAULT_PROFILE, id: newProfileId() };
-  const d = (state.draft = {
-    id: p.id,
-    name: p.name,
-    program: p.program,
-    args: p.args.join(' '),
-    cwd: p.cwd,
-    env: p.env.join('\n'),
-    cols: p.cols,
-    rows: p.rows,
-    enabled: p.enabled,
-    autoStart: p.autoStart,
-    schedKind: p.schedule.kind,
-    schedAt: p.schedule.at,
-    schedEvery: p.schedule.everyMinutes,
-    restartPolicy: p.restart.policy,
-    maxRetries: p.restart.maxRetries,
-    delayMs: p.restart.delayMs,
-  });
+  /**
+   * One draft per editor SESSION, not per render.
+   *
+   * A controlled reka control is refreshed by re-rendering the form, and this
+   * function rebuilds `state.draft` from the stored profile on every call —
+   * which would throw away everything typed into the other fifteen fields the
+   * moment the user flips a switch. Keyed on `editingId`: stable while one
+   * profile is open (`''` = the one being created), different when another is
+   * picked, so switching profiles still starts from that profile.
+   *
+   * Side effect worth noting: the "new profile" id is now generated once per
+   * session instead of once per render.
+   */
+  if (!state.draft || state.draft.__for !== state.editingId) {
+    state.draft = {
+      __for: state.editingId,
+      id: p.id,
+      name: p.name,
+      program: p.program,
+      args: p.args.join(' '),
+      cwd: p.cwd,
+      env: p.env.join('\n'),
+      cols: p.cols,
+      rows: p.rows,
+      enabled: p.enabled,
+      autoStart: p.autoStart,
+      schedKind: p.schedule.kind,
+      schedAt: p.schedule.at,
+      schedEvery: p.schedule.everyMinutes,
+      restartPolicy: p.restart.policy,
+      maxRetries: p.restart.maxRetries,
+      delayMs: p.restart.delayMs,
+    };
+  }
+  const d = state.draft;
 
   const set = (key) => (v) => {
     d[key] = v;
   };
+  /** Same, but re-renders: what a controlled checkbox/select needs to follow. */
+  const setLive = (key) => (v) => {
+    d[key] = v;
+    renderProfileEditor(root);
+  };
   const text = (key, extra = {}) =>
     el('input', {
-      defaultValue: d[key],
+      // `value`, not `defaultValue`: the draft is the live value, and a field
+      // the user has edited ignores later `defaultValue` changes.
+      value: d[key],
       onInput: (e) => set(key)(e.target.value),
       ...extra,
     });
@@ -967,13 +994,13 @@ function renderProfileEditor(root) {
     el(
       'div',
       { style: 'display:flex;gap:6px;align-items:center;' },
-      el('checkbox', { defaultValue: d[key], 'onUpdate:modelValue': set(key) }),
+      el('checkbox', { modelValue: d[key], 'onUpdate:modelValue': setLive(key) }),
       el('label', {}, label),
     );
   const choice = (key, options, labels = {}) =>
     el(
       'select',
-      { defaultValue: d[key], 'onUpdate:modelValue': set(key) },
+      { modelValue: d[key], 'onUpdate:modelValue': setLive(key) },
       el('select-trigger', { class: 'w-full' }, el('select-value', {})),
       el(
         'select-content',
@@ -1045,7 +1072,7 @@ function renderProfileEditor(root) {
           field('program', text('program', { placeholder: 'node' })),
           field('args (space separated)', text('args')),
           field('cwd', text('cwd', { placeholder: 'optional' })),
-          field('env (KEY=VALUE, one per line)', el('textarea', { rows: 3, defaultValue: d.env, onInput: (e) => set('env')(e.target.value) })),
+          field('env (KEY=VALUE, one per line)', el('textarea', { rows: 3, value: d.env, onInput: (e) => set('env')(e.target.value) })),
           section('Behaviour'),
           el('div', { style: 'display:flex;gap:14px;font-size:11px;' }, toggle('enabled', 'enabled'), toggle('autoStart', 'start with app')),
           field('schedule', choice('schedKind', ['none', 'daily', 'interval'], { none: 'manual only' })),
@@ -1373,7 +1400,7 @@ function renderDetail() {
               },
               el('checkbox', {
                 'data-act': 'ring-raw',
-                defaultValue: state.ringRaw,
+                modelValue: state.ringRaw,
                 'onUpdate:modelValue': (v) => {
                   state.ringRaw = !!v;
                   renderDetail();

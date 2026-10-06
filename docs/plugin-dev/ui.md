@@ -141,6 +141,55 @@ el('card', {}, el('card-header', {}, el('card-title', {}, 'T')));
 `class: 'tb-btn tb-btn-primary'` 和 `el('button', { variant: 'primary' })`
 最终是同一个东西。
 
+### 表单控件：两种写法，同一套语义
+
+组件的 prop 是 Vue 的（`defaultValue` / `modelValue` / `onUpdate:modelValue`），
+但你也可以照 HTML 写，工厂会翻译：
+
+```js
+el('input',    { value: name, onInput: (e) => { name = e.target.value; } });
+el('checkbox', { checked: on, onchange: (e) => { on = e.target.checked; } });
+```
+
+| 组件 | 你写的（原生） | 翻译成 | 事件怎么送到你手上 |
+|---|---|---|---|
+| `input` `textarea` `number-field` | `value` | `defaultValue` + `modelValue` | 监听器就在真 `<input>` 上，收到的是**真事件** |
+| `checkbox` `switch` | `checked` | `defaultValue` + `modelValue` | 桥成 `onUpdate:modelValue`（这两个的原生事件根本不会触发） |
+| `select` `slider` `radio-group` `toggle-group` `tags-input` | `value` | 同上 | 同上 |
+
+**三条要知道的**：
+
+1. **它是受控的**：框里的值 = 你这次渲染写进去的值。处理完事件要**改状态并重渲染**，
+   否则外观不会跟着变（`checkbox` / `switch` 上尤其明显，看起来"点不动"）。
+2. **原生键会被消费掉**，不会落到 DOM 上。这不是洁癖：`value` 落到真实 `<input>` 上，
+   每次重渲染都会把上一次渲染的值写回去 —— 症状是**输入字符回退**，
+   而插件状态其实一直是**对的**（数据没错，只是显示回滚了）。
+   规则与守卫见 `tests/ui-form-props.test.mjs`。
+3. **`switch` / `checkbox` 自己的 `value` 不是原生写法**，那是"随表单提交的值"，
+   别拿它当输入值传。要**真原生元素**（`FormData`、原生校验）用 `native('input', …)`；
+   `el('input', { type: 'checkbox' })` 也走原生，不做翻译。
+
+### `render()` 是**就地更新**，可以放心在按键里重渲染整页
+
+`render(container, tree)` 把新描述树 patch 到原地：同一个 `<input>` 节点会被**复用**，
+所以焦点、光标、中文合成态、滚动位置、组件内部状态（下拉是否展开、终端实例）都保留，
+组件实例不会重建。
+
+```js
+el('input', {
+  value: q,
+  onInput: (e) => { q = e.target.value; render(root, view()); },  // 整树重渲染，安全
+});
+```
+
+两条随之而来的规矩：
+
+1. **列表要带 `key`。** 没有 key 时 Vue 按位置复用节点：删掉中间一行，下面那行会
+   "继承"上一行的 DOM（用户在里面打的字、展开的下拉都跟着挪过去）。给一个稳定 id 就行：
+   `el('input', { key: row.id, value: row.text, onInput: … })`。
+2. **`defaultValue` 只是初始值。** 用户改过之后，再传新的 `defaultValue` 不会刷新它。
+   要"值跟着我的状态走"就写 `value`（原生写法）或 `modelValue` —— 两者每次渲染都会同步。
+
 ### 想知道有哪些 tag？问工厂，别翻源码
 
 ```js

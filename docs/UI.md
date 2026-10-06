@@ -480,6 +480,88 @@ Your overlay element positions *itself* (`position:fixed; inset:0` for a
 full-screen takeover) and is handed to the host with `ctx.ui.mountOverlay(el)` —
 see `tests/fixtures/plugins/eyecare/` for a working example.
 
+### Native form props are translated — and then **deleted**
+
+A plugin writes `value` / `checked` / `oninput`; the components only speak
+`modelValue` / `defaultValue` / `onUpdate:modelValue`. `FORM_PROP_RULES` in
+`src/host/ui.js` is the seam, and the load-bearing half of it is the `delete`.
+
+`value` is a real DOM property of `<input>` and `Input.vue` does not declare it,
+so Vue passes it through as a fallthrough attr onto the root element. The
+component re-renders on every keystroke (its internal `v-model` proxy changes),
+and each of those re-renders writes that attr's value — captured at the last
+`kit.render` — back into the box. Measured in the dev probe with the real
+components under headless Edge: the box read `""` 5 ms after a keystroke while
+the plugin's own state was already `"a"`. The data was right and only the
+**display** rolled back, which is why this reads as "the plugin never receives
+input" when in fact it receives everything.
+
+Two constraints matter if a control is ever added to that table:
+
+- **Event delivery stays single-path.** For the text controls the native
+  listener is attached to the real `<input>`, so it is kept and no bridge is
+  added — a bridged `{ target: { value } }` cannot answer `preventDefault`,
+  `selectionStart` or `e.target.files`. For everything else the native key is
+  consumed and bridged onto `onUpdate:modelValue`, because a reka root renders a
+  button/div where `input` / `change` never fire. Doing both would call the
+  plugin twice per keystroke, which double-applies anything that is not a plain
+  assignment.
+- **Never translate a key the component declares.** reka's Switch/Checkbox have
+  a legitimate `value` prop (the value submitted with a form); only `checked` is
+  a native spelling there. Likewise `el('input', { type: 'checkbox' })` asks for
+  the browser's own control and is left completely alone.
+
+`tests/ui-form-props.test.mjs` iterates the table itself, so adding a control
+without consuming its native key fails the suite instead of shipping the bug
+again.
+
+## The render pipeline: descriptors in, patches out
+
+`ctx.ui.el()` returns plain descriptors; `ctx.ui.render(container, tree)` turns
+that tree into VNodes and paints it. Each container owns ONE Vue app, kept alive
+and patched in place — it is **not** rebuilt per render.
+
+Why the app boundary sits at the container rather than the plugin: a plugin
+paints several independent fragments (a view, an overlay, detached content from
+`node()`), and the per-container split is what gives each fragment its own
+`provide` stack (`ROOT_PROVIDERS`) and its own portal target.
+
+Measured on the dev probe with the real components under headless Edge —
+old (rebuild per render) vs now (patch in place):
+
+| scenario | before | now |
+|---|---|---|
+| keystroke triggers a whole-tree re-render | box wiped to `""` 5 ms later, focus lost | `"abc"` kept, `sameNode: true`, focus kept |
+| DOM readable on the line after `render()` | yes | yes |
+| portalled dialog content across a re-render | re-created | same node |
+| unkeyed list, middle row deleted | — | surviving row **reuses** the deleted row's node |
+| keyed list, middle row deleted | — | each row keeps its own node |
+
+Three constraints that are easy to break:
+
+- **`render()` must stay synchronous.** Plugins read their own container on the
+  next line — `procman` does `renderProfiles(root); renderDetail();` and then
+  `document.querySelector('.pm-term-area')`. A `shallowRef` would defer the
+  patch to the next microtask and those call sites would see an empty container,
+  so the update calls the component instance's effect runner
+  (`app._instance.update()`). That runner is internal API, and it is *guarded*:
+  if it is ever unavailable `render()` falls back to the old rebuild, which is
+  always correct, just slower.
+- **Keys are the plugin's job.** Children without a `key` are patched by
+  position, so removing a row hands its DOM — including typed text and open
+  dropdowns — to the row below it. `el(tag, { key: id, … })` is all it takes;
+  Vue already reads `key` out of props.
+- **`defaultValue` is initial-only** once nodes are reused: a field the user has
+  edited ignores later `defaultValue` changes. Live values belong in `value`
+  (native spelling) or `modelValue`.
+
+Containers that leave the document are released on the next render
+(`pruneDisconnected`): `ViewHost` hands a plugin a **new** element on every view
+switch, and a retained app would otherwise keep its component instances,
+watchers and portal targets alive until the plugin deactivates. Only containers
+that were once in the document are eligible, so a plugin may still render into
+an element it has not attached yet.
+
 ## Adding a primitive
 
 Add it to `@layer components` in `src/assets/app.css`, using tokens rather than

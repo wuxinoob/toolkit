@@ -34,8 +34,15 @@ import { Code, ALL_CODES } from './codes.js';
  *       preflight outranked the `.tb-*` rules shipped beside it. A window that
  *       used `.tb-*` for its own UI now renders unstyled — silently, which is
  *       why this is a version bump and not just a stylesheet edit.
+ *   4 — `ctx.ui.render` PATCHES the tree in place instead of unmounting and
+ *       rebuilding it. Nodes are reused, so a plugin can now re-render on every
+ *       keystroke without losing focus, the caret, IME composition, scroll or
+ *       component state. Two consequences an older plugin can feel: children
+ *       without a `key` are reused by position (a deleted row's DOM passes to
+ *       the row below it — add `key`), and `defaultValue` is initial-only now
+ *       (a live value belongs in `value` / `modelValue`).
  */
-export const HOST_API = 3;
+export const HOST_API = 4;
 
 export function protocolContract() {
   return Object.freeze({

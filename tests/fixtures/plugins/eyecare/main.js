@@ -40,7 +40,7 @@ export const manifest = {
   id: 'eyecare.demo',
   name: '护眼助手',
   version: '0.1.0',
-  api: 3,
+  api: 4,
   description: '定时护眼：自绘悬浮胶囊 + 穿透锁定 + 全屏休息遮罩；键鼠空闲检测由自带 sidecar 提供。',
   contributes: {
     views: [{ slot: 'tool', id: 'eyecare', title: '护眼助手', icon: 'lucide:eye' }],

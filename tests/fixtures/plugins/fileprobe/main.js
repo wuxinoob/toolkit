@@ -19,7 +19,7 @@ export const manifest = {
   id: 'fileprobe.demo',
   name: 'File Probe',
   version: '0.1.0',
-  api: 3,
+  api: 4,
   description: 'Live check of ctx.files and ctx.onDrop.',
   contributes: {
     views: [{ slot: 'tool', id: 'fileprobe', title: 'File Probe', icon: 'lucide:folder' }],

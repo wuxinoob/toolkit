@@ -106,6 +106,35 @@ const mod = pluginModule(id);                        // 现在
    `off is not a function` 这种与自己无关的报错；
 4. `node --test`。
 
+### 改一个**组件 prop 的翻译**（表单控件）
+
+1. 表在 `src/host/ui.js` 的 `FORM_PROP_RULES`：`tag -> 插件可能写的原生键`，
+   翻译逻辑只有一处（`normalizeFormProps`），别在组件里再补一套；
+2. **翻译过的原生键必须删掉**，不能留在 props 上 —— 留下来的会被 Vue 当 DOM property
+   写回真实元素，症状是「输入字符回退」，而插件状态是对的（实测记录见 `docs/UI.md`）；
+3. 先确认组件**没有**声明同名 prop 再删：reka 的 `switch` / `checkbox` 有合法的
+   `value`（表单提交值），那里只翻译 `checked`；
+4. 同步 `docs/plugin-dev/ui.md` 的那张表，然后 `node --test` ——
+   `tests/ui-form-props.test.mjs` 驱动整张表，漏一个就红。
+
+> 只改 prop 翻译**不动 `ctx` 的形状**，所以不用 bump `HOST_API`；
+> 增删 `ctx.ui` 上的成员才走上面那条。
+
+### 改 **render 管线**（组件工厂怎么把描述树画上去）
+
+1. **`render()` 必须保持同步。** 插件会在下一行读自己的容器
+   （`procman`：`renderProfiles(root); renderDetail();` → `document.querySelector('.pm-term-area')`）。
+   异步化（`shallowRef` 之类）会静默把那些调用点变成"读到空容器"。
+   现在走 `app._instance.update()` 同步 patch —— 这是 Vue 的内部 API，
+   所以 **拿不到就回退到"重建"**，别把这个回退删掉；
+2. **一个容器一个持久 app。** 退回"每次 render 都重建"会把失焦/光标丢失重新引入；
+   容器离开文档时由 `pruneDisconnected()` 释放，且**只回收"曾经在文档里"的容器**，
+   插件"先渲染、后挂载"的容器不受影响；
+3. 复用节点带来的两条插件可见行为 —— **列表要 `key`**、**`defaultValue` 只是初始值**
+   （活值用 `value` / `modelValue`）—— 写进 [ui.md](ui.md)，取舍与实测在 `docs/UI.md`；
+4. 改完 `node --test` + `npx vite build`，并在 `ui-probe.html` 上跑一遍探针
+   （要看的是：重渲染后 `sameNode` 仍为 true、焦点还在、`render()` 后同一行能读到 DOM）。
+
 ### 加一个**权限**
 
 1. **一个能力一个权限**，且先问：这是「观察」还是「能力」？观察不要权限；
