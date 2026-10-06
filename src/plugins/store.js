@@ -40,7 +40,7 @@ async function ensureHostBindings() {
 export const manifest = {
   id: 'builtin.store',
   name: '插件商店',
-  version: '0.1.1',
+  version: '0.1.2',
   description: '官方插件中心与优质开发软件推荐，支持一键安装、更新与卸载。',
   contributes: {
     views: [
