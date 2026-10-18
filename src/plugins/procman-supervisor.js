@@ -116,7 +116,13 @@ export function dueAt(schedule, nowMs, lastFiredMs = null) {
   const kind = schedule?.kind;
   if (kind === 'interval') {
     const every = clampInt(schedule.everyMinutes, 1, 24 * 60, 30) * 60_000;
-    return (lastFiredMs ?? nowMs) + every;
+    // At most one interval away. `lastFired` is a wall-clock stamp, so a clock
+    // that moved BACKWARDS (manual change, NTP correction, a resume that
+    // re-syncs the RTC) can leave it in the future — and then the naive sum is
+    // hours away and the schedule silently stops. Capping at `now + every`
+    // keeps the phase sane in that direction too. It is a no-op for an anchor
+    // in the past, which is the ordinary case.
+    return Math.min((lastFiredMs ?? nowMs) + every, nowMs + every);
   }
   if (kind === 'daily') {
     const minutes = parseClock(schedule.at);
@@ -131,6 +137,31 @@ export function dueAt(schedule, nowMs, lastFiredMs = null) {
     return t;
   }
   return null;
+}
+
+/**
+ * Bounds for one schedule timer, in milliseconds.
+ *
+ * **MIN is not cosmetic.** `dueAt` answers "when", and for an interval it
+ * answers relative to the LAST FIRING — which is deliberately in the past
+ * after a sleep, so the wake-up catch-up run happens promptly. Feeding that
+ * straight to `setTimeout` means a 0ms timer, and a 0ms timer that re-arms
+ * itself from a state it did not change is a BUSY LOOP, not a schedule: the
+ * webview stops painting, every iteration posts a toast, and nothing else in
+ * the plugin ever runs again. This floor makes that impossible by
+ * construction: a schedule can be at most 1s late, and a defect that forgets
+ * to advance the anchor degrades to 1 Hz instead of locking the UI.
+ *
+ * MAX is the `setTimeout` limit — a delay above 2^31-1 overflows and fires
+ * IMMEDIATELY, which is the same loop wearing the opposite mask.
+ */
+export const MIN_SCHEDULE_DELAY_MS = 1000;
+export const MAX_SCHEDULE_DELAY_MS = 2 ** 31 - 1;
+
+/** When to arm the timer for a due time, in ms from now. `null` = no schedule. */
+export function scheduleDelay(whenMs, nowMs) {
+  if (whenMs === null || whenMs === undefined) return null;
+  return Math.min(MAX_SCHEDULE_DELAY_MS, Math.max(MIN_SCHEDULE_DELAY_MS, whenMs - nowMs));
 }
 
 /**

@@ -39,6 +39,7 @@ import {
   normalizeProfile,
   parseEnv,
   dueAt,
+  scheduleDelay,
   shouldRestart,
   describeSchedule,
   describeRestart,
@@ -352,6 +353,27 @@ function dropEnded(profileId) {
 
 async function launchProfile(rawProfile, reason = 'manual') {
   const p = normalizeProfile(rawProfile);
+  /**
+   * A firing consumes the slot, whatever comes of it.
+   *
+   * `dueAt` counts an interval from the last firing, so a firing that returns
+   * early WITHOUT stamping `lastFired` leaves the schedule permanently
+   * overdue — and `armSchedules` arms an overdue slot at 0ms, so the next turn
+   * fires again. When the early return is the "already running" one, nothing
+   * about the state ever changes and the pair becomes an infinite 0ms loop:
+   * one toast per iteration, forever.
+   *
+   * This is exactly what waking from a long standby did: the machine slept
+   * past a slot, the process it launched was still alive (nothing kills a child
+   * because the host slept), the overdue timer fired, the profile was already
+   * running, `lastFired` stayed at yesterday's stamp → the loop started on wake
+   * and ran until the plugin was deactivated.
+   *
+   * Stamped here, before every early return, because "the schedule fired" is a
+   * fact about the CLOCK, not about what the spawn did with it. A profile with
+   * no program, or one that is already up, still consumed its slot.
+   */
+  state.lastFired.set(p.id, Date.now());
   if (!p.program) {
     state.ui?.notify(`profile "${p.name || p.id}" has no program to run`, 'error');
     return null;
@@ -361,10 +383,18 @@ async function launchProfile(rawProfile, reason = 'manual') {
   // unaffected: the exited session is no longer counted as running.
   const live = runningFor(p.id);
   if (live.length) {
-    state.ui?.notify(`"${p.name || p.id}" is already running`, 'info');
-    // Pressing Run means "show me this one" — but a schedule firing must not
-    // move the user's selection, so only the manual path follows it.
-    if (reason === 'manual') selectProfile(p.id);
+    // A scheduled firing that finds the process up is a normal no-op: the
+    // interval asks for "running", and it is. Only a MANUAL Run is asking a
+    // question, so only a manual Run gets an answer on screen — a toast per
+    // slot would be noise even when nothing is wrong.
+    if (reason === 'manual') {
+      state.ui?.notify(`"${p.name || p.id}" is already running`, 'info');
+      // Pressing Run means "show me this one" — but a schedule firing must not
+      // move the user's selection, so only the manual path follows it.
+      selectProfile(p.id);
+    } else {
+      state.log?.('profile', `"${p.name}" already running — ${reason} slot consumed`);
+    }
     return live[0];
   }
   // A manual Run starts a new round, so the previous round's record goes with
@@ -372,7 +402,6 @@ async function launchProfile(rawProfile, reason = 'manual') {
   // output of the session the user is currently looking at (those paths
   // deliberately leave the selection alone).
   if (reason === 'manual') dropEnded(p.id);
-  state.lastFired.set(p.id, Date.now());
   const session = await spawnFromSpec({
     name: p.name || p.program,
     program: p.program,
@@ -386,9 +415,22 @@ async function launchProfile(rawProfile, reason = 'manual') {
   return session;
 }
 
-function clearSchedules() {
+/** Schedule timers only — re-armed from scratch by `armSchedules`. */
+function clearScheduleTimers() {
   for (const t of state.schedTimers.values()) clearTimeout(t);
   state.schedTimers.clear();
+}
+
+/**
+ * Every timer this plugin owns. **Deactivate only.**
+ *
+ * `armSchedules` used to call this, which made "re-arm the schedules" also
+ * cancel any RESTART that was counting down — so editing an unrelated profile,
+ * or any scheduled firing, silently swallowed a restart that the policy had
+ * already decided on. The two timers have nothing to do with each other.
+ */
+function clearSchedules() {
+  clearScheduleTimers();
   for (const t of state.restartTimers) clearTimeout(t);
   state.restartTimers.clear();
   state.restarting.clear();
@@ -401,15 +443,19 @@ function clearSchedules() {
  * never point at a profile that was deleted or disabled. `dueAt` counts from the
  * LAST FIRING, so a machine that slept through several intervals runs once on
  * wake rather than firing a burst of catch-up runs.
+ *
+ * The delay goes through `scheduleDelay`, which floors it at 1s: an overdue
+ * slot (the wake-up case) must fire promptly but must never be a 0ms timer,
+ * because that is the shape of a busy loop rather than a schedule.
  */
 function armSchedules() {
-  clearSchedules();
+  clearScheduleTimers();
   const now = Date.now();
   for (const p of state.profiles) {
     if (!p.enabled || p.schedule.kind === 'none') continue;
     const when = dueAt(p.schedule, now, state.lastFired.get(p.id) ?? null);
-    if (when === null) continue;
-    const delay = Math.max(0, when - now);
+    const delay = scheduleDelay(when, now);
+    if (delay === null) continue;
     state.schedTimers.set(
       p.id,
       setTimeout(() => {
@@ -417,7 +463,7 @@ function armSchedules() {
         const live = state.profiles.find((x) => x.id === p.id && x.enabled);
         if (!live) return armSchedules();
         launchProfile(live, 'schedule').finally(() => armSchedules());
-      }, Math.min(delay, 2 ** 31 - 1)),
+      }, delay),
     );
     state.log?.('profile', `armed "${p.name}" in ${Math.round(delay / 1000)}s`);
   }
@@ -1517,6 +1563,15 @@ export async function activate(ctx) {
       })),
     fit: () => [...state.sessions.values()].forEach(scheduleFit),
     spawn: (spec) => spawnFromSpec(spec),
+    /**
+     * Fire a profile the way the Run button (or a schedule) does. The button
+     * itself needs a DOM, and the schedule path is a timer — this is the only
+     * way to exercise "launch an existing profile" from a console or a test.
+     */
+    launch: (profileId, reason = 'manual') => {
+      const p = state.profiles.find((x) => x.id === profileId);
+      return p ? launchProfile(p, reason) : Promise.resolve(null);
+    },
     kill: killSession,
     activate: (ch) => activateSession(ch),
     state,

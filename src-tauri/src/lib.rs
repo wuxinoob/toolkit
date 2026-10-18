@@ -545,9 +545,11 @@ pub fn run() {
             // tray cannot be quit from its own UI at all, and starting broken is
             // worse than not starting.
             let show = tauri::menu::MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
+            let restart =
+                tauri::menu::MenuItem::with_id(app, "restart", "重启应用", true, None::<&str>)?;
             let quit = tauri::menu::MenuItem::with_id(app, "quit", "退出 Toolbox", true, None::<&str>)?;
             let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
-            let menu = tauri::menu::Menu::with_items(app, &[&show, &separator, &quit])?;
+            let menu = tauri::menu::Menu::with_items(app, &[&show, &restart, &separator, &quit])?;
 
             let mut tray = tauri::tray::TrayIconBuilder::new()
                 .tooltip("Toolbox")
@@ -559,6 +561,20 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => show_main_window(app),
+                    // Restart goes through `request_restart`, NOT `restart`.
+                    //
+                    // `AppHandle::restart` on the main thread SKIPS the exit
+                    // events ("we cannot guarantee their delivery") and calls
+                    // `cleanup_before_exit` + `process::restart` directly — so
+                    // `RunEvent::Exit` never runs, `kill_all()` never runs, and
+                    // every live pty / sidecar would be orphaned by the very
+                    // button meant to clean up. `request_restart` posts the exit
+                    // request instead: the loop emits `Exit`, our handler below
+                    // drains the sessions, and only then does Tauri spawn the
+                    // new instance. (The menu callback is on the main thread, so
+                    // this distinction is not academic — `restart` would take
+                    // the fast path every time.)
+                    "restart" => app.request_restart(),
                     // The ONE real exit path. `RunEvent::Exit` runs the session
                     // drain (sidecars, streams and ptys alike), so quitting from
                     // here is a graceful shutdown — not a process kill.

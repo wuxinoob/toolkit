@@ -173,6 +173,7 @@ npm run build / npm run deploy:examples / npm run preview:theme / npm run bench
 
 ### 14.6 托盘与关闭到托盘
 - 主窗口 ✕ = 隐藏（`boot.js` 的 `installCloseToTray`），退出只在托盘右键菜单（`app.exit(0)` → `RunEvent::Exit` → `kill_all()`）。**托盘建不起来是致命错误**（否则应用无法从自己界面退出）。`store.settings.closeToTray` 持久化 —— 注意 `saveSettings` 只写手挑的子集。**主窗口上插件的 `onCloseRequested` 不触发**（窗口没关），所以那条 API 必须由宿主中转。
+- **「重启应用」必须用 `app.request_restart()`，不能用 `app.restart()`**：后者在**主线程**（托盘菜单回调就在主线程）**跳过 `ExitRequested`/`Exit`**，直接 `cleanup_before_exit()` + `process::restart()` → `kill_all()` 不跑 → 一个本来用来收尾的按钮把所有 pty / sidecar 变成孤儿。两者都编译通过，所以断言钉在**调用本身**（`tests/window-options.test.mjs`）。
 
 ### 14.7 工具与踩坑
 - **任何含反引号 / `$` 的文本都要先写进文件，再用 `-F` 读** —— bash 在双引号里会做命令替换，`git commit -m "…\`x\`…"` 会把消息吃掉（本仓库已踩两次：`python -c` 与 `git commit -m`）。判断标准：**这段文本会不会经过 bash？** 会 → 用文件。
@@ -310,3 +311,23 @@ npm run build / npm run deploy:examples / npm run preview:theme / npm run bench
 - **通用教训**：「一个能力在 B 处缺失」先问**它是不是本来就属于 A**。
   `registerView` 是类别错误（闭包跨 realm），`focusView` 是缺一条请求通路，`onDrop` 是缺一个监听器 ——
   三者看着像同一类问题，其实要三种不同的处理。
+
+### 14.24 定时任务在「待机唤醒」后死循环（本轮修复）
+- **症状**：定时间隔任务 + 进程一直活着 → 电脑长时间待机 → 唤醒后右下角不停弹
+  `processes: "X" is already running`，界面卡死，直到停用插件。
+- **成因是两条各自正确的规则相乘**：
+  ① `dueAt` 的 interval **从上次触发算**（「睡过去的一夜只补跑一次」），睡醒时它落在**过去**；
+  ② `armSchedules` 把过去的时间变成 **0ms 定时器**；
+  ③ 触发 → `launchProfile` 发现**进程还活着**（宿主睡不睡都不影响子进程）→ 提前 return，
+  **没有写 `lastFired`** → 槽位仍然过期 → 又是 0ms。**状态永远不变 = 不是定时器，是忙循环。**
+- **修法（三层，缺一不可）**：
+  1. **触发即消费槽位**：`lastFired` 提到 `launchProfile` 最前面，**在所有提前 return 之前**写。
+     判据：「这次调度触发了」是关于**时钟**的事实，不是关于 spawn 结果的事实 —— 没程序、已在跑，也照样消费。
+  2. **`scheduleDelay()` 把延迟夹在 [1s, 2^31-1]**：过期槽位仍然「马上」跑，但**永远不是 0ms**；
+     缺陷再犯时退化成 1Hz（看得见、不锁界面），而不是 busy loop。上界同理 —— `setTimeout` 超过 2^31-1 **立刻触发**，是同一个循环的另一种长相。
+  3. `dueAt` interval 再夹一次 `now + every`：`lastFired` 是墙钟戳，**时钟往回跳**（手动改表 / NTP 校正 / 恢复时重同步 RTC）会把它留在未来 → 原来的和式是几小时后，调度**静默停摆**。
+- **顺带修掉**：`armSchedules()` 曾调 `clearSchedules()`，于是「重挂定时」把**待执行的 restart 定时器**一起清了
+  （改任意 profile、或任何一次定时触发，都会静默吞掉一个已经决定好的重启）→ 拆成 `clearScheduleTimers()` / `clearSchedules()`（后者只在 deactivate 用）。
+- **通知口径**：定时触发撞上「已在跑」是**正常空操作**（间隔的要求就是「它在跑」），只记日志；**只有手动 Run 才弹提示** —— 一次手动点击是在问问题。
+- **测试是行为测试**：`tests/procman-schedule.test.mjs` 用 `node:test` 的 MockTimers 驱动**真插件模块**，
+  11 分钟墙钟 → 断言**最多 12 次触发**（实测缺陷版本 601 次，0ms 版本无上限）。⚠️ 只断言 `lastFired.set` 出现过，**任何位置都算通过** —— 那正是本仓库踩过的错。

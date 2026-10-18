@@ -439,6 +439,24 @@ test('closing the main window hides it, and the tray is the only way out', () =>
     /tray\.build\(app\)\?;/,
     'a tray that will not build must be FATAL — hiding on close with no tray means the app cannot be quit',
   );
+
+  // Restart must go through `request_restart`, NOT `restart`: on the main
+  // thread (where a menu event runs) `AppHandle::restart` skips the exit events
+  // and calls `process::restart` directly, so `RunEvent::Exit` — and with it
+  // `kill_all()` — never runs, and the button meant to clean up orphans every
+  // pty and sidecar. This is not observable in a unit test, and both spellings
+  // compile, so the call itself is what has to be pinned.
+  assert.match(lib, /MenuItem::with_id\(app, "restart"/, 'the tray menu must offer a restart');
+  assert.match(
+    lib,
+    /"restart" => app\.request_restart\(\)/,
+    'restart must be REQUESTED so RunEvent::Exit still drains sessions — app.restart() skips it on the main thread',
+  );
+  assert.doesNotMatch(
+    lib,
+    /"restart" => app\.restart\(\)/,
+    'app.restart() from a menu callback orphans every live session',
+  );
 });
 
 test('the legacy plugin-window URL is translated, not rejected', () => {

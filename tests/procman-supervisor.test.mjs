@@ -13,6 +13,9 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_PROFILE,
   dueAt,
+  scheduleDelay,
+  MIN_SCHEDULE_DELAY_MS,
+  MAX_SCHEDULE_DELAY_MS,
   normalizeProfile,
   parseClock,
   parseEnv,
@@ -130,6 +133,49 @@ test('dueAt: an unparseable time disables the schedule rather than guessing', ()
   assert.equal(dueAt({ kind: 'daily', at: 'nonsense' }, at(10)), null);
   assert.equal(parseClock('9:05'), 9 * 60 + 5, 'a single-digit hour is fine');
   assert.equal(parseClock('09:5'), null, 'a single-digit minute is not');
+});
+
+test('dueAt: an interval anchor in the FUTURE still fires within one interval', () => {
+  // `lastFired` is a wall-clock stamp. A clock that moved backwards (manual
+  // change, NTP correction, a resume that re-syncs the RTC) leaves it ahead of
+  // `now`, and the naive `anchor + every` is then hours away — the schedule
+  // would silently stop until the clock caught up.
+  const s = { kind: 'interval', everyMinutes: 30 };
+  const future = dueAt(s, at(10), at(14));
+  assert.equal(future, at(10, 30), 'capped at now + one interval');
+});
+
+// ------------------------------- timer bounds --------------------------------
+
+/**
+ * The shape of the wake-up bug: `dueAt` deliberately answers with a time in the
+ * PAST for a slot the machine slept through, so the catch-up run happens at
+ * once. Handing that to `setTimeout` is a 0ms timer — and a 0ms timer that
+ * re-arms itself without changing state is a busy loop, not a schedule.
+ */
+test('scheduleDelay never arms a 0ms timer for a slot that is already due', () => {
+  const now = at(10);
+  assert.equal(scheduleDelay(at(10, 30), now), 30 * 60_000, 'a future slot keeps its exact delay');
+  assert.equal(scheduleDelay(at(9), now), MIN_SCHEDULE_DELAY_MS, 'an overdue slot waits, briefly');
+  assert.equal(scheduleDelay(now, now), MIN_SCHEDULE_DELAY_MS, 'a slot due exactly now too');
+  assert.equal(scheduleDelay(null, now), null, 'no schedule, no timer');
+});
+
+test('scheduleDelay clamps a delay setTimeout would overflow', () => {
+  // Above 2^31-1 setTimeout fires IMMEDIATELY — the same loop with the opposite
+  // cause. Reachable through a wildly wrong clock, and cheap to rule out.
+  assert.equal(scheduleDelay(at(10) + 40 * 24 * 60 * 60_000, at(10)), MAX_SCHEDULE_DELAY_MS);
+});
+
+test('the reported loop: an overdue interval is never a 0ms timer', () => {
+  // Slept from 00:00 to 10:00 with a 30-minute interval and a process that is
+  // still alive. The next firing is due, and must be armed as a timer.
+  const s = { kind: 'interval', everyMinutes: 30 };
+  const lastFired = at(0);
+  const now = at(10);
+  const delay = scheduleDelay(dueAt(s, now, lastFired), now);
+  assert.ok(delay > 0, `a schedule may never be armed at 0ms (got ${delay})`);
+  assert.equal(delay, MIN_SCHEDULE_DELAY_MS, 'fires once, promptly — then the anchor moves');
 });
 
 // --------------------------------- restart -----------------------------------
