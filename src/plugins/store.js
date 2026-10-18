@@ -57,25 +57,25 @@ export const manifest = {
 
 const STORAGE_CATALOG_KEY = 'store_catalog_cache_v2';
 const CDN_CATALOG_URL = 'https://cdn.jsdelivr.net/gh/wuxinoob/toolkit_plugins@main/catalog.json';
-const RAW_CATALOG_URL = 'https://raw.githubusercontent.com/wuxinoob/toolkit_plugins@main/catalog.json';
+const RAW_CATALOG_URL = 'https://raw.githubusercontent.com/wuxinoob/toolkit_plugins/main/catalog.json';
 
 const DEFAULT_CATALOG = {
-  version: 1,
+  version: 3,
   plugins: [
     {
       id: 'devtool',
       type: 'plugin',
       name: '开发助手',
-      version: '0.3.0',
+      version: '0.3.1',
       author: 'Tan18',
-      description: 'Windows 常用开发与系统小工具：端口占用探测与清理、目录文件锁排查、进程句柄分析、PATH环境变量诊断、系统防休眠 (Awake)、Hosts文件极简编辑。',
+      description: 'Windows 常用开发与系统小工具：端口占用探测与清理（智能识别系统服务/svchost/受保护进程）、目录文件锁排查、进程句柄分析、PATH诊断、防休眠、Hosts/DNS、UWP代理回环、端口转发、软链接、Defender编译目录加白与安全状态、开发服务管家。',
       icon: 'lucide:wrench',
       category: '系统与开发',
-      tags: ['端口占用', '文件解锁', 'Hosts编辑', '环境变量', 'Awake'],
+      tags: ['端口占用', '文件解锁', 'Hosts编辑', '环境变量', 'Awake', 'Defender', '端口转发'],
       targetDir: 'devtool',
       downloadUrl: 'https://cdn.jsdelivr.net/gh/wuxinoob/toolkit_plugins@main/plugins/devtool/package.zip',
       mirrorUrl: 'https://raw.githubusercontent.com/wuxinoob/toolkit_plugins/main/plugins/devtool/package.zip',
-      size: '260 KB',
+      size: '262 KB',
     },
     {
       id: 'eyecare.demo',
@@ -438,12 +438,13 @@ async function fetchCatalog(manual = false) {
   scheduleRender();
 
   let fetched = null;
+  const ts = Date.now();
   try {
-    const res = await fetch(CDN_CATALOG_URL, { cache: 'no-cache' });
+    const res = await fetch(`${CDN_CATALOG_URL}?_t=${ts}`, { cache: 'no-store' });
     if (res.ok) fetched = await res.json();
   } catch (_) {
     try {
-      const res = await fetch(RAW_CATALOG_URL, { cache: 'no-cache' });
+      const res = await fetch(`${RAW_CATALOG_URL}?_t=${ts}`, { cache: 'no-store' });
       if (res.ok) fetched = await res.json();
     } catch (e) {
       if (manual) ctx.ui.notify(`刷新目录失败: ${e.message ?? e}`, 'error');
