@@ -37,7 +37,7 @@ id through `src/protocol/registry.js`.
 
 ```bash
 npm install
-npm run test          # 268 node tests: scheme conformance, host kernel, real boot, plugin + doc audits
+npm run test          # 310 node tests: scheme conformance, host kernel, real boot, plugin + doc audits
 npm run bench         # codec experiment: what each codec costs per message
 npm run build         # build the frontend
 npm run tauri dev     # run the app
@@ -61,7 +61,7 @@ report — plus the boot trace — to `{appData}/debug.log`, so a runtime proble
 readable from outside the webview. Re-run it any time with
 `await window.__toolbox.selftest()` in the webview console.
 
-Last verified end to end: `node --test` 268, `host-checks` 29/29, build clean,
+Last verified end to end: `node --test` 310, `host-checks` 29/29, build clean,
 zero code warnings.
 
 ### Closing the window puts it in the tray
@@ -74,6 +74,38 @@ That makes the tray load-bearing, so a tray that will not build is a **fatal**
 startup error rather than a warning — an app that hides on close and has no tray
 cannot be quit from its own UI. To turn the behaviour off, set
 `store.settings.closeToTray = false` (it persists), and ✕ quits as before.
+
+### Releases and signing
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`: it builds the NSIS
+installer and the MSI on a Windows runner and publishes them — plus `latest.json`,
+the manifest the updater reads — as a GitHub Release. The tag must equal
+`v` + `version` from `src-tauri/tauri.conf.json`, or the job stops on purpose: the
+updater compares versions, so a drifting tag only surfaces on a user's machine.
+
+Updates are signed with a minisign key pair:
+
+| half | where it lives | who uses it |
+| --- | --- | --- |
+| public | `plugins.updater.pubkey` in `tauri.conf.json` | the app, to verify a downloaded installer |
+| private | **outside the repo**: `~/.tauri/toolbox-updater.key` | the build, to sign it |
+
+The private half must also be copied into the repository's Actions secrets as
+`TAURI_SIGNING_PRIVATE_KEY` (plus `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if the key
+has a passphrase). With `createUpdaterArtifacts` on and a pubkey in the config, the
+CLI **refuses to finish a build without it** — that is a hard error, not a silent
+skip, so a local `tauri build` needs the same key:
+
+```bash
+TAURI_SIGNING_PRIVATE_KEY=~/.tauri/toolbox-updater.key npm run tauri build
+npm run tauri build -- --no-sign    # unsigned installers, no updater signature
+```
+
+The variable accepts the key's content or a path to it. Never commit the private
+key: `.gitignore` blocks `*.key` / `*.pem` / `*.p12` / `*.pfx` / `.env*`, and a key
+that reaches one commit is a key in every clone. Windows Authenticode signing is
+**not** configured, so the installers are unsigned and SmartScreen warns on first
+run.
 
 ## Layout
 

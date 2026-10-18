@@ -7,19 +7,23 @@ name: Release
 # ## 现在能产出什么
 #
 #   NSIS 安装器（.exe）+ MSI（.msi）—— 两者都由 `tauri build` 按配置产出
-#   *.sig —— 配置里已打开"更新制品签名"，但**只有配了密钥才会真的产出**（见下）
+#   *.sig —— 只有配了密钥才产出（见下）
 #   latest.json —— 自动更新端点要的清单，由这次发布的产物推导（见 scripts/make-latest-json.mjs）
 #
 # ## 自动更新：还差的两件事都在仓库之外
 #
-#   1. **签名密钥进 Secrets**：`TAURI_SIGNING_PRIVATE_KEY`（私钥文件的整份内容）
-#      与 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（无口令则留空、不建这条也行）。
-#      下面的步骤在**这两个 Secret 存在时**自动启用，没有时静默跳过 ——
-#      所以今天没配密钥也能出包，配好那天不用改这个文件。
+#   1. **签名密钥进 Secrets**：`TAURI_SIGNING_PRIVATE_KEY`（私钥文件的整份内容，
+#      或**该文件的绝对路径** —— CLI 两种都认）与 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+#      （无口令则留空、不建这条也行）。
+#      ⚠️ 没有这个 Secret 时**构建会失败**，不会静默降级：`createUpdaterArtifacts: true`
+#      且配置里有 pubkey，CLI 会在签名那一步报
+#      "A public key has been found, but no private key"。所以下面的步骤在缺密钥时
+#      自动加上 `--no-sign`（产物照出，只是没有 .sig，latest.json 随之跳过），
+#      配好密钥那天不用改这个文件。
 #   2. **第一次带更新器的版本必须手动装**：没有更新器的旧版本不会自己更新自己。
 #
-# 端点由下面一步从 `github.repository` 注入到应用配置里 —— 仓库里那份配置留的是占位符，
-# 因为本地开发构建不该指向某个真实仓库，而仓库改名时也不该需要改两处。
+# 端点：仓库里那份配置写的是真实地址（本地打出来的安装包也能自更新），而下面仍从
+# `github.repository` 注入一次 —— 仓库改名时只需改仓库，不用改两处。
 on:
   push:
     tags: ['v*']
@@ -100,8 +104,8 @@ jobs:
           node -e "const f='src-tauri/tauri.conf.json';const c=require('./'+f);c.plugins.updater.endpoints=['https://github.com/${{ github.repository }}/releases/latest/download/latest.json'];require('fs').writeFileSync(f,JSON.stringify(c,null,2)+'\n')"
           node -p "require('./src-tauri/tauri.conf.json').plugins.updater.endpoints[0]"
 
-      # 有了签名密钥才启用签名（见文件头的第 2 条）。
-      # 多行密钥必须用 GITHUB_ENV 的 heredoc 写法，直接 echo 会把换行吃掉。
+      # 有密钥才签名，没密钥就 `--no-sign`（见文件头第 1 条：缺密钥时构建会**失败**，
+      # 不会自己跳过）。多行密钥必须用 GITHUB_ENV 的 heredoc 写法，直接 echo 会把换行吃掉。
       - name: Enable updater signing (only when the key is configured)
         shell: bash
         env:
@@ -109,7 +113,8 @@ jobs:
           KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           if [ -z "$KEY" ]; then
-            echo "updater signing: skipped (no TAURI_SIGNING_PRIVATE_KEY)"
+            echo "updater signing: skipped (no TAURI_SIGNING_PRIVATE_KEY) — building with --no-sign"
+            echo 'SIGN_FLAG=--no-sign' >> "$GITHUB_ENV"
             exit 0
           fi
           {
@@ -123,8 +128,12 @@ jobs:
           echo "updater signing: enabled"
 
       # `tauri build` 会自己先跑前端构建（配置里的 beforeBuildCommand），不必手动再跑一次。
+      # 用 `--` 把参数透传给 tauri：不带它时 npm 会把 `--no-sign` 当成自己的选项。
+      # 读 `$SIGN_FLAG` 而不是 `${{ env.SIGN_FLAG }}` —— 后者在解析时就展开了，
+      # 看不到上一步写进 GITHUB_ENV 的值（运行时才存在的东西只能从 shell 里读）。
       - name: Build bundles
-        run: npm run tauri build
+        shell: bash
+        run: npm run tauri -- build $SIGN_FLAG
 
       - name: Show what was produced
         shell: bash

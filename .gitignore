@@ -28,7 +28,21 @@ dist-ssr
 .scratch/
 .shots/
 .vite.log
-.pm.bak
 *.bak
-.pm.bak
-*.bak
+
+# Secrets. Nothing here is needed to build or run the app; everything here is
+# needed to SIGN a release, and a signing key in the repository is a signing key
+# in everyone's clone forever (git history is not editable in practice).
+#
+# The updater key lives OUTSIDE the repo, at ~/.tauri/toolbox-updater.key — that
+# is the whole point of this block: if it is ever copied into the tree by hand,
+# it must not be committable. Same for the Windows code-signing certificate, if
+# one is ever bought.
+*.key
+*.pem
+*.p12
+*.pfx
+*.keystore
+.env
+.env.*
+!.env.example
