@@ -19,7 +19,7 @@
  * is how you find out WHY — read a computed style, an attribute, a store value.
  * Pass `--no-shot` to skip the image and use it as a headless assertion tool.
  */
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -70,6 +70,43 @@ const child = spawn(
   ],
   { stdio: 'ignore' },
 );
+
+function killProcessTree(pid) {
+  if (!pid) return;
+  if (process.platform === 'win32') {
+    try {
+      execSync(`taskkill /pid ${pid} /T /F`, { stdio: 'ignore' });
+    } catch {
+      /* process may already be dead */
+    }
+  } else {
+    try {
+      child.kill('SIGKILL');
+    } catch {}
+  }
+}
+
+let cleanedUp = false;
+function cleanupSync() {
+  if (cleanedUp) return;
+  cleanedUp = true;
+  killProcessTree(child.pid);
+  try {
+    rmSync(profile, { recursive: true, force: true });
+  } catch {}
+}
+
+process.on('SIGINT', () => {
+  cleanupSync();
+  process.exit(130);
+});
+process.on('SIGTERM', () => {
+  cleanupSync();
+  process.exit(143);
+});
+process.on('exit', () => {
+  cleanupSync();
+});
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -125,9 +162,10 @@ function connect(wsUrl) {
   });
 }
 
+let cdp = null;
 try {
   const v = await version();
-  const cdp = await connect(v.webSocketDebuggerUrl);
+  cdp = await connect(v.webSocketDebuggerUrl);
 
   const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
@@ -171,9 +209,14 @@ try {
     writeFileSync(out, Buffer.from(data, 'base64'));
     console.log(`wrote ${out} (${theme}, ${w}x${h})`);
   }
-  cdp.close();
 } finally {
-  child.kill();
-  await sleep(400);
-  rmSync(profile, { recursive: true, force: true });
+  try {
+    cdp?.close?.();
+  } catch {}
+  killProcessTree(child.pid);
+  await sleep(300);
+  try {
+    rmSync(profile, { recursive: true, force: true });
+  } catch {}
+  cleanedUp = true;
 }
