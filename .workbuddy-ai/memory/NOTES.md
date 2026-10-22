@@ -331,3 +331,198 @@ npm run build / npm run deploy:examples / npm run preview:theme / npm run bench
 - **通知口径**：定时触发撞上「已在跑」是**正常空操作**（间隔的要求就是「它在跑」），只记日志；**只有手动 Run 才弹提示** —— 一次手动点击是在问问题。
 - **测试是行为测试**：`tests/procman-schedule.test.mjs` 用 `node:test` 的 MockTimers 驱动**真插件模块**，
   11 分钟墙钟 → 断言**最多 12 次触发**（实测缺陷版本 601 次，0ms 版本无上限）。⚠️ 只断言 `lastFired.set` 出现过，**任何位置都算通过** —— 那正是本仓库踩过的错。
+
+### 14.25 数据通路的真实成本（2026-10-19 实测 + 读源码）
+- **Tauri `Channel` 有两道阈值，决定"每帧多少钱"**（`tauri/src/ipc/channel.rs`）：
+  JSON `< 8192 B` 走 `webview.eval`（快）；raw `< 1024 B` 也走 eval，但载荷被写成
+  **JSON 数字数组**再 `new Uint8Array([...])`（所以阈值只有 1 KiB）。**超过阈值 = 入队 + eval 一次
+  `invoke('plugin:__TAURI_CHANNEL__|fetch')` + 自定义协议 fetch**。→ **帧数比字节数重要**：
+  合并成大帧远胜小块高频。命令响应同理（`ipc/protocol.rs` 对 JSON 响应也转 Channel）。
+- **PTY 的 4 KiB 天花板**：`tauri-plugin-pty::read` 每次 `vec![0u8; 4096]`，且 `pty.js` 是
+  `for(;;) await invoke('plugin:pty|read')` → **每块 1 次 invoke 往返 + 1 次 fetch**，
+  块 ≤ 4 KiB 永远在 raw 阈值之上。终端吞吐上限由**往返次数**决定，不是编码。
+- **图片没有走快路**：`screen/capture` 是 `rpc` → PNG→base64→JSON→1 次 fetch→`JSON.parse`→
+  base64 解码，**+33% 流量、1 MiB 约 4.2 ms JS 成本、4 份副本**。`clipboard` 只有文本；
+  `blob` 是合成演示提供者，**没有真实图片/文件源**。二进制快路 `channel-raw` 存在且已验证（PTY 在用）。
+- **sidecar 是最慢的一条**：`line-json` + **1 invoke/行**（`proc/recv` 轮询，condvar 驱动、
+  有数据就立刻重投）+ **1 MiB/行、4 MiB 队列**；二进制必须自己 base64。适合控制面/文本，不适合图像。
+- **跨窗口只有 JSON**：`bus/publish` → `app.emit(BROADCAST_EVENT)` → **每个窗口**反序列化，
+  没有二进制通道。但「宿主 → 插件窗口」的字节可以走快路（`bridge.streamRaw` 存在，
+  且 app 命令不受 ACL 限制，`pluginwin.json` 只给 core window 权限）。
+- 实测（本机，`npm run bench` + 1 MiB 实验）：控制帧 62 B = 1.0 µs；4 KiB = JSON 283 µs/14.7 KB
+  vs raw 1.7 µs/4.1 KB；1 MiB = JSON+base64 4.23 ms/1.33 MiB vs raw 0.22 ms/1.00 MiB；
+  raw 消费端解码 56 ns（`subarray` 视图，不拷贝）。
+
+### 14.26 raw 通道通用化的可行性（2026-10-19 实测）
+- **"主窗口只有 JSON" 是误读**：PTY 的字节本来就是 raw 到主窗口的。**JSON-only 的是窗口之间**，
+  原因三条：① 网关签名就是 `plugin_rpc(...) -> Result<Envelope, String>`，`Envelope.p: Value`
+  → 所有服务（含 `bus`）只能表达 JSON；② Tauri `app.emit` 没有二进制变体（payload 走 serde_json）；
+  ③ `Channel` 单向（JS 只有 receive），所以「窗口 → 宿主」没有 raw 载体。
+- **raw 上行不需要框架改造**（已验证）：`invoke(cmd, new Uint8Array(...))` 会被
+  `process-ipc-message-fn.js` 判成 `application/octet-stream` → Rust 侧 `InvokeBody::Raw`；
+  元数据只能走 **headers**（`options.headers` → `Request::headers()`），因为 raw body 装不下 svc/act。
+- **raw 下行一次性也现成**：`#[tauri::command] async fn f(request: tauri::ipc::Request<'_>)
+  -> Result<tauri::ipc::Response, String>` **能编译**（`async` + 借用参数，`cargo check` 通过，
+  临时探针已回退）→ 响应变 `ArrayBuffer`，仍是一次往返，不是流。
+- **大文件不该走 IPC**：Tauri 的 asset 协议（`convertFileSrc` + `app.security.assetProtocol.scope`）
+  让 webview 直接按 range 读盘，零 IPC 载荷；本仓库未启用，且没有 fs 面（NOTES §14.22）。
+- 建议形状：同一 raw-binary codec 三个入口 —— `bytes()`（一次性 req/res）、`streamRaw()`（已有，流）、
+  `uplinkRaw()`（上行批）。一次性**必须有上限**（否则一次 invoke = 一次内存尖峰）；
+  权限必须走同一个 `is_allowed` 闸口。
+
+### 14.27 L1 落地：`rpc-raw`（一次性字节答复）
+- **新方案 `rpc-raw`** = `invoke` × `raw-binary`，方向 up，能力 `requestResponse/binary/ordered`。
+  第二个网关命令 `plugin_rpc_raw`：**同一个服务表、同一道 `rpc:<svc>` 闸口、同一次往返**，
+  答复是 `tauri::ipc::Response`（JS 端 `ArrayBuffer`）。
+- **一个动作两种答复**：`Service::binary_actions()`（声明，权威）+ `dispatch_bytes()`（实现）。
+  `route_bytes` 先按声明校验（不在名单 → `unsupported`），声明了却没实现 → `internal`（宿主 bug，不是调用方的错）。
+  `screen/capture` 两种都提供，共享 `capture_png()`，所以不会挑到不同显示器/绕过尺寸上限。
+- **可发现性**：`host/schema` 新增 `binaryActions`（`{"screen":["capture"]}`），
+  否则插件只能靠失败来发现。`ctx.bytes` / `bridge.bytes` 与 `ctx.rpc` 同权限、同形状。
+- **错误形状的不对称（要记住）**：raw 网关的失败是 **invoke rejection `{code,msg}`**，不是 `err` 信封
+  —— 答复通道是字节，装不下信封；JS 侧统一转成 `ProtocolError`，所以调用方仍只按 `code` 分支。
+- **Tauri 事实（复查过）**：命令响应的 raw 走 `Channel::from_callback_fn`，它发的是**裸值**
+  （`runCallback(id, new Uint8Array([...]).buffer)` 或 fetch 后的 ArrayBuffer），
+  **不是** `{message,index}` 包装——那个包装只属于 JS 创建的 `Channel`。
+- 守卫：`tests/rpc-raw.test.mjs`（9 条，含"JSON 当字节返回 = protocol 错"）、
+  `plugins.test.mjs` 新增 `ctx.bytes('svc',…)` → `rpc:<svc>` 的审计规则（**实测去掉声明会红**）、
+  sdk-parity 加 `bytes`、文档计数 8→9 方案 / 15→16 命令 / 27→28 能力。
+
+### 14.27 修订（2026-10-20）：一个动作只能有一种答复
+- 原设计让 `screen/capture` **两种答复都有**（`ctx.rpc` 拿 base64、`ctx.bytes` 拿字节）→ 判定为**歧义**：
+  「这个动作用哪种编码」不该取决于调用方怎么问。改为 `actions()`（JSON）与 `binary_actions()`（字节）
+  **互不相交**，各自被对应网关校验；`capture` 只留在字节那一列，base64 编码**已删除**。
+- 用错方法给的是**指名道姓的 `unsupported`**（"用 `ctx.bytes`" / "用 `ctx.rpc`"），
+  而不是 "unknown action" —— 动作存在，是调用方拿错了钥匙。
+- 影响面：三个已装外部插件都没用 `screen`（逐个查过），所以这次删除对用户零影响；
+  `senses` 现场检查改成只走字节路径（并顺手解析 IHDR 校验尺寸）。
+
+### 14.28 待机后「点了没反应」的定位（2026-10-20）
+- **先排除忙循环**：现场测 5 秒 CPU 增量，当前实例几乎为 0（不是自旋），
+  所以症状是**桥卡住**而不是 0ms 循环。同时发现 Oct 18 那次实例留下的 **孤儿 msedgewebview2**
+  还在烧 CPU（累计 6.8 小时），那才是旧 0ms 循环的遗骸 —— 硬杀应用会留下它们。
+- **机制（为什么卡住没有 CPU）**：`invoke` 本质是 `fetch('http://ipc.localhost/…')`；
+  Tauri 的 postMessage 回退**只在 fetch reject 时触发**，**永挂起**的 fetch 没有任何超时。
+  待机恢复正是「in-flight 请求被挂起」的时刻。
+- **两个放大器**：① `plugin_stream_open/close` 原来**没有超时** → `await ctx.stream()` 永远 pending
+  → 插件的 `activate()` 不结束 → **视图不注册 → 面板空白**（开发助手）；按钮等流数据 → 无反应（护眼）。
+  ② Tauri 的 `Channel` 按 index 缓冲乱序帧，**丢一帧就永久静默**（`core.js` 的 `pendingMessages`
+  只在 index 连续时前进），而 fetch 那条路径的失败只 `console.error`。
+- **本轮修复**：流 open/close 加超时（`withTimeout` 从 `rpc.js` 导出）；
+  `stdioLine` 空行不再 0ms 重投（空行是帧，但不是积压的证据 → 退回 pollMs）；
+  `boot.js` 加**桥看门狗**：每 20s 探一次 `host/info`（5s 上限），连续 3 次没答 → 写 debug.log +
+  弹提示（指向托盘「重启应用」）+ 记进 localStorage 供下次启动报告；并顺带记录**待机时长**
+  （定时器迟到 > 60s = 机器睡过）。**刻意不自动重载**：重载会 reap 会话，误判会杀掉用户正在跑的终端。
+- 仍未解决（需要设计）：`Channel` 的丢帧永久静默 —— 要恢复只能绕开 Tauri 的 `Channel` 类
+  （自己注册回调拿 index）或在 resume 时重开所有流。
+
+### 14.29 `PostMessage failed … 0x80070718`：主线程消息队列被打满（2026-10-21）
+- **错误码含义**：`0x80070718` = `ERROR_NOT_ENOUGH_QUOTA` —— **目标窗口的消息队列满了**（Windows 上限 10000 条）。
+  来源两处，措辞一致：`tao-0.37.1/src/platform_impl/windows/event_loop.rs:541`（`send_event`，
+  即 `run_on_main_thread` / `eval` / 窗口操作）与 `wry-0.57.0/src/webview2/mod.rs:1241`
+  （`dispatch_handler`，即**JS→宿主的 IPC**）。后者**只在 debug 构建里 `eprintln!`** ——
+  这就是为什么只在 `tauri dev` 的终端里看得见。
+- **放大器（Tauri 内部，已核实）**：`plugin:__TAURI_CHANNEL__|fetch` 是一个**同步命令**
+  （`tauri/src/ipc/channel.rs:485` `fn fetch`，没有 `async`）→ **跑在宿主主线程上**。
+  加上 `MAX_RAW_DIRECT_EXECUTE_THRESHOLD = 1024`：**每帧 >1 KiB 就要三次主线程往返**
+  （eval → 同步 fetch → callback eval）。而 `tauri-plugin-pty` 每次 `read` 固定 4 KiB →
+  **每一个 pty 帧都在慢路径上**，且全链路**没有背压**（`registry.js` 明确不声明）。
+- **后果链**：队列满 → IPC 消息被**静默丢弃**（wry 只打一行 debug 日志）→ `invoke` 的 promise
+  永远不 settle → 「大部分控件点了没反应 / 插件视图空白」，且 **JS 侧没有任何错误**。
+  这与 §14.28 的待机失联是**同一种表现**（丢消息 vs 挂请求），排查时别当成两个 bug。
+- **现场证据**（dev 实例跑了 19 小时）：两个渲染进程持续各占 ~25% 一个核
+  （累计 12904s / 9519s），其中一个渲染进程 **832 MB** 工作集 → 既有持续负载，也有内存增长。
+- **本轮修复**：`pty-stream` 输出**合帧**（16 ms 窗口 / 256 KiB 上限，`finish()` 前必 flush
+  —— 否则会吞掉尾部输出，这个传输层以前就栽过）；看门狗把 **JS 堆大小**一起写进 debug.log
+  （小堆 = 队列被打满，大堆 = 渲染进程在 GC 里打转，两者修法相反）。
+- **未定论**：主线程是「被堵住」还是「被淹没」——判据是故障时的 CPU：堵住 ≈ 0%，
+  淹没 ≈ 100%。看门狗现在会记录 resume 与堆大小，下次能直接分开。
+- **另一个待修**：`Channel.pendingMessages` 在丢帧后**无上限增长**（`core.js` 只在 index
+  连续时前进），是 832 MB 的头号嫌疑。
+
+### 14.30 「是 process 插件的问题吗」——不是它，是它用的传输；以及同类的其他生产者（2026-10-22）
+- **归因**：`procman` 走 `ctx.pty` → `pty-stream`，缺陷在 `pty.js` 的**帧策略**（每 4 KiB 一帧、无背压），
+  所有 pty 用户共享。procman 只是本机**唯一持续产出字节**的插件 → 它是**触发器**，不是原因。
+  判据：把 pty 合帧去掉，任何终端插件都能复现；把 procman 关掉但终端跑 `cat 大文件` 也一样。
+- **已装插件的真实速率（读代码得出，不是猜）**：
+  `devtool` sidecar `pollMs 25 / timeoutMs 150` → 空闲 ≈5.7 invoke/s，且是**请求/响应**（只有回复才出行）；
+  `eyecare` sidecar `pollMs 60 / timeoutMs 400` → ≈2.2/s，另有 `setInterval(1000)` 纯本地；
+  `moment-notes` 同步间隔默认 **5 分钟**。→ 这三个**不可能**灌满 10000 条队列。
+- **同类候选（能造成一模一样症状，按风险排序）**：
+  1. **`stdio-line`**：**1 行 = 1 次 invoke**，`recv` 一有数据就 **0ms 重投**；一行一个信封是契约，
+     **没法合帧**。聊天多的 sidecar（把日志流接上去、`tail -f`）就是下一个 pty。
+     → 纪律：sidecar 只做**控制面**；数据面用 pty 或 raw 流。
+  2. **`channel-in` 的 `send`**：**1 invoke/帧**（只有 `sendBatch` 批量）。循环 `await send()` 等于没批量。
+  3. **`ticker`**：原来下限 **1 ms** = 1000 帧/s 持续，没人能渲染，只灌队列。→ 已改 **16 ms**。
+  4. **`blob`**：自己的上限相乘是 **10 GiB**，`delayMs` 默认 0，无背压 → 一次调用能锁死窗口。→ 已加 **64 MiB** 上限（开流即拒绝）。
+  5. **`event-bus`**：1 次 publish = **每个窗口一次 eval**，扇出无合并。
+  6. **`screen/capture` 放循环里**：每次 1–2 MB，xcap+PNG 在阻塞池上。
+  7. **⚠️ `traceRpc`**：每帧写一行 `host/write_debug_log` = 一次网关调用 + 开/写/关文件 —— **诊断工具本身是生产者**，
+     会把要查的洪水放大。**数帧用流量表，看内容才用 trace。**
+- **第二个独立机制（更糟，不会自愈）**：Tauri `Channel` 按 `index` 顺序交付，
+  **丢一帧就永久停在那一格**（`core.js` 只在 index 连续时前进），之后所有帧进 `pendingMessages[index]`
+  **无上限增长**。0x80070718 丢掉的那个回调 = 某条流的**永久空洞** → 那条流从此不交付 + 内存一直涨
+  （832 MB 的嫌疑）。**"体感好了"是因为生产者停了，不是因为恢复变强了。**
+- **本轮加的**：`hub` 里**零成本流量表**（每帧 2 次自增，5 s 一窗，>120 帧/s 或 >4 MiB/s 才 `console.warn`
+  一次并点名通道；`hub.trafficReport()` 可读）；看门狗失联时把**最忙通道**写进 debug.log；
+  ticker 下限 16 ms、blob 64 MiB；`docs/INTERFACES.md` §3 补「三道防线」+ 提供者参数范围
+  （顺手补掉 `INTERFACE-REVIEW-2026-09-27` 记的缺口，并删掉一段重复粘贴的段落）。
+- **测试**：`tests/traffic-meter.test.mjs` 3 条（真 hub + 真 Channel 投递；**去掉计量实测会红**，
+  第 2 条是"安静通道不出现"的否定断言，天然不会因删除变红 —— 这点要记住）。
+  Rust 侧两条断言放 `host-checks`（`cargo test` 在本项目**加载不起来**，`#[cfg(test)]` 等于死代码）→ 36/36。
+
+### 14.31 两个遗留缺陷的修法评估（2026-10-22，尚未实施）
+**先纠正一个更严重的事实**：丢帧**不需要队列满**。`channel.rs:321` 的 fetch 分支是
+`...runCallback(...).catch(console.error)` —— **一次 fetch 抖动就永久丢一帧**；
+`insert_if` 在 webview 已注销时返回 `None` 然后 `return Ok(())` —— **窗口重载也静默丢**。
+两种 codec 都带 `index`（`{message, index}` / `{end, index}`，raw 也是），所以 **pty 与 json 一样会永久卡死**。
+
+**A. `Channel` 丢一帧 = 永久空洞（推荐 A1）**
+- A1 **vendored 接收器**（`src/protocol/channel.js` 替换 `@tauri-apps/api/core` 的 `Channel`）：
+  `transformCallback` + 参数传 `__CHANNEL__:<id>`（就是 `Channel.toJSON()` 的输出，Rust 侧
+  `JavaScriptChannelId` 只认这个字符串）。保留 index 重排，但**有界**（256 帧 / 2 MiB / 2 s），
+  填不上就 `stream.err` + `unregisterCallback`。成本 ~60–80 行 + 4 条测试；不改 Rust、不改插件 API。
+  风险：`__CHANNEL__:` 前缀是 JS↔Rust 线上契约 → 用一条测试读 `node_modules/@tauri-apps/api/core.js`
+  断言这个字面量还在（上游改了立刻变红）。
+- A2 resume 时重开所有流：**pty 重开 = 杀进程**，且 resume 检测是启发式 → 否。
+- A3 宿主侧环形缓冲 + 重放：要新协议 + 新状态，收益不如 A1 → 否。
+- A4 不管：一旦发生就是整条流死 + `pendingMessages` 无上限涨 → 否。
+
+**B. `stdio-line` 1 invoke/行（推荐 B1）**
+- B1 **排空预算**：>N 次/s 就退回 `pollMs`（宿主已有 4 MiB 队列 + `dropped` 计数，且传输层已 `console.warn`）
+  → 不会静默丢，零契约变更，~15 行 + 1 条测试。
+- B2 `recv` 批量（`maxLines`）：只减请求数不减帧数，ROI 低 → 除非同时改二进制分帧。
+- B3 `stdio-raw`（长度前缀 + `channel-raw`）：唯一能让 sidecar 安全搬数据的路，留给"真的要传二进制"。
+- B4 不管：这是最后一个无上限生产者 → 否。
+
+**顺序**：B1（半天）→ A1（1–2 天）→ B3（按需）。反过来只做 A1 会变成"偶尔断流但能恢复"，
+只做 B1 则"永不丢帧"但一旦丢了仍然永久死。**两者互补，都要。**
+**明确不做**：自动重载/自动重启（reap 会话、误判代价大）、按帧率自动关流（会关掉用户的终端）、
+提高队列上限（Windows 常量）、把 `traceRpc` 当诊断（放大器）。
+
+### 14.32 两个遗留缺陷已修（2026-10-22，B1 + A1 落地）
+**B1 `stdio-line` 排空预算**（`transports/stdioLine.js`）
+- 每 1 秒窗口内最多 120 次 `recv`，超出后从 0ms 退回 `pollMs`；首次触发 `console.warn` 一次（点名通道）。
+  空闲轮询也计数 —— `pollMs: 0` 本身就是无数据忙循环。`pollMs` 钳到 **[10, 5000]**，默认 50。
+- **实测修正**：`setTimeout(0)` 在本机是 **12.3ms/次**（不是 1ms），所以旧循环的真实上限是 ~80/s；
+  webview 里嵌套定时器被夹到 **4ms** → ~250/s。**不是"上千/s"**，但 250 invoke/s 每个还占着
+  一个 blocking-pool 线程跑完整个 `recv` 超时（插件里是 150–400ms）——代价主要在**线程**。
+- 测试 `tests/stdio-budget.test.mjs`：① 灌数据 → 必须在第 ~120 次触发（**冻结 `Date.now`**，
+  否则断言变成"秒表"，随机器定时器精度飘）；② `clampPoll` 策略断言（钳制在外部**不可观测**：
+  12ms 平台下限把 0 和 10 抹平了 —— 所以只能直接断言数字，并在注释里说明原因）。
+
+**A1 自有 `Channel` 接收器**（新增 `src/protocol/channel.js`，替换两个传输里的 `@tauri-apps/api` 版）
+- 保留 index 重排，但缓冲**有界**：256 帧 / 2 MiB / 2 秒；任一超限 → `onGap(reason)` 一次 →
+  传输层 `stream.err(transport)` + `plugin_stream_close`（通知宿主停流）+ `unregisterCallback`。
+  之后该通道**彻底惰性**（迟到帧不能复活已结束的流）。
+- **⚠️ 序列化不是 `toJSON`**：`process-ipc-message-fn.js` 做的是
+  `'__TAURI_TO_IPC_KEY__' in val` 然后 `val['__TAURI_TO_IPC_KEY__']()` —— 只写 `toJSON` 会被忽略，
+  整个对象被发过去。所以类里必须有那个**字符串键方法**（返回 `__CHANNEL__:<id>`）。
+- 守卫 `tests/channel-receiver.test.mjs`（6 条）：顺序交付 / 真重排静默修复 / 空洞 2s 后报一次且不再交付 /
+  300 帧溢出立即报 / **与 `@tauri-apps/api` 的 `Channel` 比对前缀** + 用真实的 replacer 跑一遍参数序列化 /
+  流级别：`onEnd` 收到 `transport`、`hub.streams` 已移除（**可重开**）、宿主收到 `plugin_stream_close`。
+  实测把前缀/上限/定时器任一处弄坏 → 6 条里 5 条变红。
+- 未做：`close()` 后不等 `end` 帧就释放回调（宿主 drop 时会发 `{end,index}`，与上游一致）。
+
+**验证**：`node --test` **334 项全过**；`npm run build` 通过；文档 `PROTOCOL` §3「When a frame is lost」
+与 `INTERFACES` §3 第 4 条防线。
