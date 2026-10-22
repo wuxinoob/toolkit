@@ -52,6 +52,23 @@ export const rawBinary = {
   binary: true,
 };
 
+/**
+ * Normalise whatever an IPC carrier handed us into a `Uint8Array`.
+ *
+ * Every byte-carrying transport needs this, and the shapes differ by platform
+ * and by which Tauri path delivered the frame: an `ArrayBuffer` from a fetch,
+ * a `Uint8Array` from a channel callback, a `DataView` from a view, a string
+ * from an eval'd JSON number array. Kept here (next to the codecs) so the three
+ * transports cannot drift in what they accept.
+ */
+export function toBytes(raw) {
+  if (raw instanceof Uint8Array) return raw;
+  if (raw instanceof ArrayBuffer) return new Uint8Array(raw);
+  if (ArrayBuffer.isView(raw)) return new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+  if (typeof raw === 'string') return new TextEncoder().encode(raw);
+  return new Uint8Array(raw ?? 0);
+}
+
 const KIND_BYTE = { [Kind.DATA]: 0x01, [Kind.END]: 0x02, [Kind.EXIT]: 0x03, [Kind.ERR]: 0x04 };
 const BYTE_KIND = { 0x01: Kind.DATA, 0x02: Kind.END, 0x03: Kind.EXIT, 0x04: Kind.ERR };
 

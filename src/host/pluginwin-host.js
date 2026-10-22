@@ -19,6 +19,7 @@
  * the SAME contract as `ctx`, so plugin code ports between the two contexts:
  *
  *   bridge.request(...)   control calls           (rpc)
+ *   bridge.bytes(...)     the same call, bytes    (rpc-raw)
  *   bridge.subscribe/...  cross-window events     (event-bus)
  *   bridge.events.*       window-local events     (in-process)
  *   bridge.sidecar/pty/stream(...)                (stdio-line / pty-stream / channel)
@@ -241,6 +242,16 @@ export function makeBridge(pluginId, label, manifest) {
     request: (svc, act, params = null, opts = {}) =>
       gate(svc, () => hub.request(pluginId, svc, act, params, opts)),
 
+    /**
+     * The same call, answered with BYTES instead of JSON.
+     *
+     * Same permission as `request` (`rpc:<svc>`) — a binary answer is not a
+     * wider capability, just a different codec — and the same shape a
+     * main-window plugin gets as `ctx.bytes`, so code ports between the two.
+     */
+    bytes: (svc, act, params = null, opts = {}) =>
+      gate(svc, () => hub.requestBytes(pluginId, svc, act, params, opts)),
+
     storage: {
       get: (key) => gate('storage', () => hub.request(pluginId, 'storage', 'get', { key })),
       set: (key, value) => gate('storage', () => hub.request(pluginId, 'storage', 'set', { key, value })),
@@ -297,7 +308,8 @@ export function makeBridge(pluginId, label, manifest) {
 
     screen: {
       monitors: () => gate('screen', () => hub.request(pluginId, 'screen', 'monitors', {})),
-      capture: (opts = {}) => gate('screen', () => hub.request(pluginId, 'screen', 'capture', opts)),
+      // Bytes, not base64 — same as `ctx.screen.capture` in the main window.
+      capture: (opts = {}) => gate('screen', () => hub.requestBytes(pluginId, 'screen', 'capture', opts)),
     },
 
     /**

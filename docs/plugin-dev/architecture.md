@@ -85,11 +85,12 @@ await ctx.windows.create('plugin-my-win', {
 | **transport** | `invoke` · `channel` · `event` · `stdio` · `pty` · `in-process` |
 | **codec** | `json-envelope` · `line-json` · `raw-binary` · `object` |
 
-**八个方案**登记在 `src/protocol/registry.js`（`src-tauri` 侧另有一份镜像）：
+**九个方案**登记在 `src/protocol/registry.js`（`src-tauri` 侧另有一份镜像）：
 
 | 方案 id | 载体 · 编码 | 方向 |
 |---|---|---|
 | `rpc` | invoke · json-envelope | 上行 |
+| `rpc-raw` | invoke · raw-binary | 上行（答复是字节） |
 | `channel-in` | **invoke（批量）** · json-envelope | 上行 |
 | `channel-json` | channel · json-envelope | 下行 |
 | `channel-raw` | channel · raw-binary | 下行 |
@@ -116,7 +117,7 @@ ctx.bus.publish('topic', payload)            // 广播给所有窗口
 
 **上行流的载体是批量 invoke**，不是 Channel —— Tauri 的 `Channel` 是单向的，
 JS 侧只有接收回调、**没有 `send`**。所以别去找「从 JS 推给 Rust」的 Channel。
-这就是 `channel-in` 存在的理由，也是它为什么是八个方案里唯一一个
+这就是 `channel-in` 存在的理由，也是它为什么是九个方案里唯一一个
 「载体不是自己的名字」的方案。
 
 ---

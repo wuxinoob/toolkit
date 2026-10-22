@@ -9,34 +9,35 @@
 
 | 问题 | 结论 |
 |---|---|
-| **1. 协议是否统一了？** | **插件侧完全统一**；13 个命令里只有 `plugin_rpc` 是网关，另外 4 个是**插件可调但必须裸命令**的（3 个流 + 原生对话框，各自设闸），其余 8 个是宿主自己的管理操作；窗口控制不在协议内（热键已收敛进 `hotkey` 服务）。 |
+| **1. 协议是否统一了？** | **插件侧完全统一**；16 个命令里 2 个是网关（`plugin_rpc` / `plugin_rpc_raw`，同一个服务表），另外 4 个是**插件可调但必须裸命令**的（3 个流 + 原生对话框，各自设闸），其余 10 个是宿主自己的管理操作；窗口控制不在协议内（热键已收敛进 `hotkey` 服务）。 |
 | **2. 新插件能否直接调用已有接口？** | **能，且已验证**。`tests/fixtures/plugins/probe` 不 import 任何模块、不碰 Tauri API，一次调用覆盖 11 项接口全部通过。 |
-| **3. 接口有哪些？** | 15 个原生命令 · 9 个服务 / 36 个动作 · 8 个方案 · 3 个流提供者。见 §1–§4。 |
+| **3. 接口有哪些？** | 16 个原生命令 · 9 个服务 / 35 个动作（+ 1 个字节动作） · 9 个方案 · 3 个流提供者。见 §1–§4。 |
 | **4. 有改进空间吗？** | 有。**P1、P2 与 P0 两项均已完成**（见 §8）。剩余的是结构性例外与后续增强，不再是缺口。 |
 
 ---
 
-## 1. 原生入口：15 个命令
+## 1. 原生入口：16 个命令
 
 | # | 命令 | 用途 | 谁调用 | 在网关内 | 闸口 |
 |---|---|---|---|---|---|
 | 1 | `plugin_rpc` | **唯一请求/响应网关**（信封进、信封出） | `rpc` 方案 | — 它本身就是网关 | `rpc:<svc>` |
-| 2 | `plugin_stream_open` | 开一条 json-envelope 推送流 | `channel-json` 方案 | ✗ 需携带 `Channel` 句柄 | `rpc:stream` + 提供者自己的 |
-| 3 | `plugin_stream_open_raw` | 开一条 raw-binary 推送流 | `channel-raw` 方案 | ✗ 同上 | 同上 |
-| 4 | `plugin_stream_close` | 取消一条流 | 两个 channel 方案的 `close()` | ✗ 同上 | `rpc:stream` |
-| 5 | `plugin_dialog` | 原生对话框（`ctx.files.pick/save/message`） | `ctx.js` | ✗ 不是网关动作 | `rpc:dialog`（**自设**） |
-| 6 | `plugin_register` | 上报插件声明的权限 | `lifecycle.loadPlugin` | ✗ 加载期引导 | — |
-| 7 | `plugin_reap_orphans` | 杀掉上一次前端上下文遗留的宿主侧会话 | `boot()` | ✗ 宿主内部操作 | 仅主窗口 |
-| 8 | `plugin_scan` | 扫描磁盘插件目录（读 manifest **+ 每个入口文件**算 digest） | `host/external.js` | ✗ 同上 | — |
-| 9 | `plugin_info` | 按 id 查**一个**插件的位置（只读 manifest） | `pluginwin-host.js` | ✗ 同上 | — |
-| 10 | `plugin_read_entry` | 读插件入口源码 | 同上 | ✗ 同上 | — |
-| 11 | `plugin_open_dir` | 打开插件目录 | `SettingsView` | ✗ 同上 | — |
-| 12 | `host_autostart_get` | 读开机自启状态 | `SettingsView` | ✗ 同上 | 仅主窗口 |
-| 13 | `host_autostart_set` | 设置开机自启（返回 OS 的**实际**状态，不是请求值） | `SettingsView` | ✗ 同上 | 仅主窗口 |
-| 14 | `host_update_check` | 问一次有没有新版本（只回答，不改状态） | `host/updater.js` | ✗ 同上 | 仅主窗口 |
-| 15 | `host_update_install` | 下载并安装更新（**先停掉所有会话**，安装器随后硬退出并重启） | 同上 | ✗ 同上 | 仅主窗口 |
+| 2 | `plugin_rpc_raw` | **一次性二进制读**：同一个服务表、同一道闸口，答复是字节而不是信封（图片、文件块） | `rpc-raw` 方案 | — 第二个网关 | `rpc:<svc>` |
+| 3 | `plugin_stream_open` | 开一条 json-envelope 推送流 | `channel-json` 方案 | ✗ 需携带 `Channel` 句柄 | `rpc:stream` + 提供者自己的 |
+| 4 | `plugin_stream_open_raw` | 开一条 raw-binary 推送流 | `channel-raw` 方案 | ✗ 同上 | 同上 |
+| 5 | `plugin_stream_close` | 取消一条流 | 两个 channel 方案的 `close()` | ✗ 同上 | `rpc:stream` |
+| 6 | `plugin_dialog` | 原生对话框（`ctx.files.pick/save/message`） | `ctx.js` | ✗ 不是网关动作 | `rpc:dialog`（**自设**） |
+| 7 | `plugin_register` | 上报插件声明的权限 | `lifecycle.loadPlugin` | ✗ 加载期引导 | — |
+| 8 | `plugin_reap_orphans` | 杀掉上一次前端上下文遗留的宿主侧会话 | `boot()` | ✗ 宿主内部操作 | 仅主窗口 |
+| 9 | `plugin_scan` | 扫描磁盘插件目录（读 manifest **+ 每个入口文件**算 digest） | `host/external.js` | ✗ 同上 | — |
+| 10 | `plugin_info` | 按 id 查**一个**插件的位置（只读 manifest） | `pluginwin-host.js` | ✗ 同上 | — |
+| 11 | `plugin_read_entry` | 读插件入口源码 | 同上 | ✗ 同上 | — |
+| 12 | `plugin_open_dir` | 打开插件目录 | `SettingsView` | ✗ 同上 | — |
+| 13 | `host_autostart_get` | 读开机自启状态 | `SettingsView` | ✗ 同上 | 仅主窗口 |
+| 14 | `host_autostart_set` | 设置开机自启（返回 OS 的**实际**状态，不是请求值） | `SettingsView` | ✗ 同上 | 仅主窗口 |
+| 15 | `host_update_check` | 问一次有没有新版本（只回答，不改状态） | `host/updater.js` | ✗ 同上 | 仅主窗口 |
+| 16 | `host_update_install` | 下载并安装更新（**先停掉所有会话**，安装器随后硬退出并重启） | 同上 | ✗ 同上 | 仅主窗口 |
 
-**1–5 是数据面**（要携带 IPC `Channel`，或必须在同步网关上做异步的事），**6–15 是宿主自身的管理操作**，不是插件能力 —— 插件也调用不到它们。
+**1–6 是数据面**（要携带 IPC `Channel`，或必须在同步网关上做异步的事），**7–16 是宿主自身的管理操作**，不是插件能力 —— 插件也调用不到它们。
 
 **两类用的不是同一种闸口，这是刻意的**：数据面的闸口是**权威**的（Rust `host/registry.rs`，fail-closed），因为插件能绕过 `ctx` 直接 `invoke`；管理操作只由宿主自己的代码调用，用的是 `require_main`（窗口 label 检查）—— 防的不是恶意插件，而是**第二个前端上下文**（窗口分发的规则见 `src/main.js`）。
 
@@ -128,7 +129,7 @@
 **这三条都不是"优化"，是"别做无关的事"** —— 把不属于插件窗口的模块/样式/文件排除出它的路径。
 **判断标准是「这个窗口真的需要它吗」**，不是「快一点」。
 
-## 2. 网关背后的服务：9 个服务 / 36 个动作
+## 2. 网关背后的服务：9 个服务 / 35 个动作
 
 | 服务 | 动作 | 说明 |
 |---|---|---|
@@ -140,7 +141,7 @@
 | `hotkey` | `register` `unregister` `unregister_all` `list` | 全局热键，**由宿主代插件注册**（`contributes.hotkeys`） |
 | `notify` | `send` | **操作系统**通知（动作中心/通知中心）。与 `ctx.ui.notify` 的站内 toast 是两回事：toast 只在用户看着这个窗口时有用 |
 | `clipboard` | `read` `write` | 系统剪贴板文本。**变化监听不是动作** —— 它是流（见 §3 的 `clipboard` 提供者） |
-| `screen` | `monitors` `capture` | 枚举显示器 + 截屏。`capture` 返回 base64 PNG（网关最重的载荷） |
+| `screen` | `monitors` | 枚举显示器（JSON）。**`capture` 不在这一列** —— 它的答复是 PNG 字节，走 `rpc-raw`（见 §3） |
 
 分发是**查表**的：`services::route` 按 `name()` 找 `Service` 实现，并用该服务自己声明的
 `actions()` 先校验动作，`lib.rs` 里没有任何 `if service == ...`。加一个能力 = 加一个表项。
@@ -159,11 +160,12 @@
 一样按**宿主身份**门禁。**一个读授权悄悄变成写权力，正是权限模型腐烂的方式。**
 `tests/host-kernel.test.mjs` 盯着这两个动作的门禁。
 
-## 3. 方案表：8 个方案 + 3 个流提供者
+## 3. 方案表：9 个方案 + 3 个流提供者
 
 | 方案 id | 载体 · 编码 | 方向 | 能力 |
 |---|---|---|---|
 | `rpc` | invoke · json-envelope | ↑ | requestResponse, ordered |
+| `rpc-raw` | invoke · raw-binary | ↑ | requestResponse, binary, ordered |
 | `channel-in` | **invoke（批量）** · json-envelope | **↑** | **uplink**, ordered |
 | `channel-json` | channel · json-envelope | ↓ | push, ordered, crossWindow |
 | `channel-raw` | channel · raw-binary | ↓ | push, binary, ordered, crossWindow |
@@ -174,6 +176,13 @@
 
 流提供者（`stream` 服务的数据源）：`ticker`（支持两种编码）、`blob`（仅 raw，用于演示能力协商）、
 `clipboard`（json，轮询检测剪贴板变化）。
+
+**`rpc-raw` 是 `rpc` 的字节答复版**：同一个服务表、同一道 `rpc:<svc>` 闸口、同一次往返，
+只是答复从信封换成字节。**一个动作只有一种答复**：`Service::actions()`（JSON）与
+`Service::binary_actions()`（字节）**互不相交**，各自被对应的网关校验 ——
+所以「这个动作用哪种编码」只有一个答案，不取决于调用方怎么问。今天唯一的字节动作是
+`screen/capture`（PNG），名单同时出现在 `host/schema` 的 `binaryActions` 里，
+插件不用靠失败来发现。用错方法会得到一条指名道姓的 `unsupported`（"用 `ctx.bytes`"）。
 
 ### 提供者可以要求自己的权限
 
@@ -187,9 +196,48 @@
 
 > **形状规则**：拉取用 service（一次问答），推送用 stream 提供者（宿主主动告知）。
 > 这就是为什么 `screen/capture` 是动作而 `clipboard` 的变化监听是流 —— 同一件事的两种方向。
+
+### 提供者的参数与钳制范围
+
+`INTERFACE-REVIEW-2026-09-27` 记过一个缺口：这些范围只写在 Rust 源码里。参数由**宿主**钳制，
+插件给什么都越不过界；越界不是错误，而是被夹到边界 —— 唯一的例外是 `blob` 的**总量**，
+那里是**拒绝**，因为静默截断一条流比报错更糟。
+
+| 提供者 | 参数 | 默认 | 范围 |
+|---|---|---|---|
+| `ticker` | `intervalMs` | 500 | **16**–60000（16 ms = 一帧屏幕；1 ms 是每秒 1000 次主线程往返） |
+| | `count` | 10 | 0–100000（0 = 不限） |
+| `blob` | `chunks` | 8 | 1–10000 |
+| | `chunkBytes` | 4096 | 1–1048576 |
+| | `delayMs` | 0 | 0–1000 |
+| | **总量** | — | `chunks × chunkBytes ≤ 64 MiB`，超过则**开流失败**（不截断） |
+| `clipboard` | `intervalMs` | 500 | 100–10000 |
+
 上行 sink（`channel-in` 的宿主侧消费者）：`proc`（每帧写成一行 line-json 送到 sidecar 的 stdin）。
 
 > `channel-json` 原先声明了 `backpressure`，核查发现**没有任何实现或消费方**——一个调用方无法依赖的声明比不声明更糟，已移除，并在 `registry.js` 里写明原因。
+
+**没有背压的后果必须说清**：`channel-*` 的每一帧最终都要经过**宿主主线程**——超过 1 KiB 的帧走
+`Channel::fetch`，而那是 Tauri 里的一个**同步命令**。主线程跟不上时消息会堆在窗口的消息队列里，
+到 **10000 条**上限后 `PostMessageW` 返回 `0x80070718`（`ERROR_NOT_ENOUGH_QUOTA`），
+此后**所有** IPC 都静默丢失：JS 侧收不到任何错误，界面就是「点了没反应」。
+
+所以有三道防线，缺一不可：
+
+1. **生产端合帧**：`pty-stream` 把 16 ms 内的输出合并成一帧（xterm 本来就 ≤60 fps）。
+2. **入口设上限**：`ticker` 的下限是 16 ms（一帧屏幕的时间，1 ms = 每秒 1000 次往返且没人看得见）；
+   `blob` 一条流最多 64 MiB（它自己的上限相乘是 10 GiB，且没有延迟、没有背压）。
+3. **有人说话**：`hub` 里有一个**零成本流量表**（每帧两次自增，5 秒算一次速率），
+   持续超过 120 帧/秒或 4 MiB/秒就 `console.warn` 一次，点名是哪条通道。
+   `boot.js` 的看门狗在真的失联时把**最忙的那条通道**一起写进 `debug.log` 并指向托盘「重启应用」。
+   用 `hub.trafficReport()` 可以随时读出当前速率。
+4. **丢了一帧就结束，不假装还在**：JS 侧用的是自己的接收器（`src/protocol/channel.js`），
+   重排缓冲**有界**（256 帧 / 2 MiB / 2 秒），填不上就 `stream.err`（`transport`）+ 释放回调
+   + 通知宿主停流。框架自带的 `Channel` 会**永远等**下去（`pendingMessages` 无上限增长）——
+   那正是插件面板空白、渲染进程涨到 832 MB 的成因。判据：**结束的流能重开，静默缓冲的流不能。**
+
+> **别用 `traceRpc` 查洪水**：trace 每帧写一行 `host/write_debug_log`（一次网关调用 + 一次开/写/关文件），
+> 它会把要诊断的洪水放大一倍。数帧用流量表，看内容才用 trace。
 
 ## 4. 权限：一个能力一个权限
 

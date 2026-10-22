@@ -16,7 +16,7 @@
 //!
 //! Exits non-zero if anything fails, so it is usable from a script or CI.
 
-use serde_json::json;
+use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -125,6 +125,33 @@ fn main() {
         "the new service is discoverable",
     );
 
+    // Byte actions are a SECOND list, and the two must stay disjoint: an action
+    // that answered both ways would make "which encoding is this?" depend on how
+    // the caller asked — the ambiguity that got the base64 capture removed.
+    let both: Vec<(&str, &str)> = table()
+        .iter()
+        .flat_map(|s| {
+            s.binary_actions()
+                .iter()
+                .filter(|a| s.actions().contains(a))
+                .map(move |a| (s.name(), *a))
+        })
+        .collect();
+    check(
+        "byte-actions-are-disjoint",
+        both.is_empty(),
+        &format!("declared as both JSON and bytes: {both:?}"),
+    );
+    check(
+        "schema-publishes-byte-actions",
+        sch["binaryActions"] == json!({ "screen": ["capture"] })
+            && !sch["services"]["screen"]
+                .as_array()
+                .map(|a| a.contains(&json!("capture")))
+                .unwrap_or(true),
+        &format!("binaryActions={}", sch["binaryActions"]),
+    );
+
     // ---- stream providers ----
     let providers = stream::providers().iter().map(|p| p.name()).collect::<Vec<_>>();
     check(
@@ -140,6 +167,33 @@ fn main() {
         sch["providerPermissions"]["clipboard"] == json!("rpc:clipboard")
             && sch["providerPermissions"].get("ticker").is_none(),
         "only providers that need one appear, and they name it",
+    );
+
+    // ---- provider limits ----
+    //
+    // Both are "one call wedges the window" limits, and both used to be wide
+    // open: a 1 ms ticker is 1000 frames a second forever (every frame costs the
+    // host main thread a round trip), and `blob`'s own maxima multiply to 10 GiB
+    // emitted with no delay and no backpressure. Pinned here because `cargo
+    // test` cannot load in this project — see the file header.
+    check(
+        "ticker-floor-is-a-display-frame",
+        stream::ticker_interval(&json!({ "intervalMs": 1 })) == 16
+            && stream::ticker_interval(&json!({ "intervalMs": 300 })) == 300
+            && stream::ticker_interval(&Value::Null) == 500,
+        &format!(
+            "1ms->{} 300ms->{} default->{}",
+            stream::ticker_interval(&json!({ "intervalMs": 1 })),
+            stream::ticker_interval(&json!({ "intervalMs": 300 })),
+            stream::ticker_interval(&Value::Null)
+        ),
+    );
+    check(
+        "blob-refuses-a-ten-gigabyte-stream",
+        stream::blob_plan(&json!({ "chunks": 8, "chunkBytes": 4096 })).is_ok()
+            && stream::blob_plan(&json!({ "chunks": 16, "chunkBytes": 1 << 20 })).is_ok()
+            && stream::blob_plan(&json!({ "chunks": 10_000, "chunkBytes": 1 << 20 })).is_err(),
+        "8x4KiB ok, 16x1MiB ok, 10000x1MiB refused",
     );
 
     // ---- session registry ----

@@ -128,16 +128,113 @@ function trace(kind, dir, pluginId, detail, extra) {
   }
 }
 
-/** Wrap a receive callback so arriving frames/events are traced. */
-function tracedCallback(fn, describe) {
-  return (...args) => {
-    try {
-      traceSink(describe(...args));
-    } catch {
-      /* tracing must never break delivery */
-    }
-    return fn?.(...args);
-  };
+/**
+ * Traffic meter — "which channel is flooding?" answered without a trace.
+ *
+ * ## Why this exists
+ *
+ * The app has twice gone dead with **no error anywhere on the JS side**: once
+ * after a standby resume (a request that never settled) and once when a window
+ * message queue filled up (`PostMessageW` → `ERROR_NOT_ENOUGH_QUOTA`,
+ * 0x80070718), after which every IPC call is dropped silently. Both times the
+ * only question that mattered was "who was producing so fast", and the only
+ * tool available was `toolbox.traceRpc` — which writes **one gateway call per
+ * frame** (`host/write_debug_log`), i.e. a trace that amplifies the very flood
+ * it is meant to diagnose. That is not a diagnostic; it is a second producer.
+ *
+ * So this counts instead of logging: two increments per frame, a rate computed
+ * once per window, and a single `console.warn` when a channel stays over
+ * budget. A trace line per frame is ~1000× the cost of a counter, and a counter
+ * answers the question.
+ *
+ * ## What the numbers mean
+ *
+ * Every frame costs the host's MAIN THREAD at least one `eval`, and a frame
+ * over 1 KiB (raw) or 8 KiB (json) costs three hops (`eval` → synchronous
+ * `Channel::fetch` → callback `eval`). At 10 000 queued messages Windows stops
+ * accepting them. So the budget is in **frames/s**, not bytes/s — a 4 KiB
+ * terminal frame and a 4 MiB screenshot frame cost the same order of magnitude,
+ * and only one of them happens 100 times a second.
+ *
+ * The window is 5 s on purpose: a burst (opening a stream, a paste) averages
+ * out and never warns; only a *sustained* rate does, which is what fills a
+ * queue.
+ */
+const METER = {
+  windowMs: 5_000,
+  framesPerSec: 120,
+  bytesPerSec: 4 << 20,
+  quietMs: 30_000,
+  maxKeys: 64,
+};
+
+/** key -> { frames, bytes, start, fps, bps, warnedAt } */
+const meter = new Map();
+
+/** Bytes in a frame's payload, for whichever shape the scheme delivered. */
+function sizeOf(frame) {
+  const p = frame?.p;
+  if (p == null) return 0;
+  if (typeof p === 'string') return p.length;
+  return p.byteLength ?? p.length ?? 0;
+}
+
+function noteTraffic(key, bytes = 0) {
+  const now = Date.now();
+  let e = meter.get(key);
+  if (!e) {
+    // Bounded: a plugin that opens a stream per tick would otherwise leak one
+    // counter per channel for the life of the window.
+    if (meter.size >= METER.maxKeys) meter.clear();
+    e = { frames: 0, bytes: 0, start: now, fps: 0, bps: 0, warnedAt: 0 };
+    meter.set(key, e);
+  }
+  e.frames += 1;
+  e.bytes += bytes;
+
+  const span = now - e.start;
+  if (span < METER.windowMs) return;
+
+  // Snapshot, then restart the window. The snapshot is what the outage report
+  // reads: by the time a watchdog notices, the flood has already stopped, and
+  // the last COMPLETED window is the evidence.
+  e.fps = (e.frames * 1000) / span;
+  e.bps = (e.bytes * 1000) / span;
+  e.frames = 0;
+  e.bytes = 0;
+  e.start = now;
+
+  const over = e.fps > METER.framesPerSec || e.bps > METER.bytesPerSec;
+  if (over && now - e.warnedAt > METER.quietMs) {
+    e.warnedAt = now;
+    // console only, deliberately: this must not depend on the gateway, because
+    // the gateway is exactly what a flood breaks.
+    console.warn(
+      `[traffic] ${key}: ${Math.round(e.fps)} frames/s, ` +
+        `${Math.round(e.bps / 1024)} KiB/s — every frame costs the host main thread ` +
+        `at least one round trip; coalesce or slow down`,
+    );
+  }
+}
+
+/**
+ * Current rates, highest first.
+ *
+ * A channel whose window has not completed yet is reported from its live
+ * counters, so a burst that just filled the queue still shows up.
+ */
+export function trafficReport() {
+  const now = Date.now();
+  const out = [];
+  for (const [key, e] of meter) {
+    const span = now - e.start;
+    const live = e.frames > 0 && span < METER.windowMs;
+    const fps = live ? (e.frames * 1000) / Math.max(1, span) : e.fps;
+    const bps = live ? (e.bytes * 1000) / Math.max(1, span) : e.bps;
+    if (fps <= 0) continue;
+    out.push({ key, framesPerSec: Math.round(fps), bytesPerSec: Math.round(bps) });
+  }
+  return out.sort((a, b) => b.framesPerSec - a.framesPerSec);
 }
 
 export class MessageHub {
@@ -168,6 +265,43 @@ export class MessageHub {
       (err) => {
         // A denial arrives as a REJECTED promise carrying the service's own
         // message, so the outcome is the interesting half of the line.
+        trace(
+          'rpc',
+          '->',
+          pluginId,
+          `${svc}/${act}`,
+          `${Math.round(performance.now() - t0)}ms err: ${err?.message ?? err}`,
+        );
+        throw err;
+      },
+    );
+  }
+
+  /**
+   * One request/response round trip whose ANSWER IS BYTES (`rpc-raw`).
+   *
+   * Same call shape as `request`, same permission, same timeout policy — the
+   * only difference is the reply's codec. That is the point: a caller switches
+   * between "give me the JSON" and "give me the bytes" without learning a
+   * second API, and the scheme table (not the call site) decides the carrier.
+   */
+  requestBytes(pluginId, svc, act, params = null, opts = {}) {
+    const p = transport('rpc-raw').request({ pluginId, svc, act, params, ...opts });
+    if (!TRACE || TRACE_EXEMPT(svc, act)) return p;
+
+    const t0 = performance.now();
+    return p.then(
+      (bytes) => {
+        trace(
+          'rpc',
+          '->',
+          pluginId,
+          `${svc}/${act}`,
+          `${Math.round(performance.now() - t0)}ms ok ${bytes.byteLength}B`,
+        );
+        return bytes;
+      },
+      (err) => {
         trace(
           'rpc',
           '->',
@@ -224,12 +358,21 @@ export class MessageHub {
     // Frames are the bulk of what moves in this app, and the rpc-only trace
     // showed none of them. Wrapping `onFrame` here catches every stream kind at
     // once, because sidecar / pty / uplink / streamRaw all come through here.
-    const frameIn = TRACE
-      ? tracedCallback(onFrame, (frame) => {
-          const bytes = frame?.p?.byteLength ?? frame?.p?.length ?? 0;
+    //
+    // The meter is UNCONDITIONAL (two increments), the trace is not: a channel
+    // that floods is exactly the case where tracing would make things worse.
+    const trafficKey = `${schemeId} ${pluginId}/${ch}`;
+    const traceFrame = TRACE
+      ? (frame) => {
+          const bytes = sizeOf(frame);
           trace('frame', '<-', pluginId, `${schemeId} ch=${ch}`, bytes ? `${bytes}B` : '');
-        })
-      : onFrame;
+        }
+      : null;
+    const frameIn = (frame) => {
+      noteTraffic(trafficKey, sizeOf(frame));
+      traceFrame?.(frame);
+      return onFrame?.(frame);
+    };
     if (TRACE) trace('open', '->', pluginId, `${schemeId} ch=${ch}`, `provider=${provider}`);
 
     const key = `${pluginId}/${ch}`;
@@ -308,6 +451,18 @@ export class MessageHub {
     return this.request(pluginId, 'host', 'sessions');
   }
 
+  /**
+   * Frame/event rates per channel, highest first.
+   *
+   * Exposed so the boot watchdog can put the busiest producer into `debug.log`
+   * when the bridge stops answering: "the UI is dead" and "channel X was doing
+   * 400 frames/s" are the two halves of one report, and the second half is the
+   * one that says what to fix.
+   */
+  trafficReport() {
+    return trafficReport();
+  }
+
   // ------------------------------- broadcast ---------------------------------
 
   /**
@@ -333,11 +488,17 @@ export class MessageHub {
     // `in-process` hands the raw payload while `event-bus` hands the whole
     // envelope (a known inconsistency — see the audit). The preview tolerates
     // both: `delivered?.p ?? delivered` reads correctly either way.
-    const wrapped = TRACE
-      ? tracedCallback(onEvent, (delivered) =>
-          trace('evt', '<-', pluginId, `${scheme} "${topic}"`, preview(delivered?.p ?? delivered)),
-        )
-      : onEvent;
+    // `in-process` never leaves this window, so it costs no IPC and is not
+    // metered: a same-window event storm is a plugin's own CPU, not a queue
+    // that can kill the bridge.
+    const trafficKey = `${scheme} "${topic}"`;
+    const wrapped = (delivered) => {
+      if (scheme !== 'in-process') noteTraffic(trafficKey);
+      if (TRACE) {
+        trace('evt', '<-', pluginId, `${scheme} "${topic}"`, preview(delivered?.p ?? delivered));
+      }
+      return onEvent?.(delivered);
+    };
 
     const sub = await transport(scheme).subscribe({ pluginId, topic, onEvent: wrapped });
     if (TRACE) trace('sub', '<-', pluginId, `${scheme} "${topic}"`);

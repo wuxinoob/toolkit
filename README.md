@@ -17,6 +17,7 @@ A scheme is the combination of two independent axes:
 | scheme id | transport · codec | direction | capabilities |
 |---|---|---|---|
 | `rpc` | invoke · json-envelope | up | requestResponse, ordered |
+| `rpc-raw` | invoke · raw-binary | up | requestResponse, binary, ordered |
 | `channel-in` | invoke (batched) · json-envelope | up | uplink, ordered |
 | `channel-json` | channel · json-envelope | down | push, ordered, crossWindow |
 | `channel-raw` | channel · raw-binary | down | push, binary, ordered |
@@ -25,7 +26,7 @@ A scheme is the combination of two independent axes:
 | `pty-stream` | pty · raw-binary | both | push, binary, ordered |
 | `in-process` | in-process · object | down | push |
 
-That is all eight. `channel-in` is the odd one: Tauri's `Channel` is
+That is all nine. `channel-in` is the odd one: Tauri's `Channel` is
 one-directional (`JS` gets a receive callback and no `send`), so the plugin→host
 push is carried by **batched `invoke`** rather than by a new carrier.
 
@@ -68,7 +69,17 @@ zero code warnings.
 
 The main window's ✕ **hides** it. The app keeps running, so a stray click does not
 tear down live sessions (a pty, a sidecar). Quit from the tray icon: right-click
-for **显示主窗口 / 退出 Toolbox**, or left-click to bring the window back.
+for **显示主窗口 / 重启应用 / 退出 Toolbox**, or left-click to bring the window back.
+
+**重启应用** is the recovery path, and it is a real restart: it requests an exit,
+drains every live session, then starts a new process — the tray is the only
+place that can do this without orphaning a pty or a sidecar.
+
+If the webview and the host ever stop talking (a resume from standby is the case
+that has been seen), a watchdog notices within about a minute, writes the fact to
+`debug.log` — including how long the frontend was suspended — and says so on
+screen. It never reloads on its own: a reload reaps sessions, and a false
+positive would kill whatever the user was running.
 
 That makes the tray load-bearing, so a tray that will not build is a **fatal**
 startup error rather than a warning — an app that hides on close and has no tray

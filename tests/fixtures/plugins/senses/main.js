@@ -94,11 +94,29 @@ export async function activate(ctx) {
       .join(' · ');
   });
 
+  /**
+   * A capture comes back as BYTES — the only encoding `capture` has.
+   *
+   * The signature test is the part that matters: a reply of the right LENGTH
+   * that is not a PNG would mean the bytes were mangled on the way (base64 in
+   * the middle, a JSON number array decoded as text). Reading width/height out
+   * of the IHDR chunk then proves the payload is a well-formed image, not just
+   * something that starts with the right eight bytes.
+   */
   await check('screen.capture', async () => {
-    const shot = await ctx.screen.capture();
-    if (!shot?.png) throw new Error('no png in the response');
-    state.shot = shot;
-    return `${shot.width}×${shot.height}, ${Math.round(shot.bytes / 1024)} KB png`;
+    const png = await ctx.screen.capture();
+    if (!(png instanceof Uint8Array)) throw new Error(`expected bytes, got ${typeof png}`);
+    const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    const bad = sig.findIndex((b, i) => png[i] !== b);
+    if (bad >= 0) throw new Error(`not a PNG (byte ${bad} is ${png[bad]}, expected ${sig[bad]})`);
+    const u32 = (o) => new DataView(png.buffer, png.byteOffset + o, 4).getUint32(0);
+    const [width, height] = [u32(16), u32(20)];
+    if (!width || !height) throw new Error(`PNG header has no size (${width}×${height})`);
+    // One object URL per capture, not per render: `state.draw()` runs on every
+    // clipboard tick, and a URL created in the renderer would leak one per tick.
+    state.shotUrl = URL.createObjectURL(new Blob([png], { type: 'image/png' }));
+    state.shot = { width, height, bytes: png.byteLength };
+    return `${width}×${height}, ${Math.round(png.byteLength / 1024)} KB png, no base64`;
   });
 
   await check('clipboard.watch', async () => {
@@ -275,7 +293,7 @@ function render(root) {
               'div',
               { class: 'tb-card-body' },
               el('img', {
-                src: `data:image/png;base64,${state.shot.png}`,
+                src: state.shotUrl,
                 style: 'max-width:100%;border-radius:6px;border:1px solid var(--color-border);',
                 alt: 'captured screen',
               }),

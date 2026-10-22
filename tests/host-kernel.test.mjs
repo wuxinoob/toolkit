@@ -174,6 +174,40 @@ test('ctx: storage routes a req envelope through plugin_rpc', async () => {
   assert.ok(Number.isInteger(last.args.msg.id), 'every req needs a correlation id');
 });
 
+/**
+ * `screen.capture` is BYTE-ONLY, and the wrapper is where that is decided.
+ *
+ * The base64 encoding was removed from the host, so a wrapper still calling
+ * `ctx.rpc('screen','capture')` would be rejected at runtime with `unsupported`
+ * — a plugin that "used to work" would simply stop, with the failure one layer
+ * away from the mistake. This pins the command the wrapper actually invokes, and
+ * that the answer arrives as bytes.
+ */
+test('ctx: screen.capture goes to the BYTE gateway, not the JSON one', async () => {
+  invokeCalls.length = 0;
+  const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+  invokeImpl = async (cmd) => {
+    if (cmd !== 'plugin_rpc_raw') throw new Error(`unexpected invoke: ${cmd}`);
+    return png.buffer.slice(0); // what the real host resolves with
+  };
+
+  const ctx = buildCtx({ manifest: { id: 't.screen', permissions: ['rpc:screen'] } }, disposerStub);
+  const got = await ctx.screen.capture({ monitor: 1 });
+
+  assert.ok(got instanceof Uint8Array, 'a capture is bytes, not { png: base64 }');
+  assert.deepEqual([...got], [...png], 'the bytes must arrive intact');
+
+  const last = invokeCalls.at(-1);
+  assert.equal(last.cmd, 'plugin_rpc_raw', 'capture must use the raw gateway');
+  assert.equal(last.args.msg.svc, 'screen');
+  assert.equal(last.args.msg.act, 'capture');
+  assert.deepEqual(last.args.msg.p, { monitor: 1 });
+  assert.ok(
+    invokeCalls.every((c) => c.cmd !== 'plugin_rpc'),
+    'the JSON gateway must not be used for a byte-only action',
+  );
+});
+
 test('ctx: broadcast goes through the bus service', async () => {
   invokeCalls.length = 0;
   invokeImpl = async (cmd, { msg }) => ({ v: 1, kind: 'res', id: msg.id, p: { delivered: true } });

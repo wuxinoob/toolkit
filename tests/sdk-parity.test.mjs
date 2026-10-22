@@ -137,6 +137,7 @@ const SHARED = [
   'manifest',
   'protocol',
   'request',
+  'bytes',
   'log',
   'storage',
   'clipboard',

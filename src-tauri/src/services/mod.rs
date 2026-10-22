@@ -122,6 +122,39 @@ pub trait Service: Send + Sync {
         action: &str,
         params: Value,
     ) -> Result<Value, ServiceError>;
+
+    /// Which of [`Service::actions`] have a BYTE answer, in addition to (or
+    /// instead of) a JSON one.
+    ///
+    /// Declared rather than inferred, exactly like `actions()`: the raw gateway
+    /// validates against this list before dispatching, and `host/schema`
+    /// publishes it — so a plugin can ask "what can I read as bytes?" instead of
+    /// discovering it by getting `unsupported`. A declaration the implementation
+    /// does not honour is reported as an `internal` bug, not as the caller's
+    /// mistake.
+    fn binary_actions(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// The BINARY answer to an action, when the action has one.
+    ///
+    /// Two gateways exist over one table: `plugin_rpc` returns a JSON envelope,
+    /// `plugin_rpc_raw` returns bytes. An action that has a natural byte form
+    /// (a PNG, a file, a bitmap) declares it in [`Service::binary_actions`] and
+    /// answers here — the caller picks the codec by picking the method, exactly
+    /// like one stream provider serving both `channel-json` and `channel-raw`.
+    ///
+    /// `None` means "not a binary action". It is checked against the
+    /// declaration, so the two cannot silently disagree.
+    fn dispatch_bytes(
+        &self,
+        _app: &tauri::AppHandle,
+        _plugin_id: &str,
+        _action: &str,
+        _params: Value,
+    ) -> Option<Result<Vec<u8>, ServiceError>> {
+        None
+    }
 }
 
 /// The `plugin_rpc` routing table — the only place a service name is bound to
@@ -159,6 +192,15 @@ pub fn schema() -> Value {
     json!({
         "protocol": crate::protocol::envelope::PROTOCOL_VERSION,
         "services": services,
+        // Which actions can answer with BYTES (`plugin_rpc_raw` / `ctx.bytes`),
+        // so a plugin asks instead of finding out by getting `unsupported`.
+        // Additive like `providerPermissions`: the plain `services` map keeps
+        // its shape, and a caller that does not care never reads this.
+        "binaryActions": table()
+            .iter()
+            .filter(|s| !s.binary_actions().is_empty())
+            .map(|s| (s.name().to_string(), json!(s.binary_actions())))
+            .collect::<serde_json::Map<String, Value>>(),
         "providers": stream::providers().iter().map(|p| p.name()).collect::<Vec<_>>(),
         // Which providers need a permission of their OWN, beyond `rpc:stream`.
         //
@@ -178,6 +220,44 @@ pub fn schema() -> Value {
     })
 }
 
+/// Look a service up by name. Shared by both gateways, so neither grows a
+/// special case for a service it knows about.
+fn find(service: &str) -> Result<&'static dyn Service, ServiceError> {
+    use crate::protocol::codes::code;
+    table()
+        .iter()
+        .find(|s| s.name() == service)
+        .map(|s| s.as_ref())
+        .ok_or_else(|| {
+            ServiceError::new(
+                code::UNKNOWN_SERVICE,
+                format!("unknown service `{service}` (known: {})", service_names().join(", ")),
+            )
+        })
+}
+
+/// "No such action", listing BOTH kinds so the caller sees everything the
+/// service offers. Since the two lists are disjoint (an action answers JSON or
+/// bytes, never both), a single list would hide half the surface.
+fn unknown_action(s: &dyn Service, service: &str, action: &str) -> ServiceError {
+    use crate::protocol::codes::code;
+    let list = |a: &'static [&'static str]| {
+        if a.is_empty() {
+            "none".to_string()
+        } else {
+            a.join(", ")
+        }
+    };
+    ServiceError::new(
+        code::UNKNOWN_ACTION,
+        format!(
+            "unknown action `{service}/{action}` (json: {}; bytes: {})",
+            list(s.actions()),
+            list(s.binary_actions())
+        ),
+    )
+}
+
 /// Table-driven dispatch, with the action validated against the service's own
 /// declaration. An unknown name or action is a clear error listing what exists,
 /// instead of a silent fallthrough.
@@ -188,20 +268,53 @@ pub fn route(
     action: &str,
     params: Value,
 ) -> Result<Value, ServiceError> {
+    let s = find(service)?;
+    if !s.actions().contains(&action) {
+        // A byte-only action reached the JSON gateway. "unknown action" would be
+        // technically true and practically useless: the action exists, the
+        // CALLER used the wrong method. Say which one.
+        if s.binary_actions().contains(&action) {
+            return Err(ServiceError::unsupported(format!(
+                "`{service}/{action}` answers with BYTES — use `ctx.bytes` (rpc-raw), not `ctx.rpc`"
+            )));
+        }
+        return Err(unknown_action(s, service, action));
+    }
+    s.dispatch(app, plugin_id, action, params)
+}
+
+/// The same routing, but the answer is bytes (`plugin_rpc_raw`).
+///
+/// Validation is identical to [`route`] — same table, same action list, same
+/// error codes — so a caller cannot reach an action through the raw gateway
+/// that the JSON one would have refused. What differs is only the reply: an
+/// action that does not declare a byte form is `unsupported`, never a JSON
+/// document stuffed into a `Vec<u8>`.
+pub fn route_bytes(
+    app: &tauri::AppHandle,
+    plugin_id: &str,
+    service: &str,
+    action: &str,
+    params: Value,
+) -> Result<Vec<u8>, ServiceError> {
     use crate::protocol::codes::code;
-    match table().iter().find(|s| s.name() == service) {
+    let s = find(service)?;
+    if !s.binary_actions().contains(&action) {
+        if s.actions().contains(&action) {
+            return Err(ServiceError::unsupported(format!(
+                "`{service}/{action}` answers with JSON — use `ctx.rpc`, not `ctx.bytes`"
+            )));
+        }
+        return Err(unknown_action(s, service, action));
+    }
+    match s.dispatch_bytes(app, plugin_id, action, params) {
+        Some(reply) => reply,
+        // Declared but unimplemented: a host bug, and it must not look like the
+        // caller's mistake (which `unsupported` would say).
         None => Err(ServiceError::new(
-            code::UNKNOWN_SERVICE,
-            format!("unknown service `{service}` (known: {})", service_names().join(", ")),
+            code::INTERNAL,
+            format!("`{service}/{action}` declares a binary answer but returned none"),
         )),
-        Some(s) if !s.actions().contains(&action) => Err(ServiceError::new(
-            code::UNKNOWN_ACTION,
-            format!(
-                "unknown action `{service}/{action}` (known: {})",
-                s.actions().join(", ")
-            ),
-        )),
-        Some(s) => s.dispatch(app, plugin_id, action, params),
     }
 }
 
@@ -243,6 +356,52 @@ mod tests {
                 s.name()
             );
         }
+    }
+
+    /// The two lists are the contract for "which gateway can reach it", so they
+    /// must stay DISJOINT: an action answering both ways would make "which
+    /// encoding is this?" depend on how the caller asked — exactly the ambiguity
+    /// that got the base64 capture removed.
+    #[test]
+    fn every_service_keeps_json_and_byte_actions_apart() {
+        for s in table() {
+            let both: Vec<_> = s
+                .actions()
+                .iter()
+                .filter(|a| s.binary_actions().contains(a))
+                .collect();
+            assert!(
+                both.is_empty(),
+                "`{}` declares {both:?} in BOTH lists — an action answers one way or the other",
+                s.name()
+            );
+        }
+
+        // The one byte-only action that exists today, pinned in both directions.
+        let screen = find("screen").unwrap();
+        assert!(screen.actions().contains(&"monitors"), "monitors is metadata → JSON");
+        assert!(screen.binary_actions().contains(&"capture"), "capture is bytes");
+        assert!(
+            !screen.actions().contains(&"capture"),
+            "capture must not answer JSON any more — the base64 encoding is gone"
+        );
+    }
+
+    #[test]
+    fn find_reports_an_unknown_service_with_the_list_of_known_ones() {
+        // `.err()` rather than `unwrap_err()`: `&dyn Service` is not `Debug`, and
+        // demanding it just to print a failure would be the tail wagging the dog.
+        let e = find("nope").err().expect("an unknown service must not resolve");
+        assert_eq!(e.code, "unknown_service");
+        assert!(e.msg.contains("screen"), "the error must list what exists, got: {}", e.msg);
+    }
+
+    /// A byte-capable action must be DISCOVERABLE. Without this a plugin can
+    /// only learn that `screen/capture` has a byte form by calling it and
+    /// reading an error — which is what `host/schema` exists to prevent.
+    #[test]
+    fn schema_advertises_which_actions_answer_with_bytes() {
+        assert_eq!(schema()["binaryActions"], json!({ "screen": ["capture"] }));
     }
 
     #[test]

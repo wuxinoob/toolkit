@@ -1,10 +1,11 @@
 //! Toolbox host entry point.
 //!
-//! Everything a plugin can reach the native side with goes through THREE
-//! entry points, and all three are table-driven:
+//! Everything a plugin can reach the native side with goes through FOUR
+//! entry points, and all four are table-driven:
 //!
 //! ```text
 //!   plugin_rpc            uplink req -> res | err        (services::table)
+//!   plugin_rpc_raw        uplink req -> BYTES            (same table, raw answer)
 //!   plugin_stream_open*   downlink data|end|exit|err     (services::stream providers)
 //!   plugin_register       declares a plugin's permissions
 //! ```
@@ -103,6 +104,84 @@ async fn plugin_rpc(
     })
     .await
     .map_err(|e| format!("rpc task failed: {e}"))?
+}
+
+/// The raw request/response gateway: one `req` envelope in, BYTES out.
+///
+/// Same table, same permission gate, same validation as [`plugin_rpc`] — the
+/// only difference is the reply's codec. It exists because a base64 payload
+/// inside a JSON envelope is a third larger on the wire, has to be parsed as
+/// text on both sides, and is decoded back to bytes by the caller anyway: a
+/// 1 MiB screenshot costs ~4 ms of JS before anyone can draw it. Raw bytes cost
+/// a copy.
+///
+/// ## Failures are REJECTIONS, not `err` envelopes
+///
+/// The response channel carries bytes, so there is no room for an envelope. A
+/// failure therefore rejects the invoke with `{ code, msg }`, and the JS
+/// transport turns that into the same `ProtocolError` a JSON call would have
+/// produced — same code vocabulary, different carrier. This is the one
+/// asymmetry between the two gateways, and it is stated in `docs/PROTOCOL.md`
+/// rather than left for a caller to discover.
+#[tauri::command]
+async fn plugin_rpc_raw(
+    app: tauri::AppHandle,
+    plugin_id: String,
+    msg: Envelope,
+) -> Result<tauri::ipc::Response, RpcRejection> {
+    services::storage::validate_plugin_id(&plugin_id).map_err(RpcRejection::from)?;
+    msg.validate().map_err(|m| RpcRejection {
+        code: protocol::codes::code::PROTOCOL,
+        msg: m,
+    })?;
+    if !msg.kind.is_uplink() {
+        return Err(RpcRejection {
+            code: protocol::codes::code::PROTOCOL,
+            msg: format!(
+                "plugin_rpc_raw expects a `req` envelope, got `{}`",
+                msg.kind.as_str()
+            ),
+        });
+    }
+    let svc = msg.svc.clone().unwrap_or_default();
+    let act = msg.act.clone().unwrap_or_default();
+    let params = msg.p;
+
+    // The authoritative gate, identical to `plugin_rpc`'s: reaching the raw
+    // gateway must not be a way to call a service the plugin may not call.
+    if let Err(e) = host::registry::is_allowed(&plugin_id, &format!("rpc:{svc}")) {
+        return Err(RpcRejection {
+            code: protocol::codes::code::DENIED,
+            msg: e,
+        });
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        services::route_bytes(&app, &plugin_id, &svc, &act, params)
+    })
+    .await
+    .map_err(|e| RpcRejection {
+        code: protocol::codes::code::INTERNAL,
+        msg: format!("rpc task failed: {e}"),
+    })?
+    .map(tauri::ipc::Response::new)
+    .map_err(RpcRejection::from)
+}
+
+/// A gateway failure that has no envelope to ride in.
+///
+/// Mirrors the fields of an `err` envelope (`code` from the closed set, plus a
+/// message) so the JS side can build the same error type either way.
+#[derive(Debug, serde::Serialize)]
+struct RpcRejection {
+    code: &'static str,
+    msg: String,
+}
+
+impl From<services::ServiceError> for RpcRejection {
+    fn from(e: services::ServiceError) -> Self {
+        Self { code: e.code, msg: e.msg }
+    }
 }
 
 /// Open a push stream framed as `json-envelope` (one `Channel<Envelope>`).
@@ -501,6 +580,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             plugin_rpc,
+            plugin_rpc_raw,
             plugin_register,
             plugin_stream_open,
             plugin_stream_open_raw,

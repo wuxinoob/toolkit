@@ -34,7 +34,7 @@
 
 | 页面 | 状态 | 由什么盯着 |
 |---|---|---|
-| [architecture.md](architecture.md) | 已更新 | 8 个方案 id、15 项自检、内置插件名单 |
+| [architecture.md](architecture.md) | 已更新 | 9 个方案 id、15 项自检、内置插件名单 |
 | [bridge.md](bridge.md) | **本手册的对等权威清单** | 与 `ctx.js` / `pluginwin-host.js` 逐行比对（含 `onDrop` 的 `info` 差异） |
 | [manifest.md](manifest.md) | 已更新 | 权限集合与代码**双向**比对（多写少写都失败） |
 | [api.md](api.md) | 已更新 | 摘要里的 27/4/4 与 `bridge.md` 一致；不得再长出第二张对等表 |

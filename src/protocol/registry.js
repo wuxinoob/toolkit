@@ -66,6 +66,19 @@ export const DESCRIPTORS = Object.freeze([
     note: '控制面：网关单命令，req/res 一一对应',
   },
   {
+    id: 'rpc-raw',
+    label: 'invoke · raw-binary',
+    transport: TransportKind.INVOKE,
+    codec: CodecId.RAW_BINARY,
+    direction: 'up',
+    capabilities: {
+      [Capability.REQUEST_RESPONSE]: true,
+      [Capability.BINARY]: true,
+      [Capability.ORDERED]: true,
+    },
+    note: '一次性二进制读：同一个网关、同一套权限，答复是字节而不是信封（图片、文件块）',
+  },
+  {
     id: 'channel-json',
     label: 'channel · json-envelope',
     transport: TransportKind.CHANNEL,

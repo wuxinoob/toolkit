@@ -203,6 +203,11 @@ function requiredPermissions(source) {
   };
 
   recv(/\b(?:ctx|bridge)\.rpc\(\s*['"]([a-z]+)['"]/g, (m) => `rpc:${m[1]}`);
+  // The byte gateway is the SAME permission (`rpc:<svc>`): a binary answer is a
+  // different codec, not a wider capability. It is a separate regex because it
+  // is a separate method — and a namespace this audit does not look at breaks
+  // its promise silently, which is exactly how `ctx.screen` slipped through.
+  recv(/\b(?:ctx|bridge)\.bytes\(\s*['"]([a-z]+)['"]/g, (m) => `rpc:${m[1]}`);
   recv(/\b(?:ctx|bridge)\.request\(\s*['"]([a-z]+)['"]/g, (m) => `rpc:${m[1]}`);
   recv(/\b(?:ctx|bridge)\.storage\./g, () => 'rpc:storage');
   recv(/\b(?:ctx|bridge)\.bus\./g, () => 'rpc:bus');

@@ -259,9 +259,9 @@ test('the service extractor finds the real table, and not the stream providers',
   assert.deepEqual(table.get('bus'), ['publish']);
 });
 
-test('the scheme extractor finds all eight, and the registry owns the list', () => {
+test('the scheme extractor finds all nine, and the registry owns the list', () => {
   const ids = schemeIds();
-  assert.equal(ids.length, 8, `expected 8 schemes, extracted ${ids.length}: ${ids}`);
+  assert.equal(ids.length, 9, `expected 9 schemes, extracted ${ids.length}: ${ids}`);
   assert.ok(ids.includes('channel-in'), 'channel-in is missing from the registry scan');
   assert.equal(new Set(ids).size, ids.length, 'a scheme id is declared twice');
 });
@@ -461,7 +461,7 @@ test('bridge.md is the single list, and it matches the code exactly', () => {
   // from the code too — a "25 capabilities on both sides" that silently became
   // 26 is exactly the class of drift this file exists to stop.
   const shared = [...ctx].filter((k) => bridge.has(k)).length;
-  assert.equal(shared, 27, `the surfaces now share ${shared} capabilities, not 27`);
+  assert.equal(shared, 28, `the surfaces now share ${shared} capabilities, not 28`);
   assert.match(
     read('docs', 'plugin-dev', 'bridge.md'),
     new RegExp(`\\*\\*${shared} 个能力两边都有\\*\\*`),

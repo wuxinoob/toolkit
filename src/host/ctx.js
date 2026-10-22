@@ -305,6 +305,21 @@ export function buildCtx(plugin, disposer) {
      */
     rpc: (svc, act, params = null, opts = {}) => gated(() => hub.request(id, svc, act, params, opts), `rpc:${svc}`),
 
+    /**
+     * The same call, answered with **bytes** (`Uint8Array`) instead of JSON.
+     *
+     * For the actions that have a natural byte form — a screenshot, a bitmap, a
+     * file's contents. It needs exactly the same permission as `ctx.rpc`
+     * (`rpc:<svc>`): a binary answer is a different codec, not a wider
+     * capability. Actions with no binary form fail with `unsupported`, which is
+     * a different error from "the capture failed" on purpose.
+     *
+     *   const png = await ctx.bytes('screen', 'capture');
+     *   const url = URL.createObjectURL(new Blob([png], { type: 'image/png' }));
+     */
+    bytes: (svc, act, params = null, opts = {}) =>
+      gated(() => hub.requestBytes(id, svc, act, params, opts), `rpc:${svc}`),
+
     /** Namespaced persistent storage (Rust-side, per-plugin data.json). */
     storage: {
       get: (key) => ctx.rpc('storage', 'get', { key }),
@@ -340,21 +355,24 @@ export function buildCtx(plugin, disposer) {
     },
 
     /**
-     * Screen: enumerate monitors and capture one.
+     * Screen: enumerate monitors, and capture one as **bytes**.
      *
-     * Both are requests — a capture is one answer to one question, not a push —
-     * so this is `ctx.rpc` twice. `capture()` returns
-     * `{ png, width, height, monitor, name, bytes }` where `png` is base64: the
-     * heaviest payload the gateway carries, which is why it is a one-shot.
+     * Both are one answer to one question, but not the same answer shape:
+     * `monitors()` is metadata (JSON, `ctx.rpc`), while `capture()` returns the
+     * PNG itself as a `Uint8Array` (`ctx.bytes`). The base64 encoding is gone —
+     * it made the payload a third larger and the caller decode it again anyway.
+     *
+     *   const png = await ctx.screen.capture();            // Uint8Array
+     *   img.src = URL.createObjectURL(new Blob([png], { type: 'image/png' }));
      *
      * `capture({ monitor })` picks by index from `monitors()`; with no argument
      * it captures the PRIMARY monitor, because "capture the screen" almost
      * always means the one the user is looking at, and the order of the OS's
-     * list is the OS's.
+     * list is the OS's. It is a one-shot for a reason — do not call it in a loop.
      */
     screen: {
       monitors: () => ctx.rpc('screen', 'monitors', {}),
-      capture: (opts = {}) => ctx.rpc('screen', 'capture', opts),
+      capture: (opts = {}) => ctx.bytes('screen', 'capture', opts),
     },
 
     // ---------------- events: one shape, the scheme picks the wire ----------------

@@ -485,11 +485,11 @@ const handle = await ctx.clipboard.watch('clip', {
 });
 // handle.close()，或者停用插件 —— 宿主 disposer 会关掉它
 
-// 截屏 —— 一次问答，同样是 service
+// 截屏 —— 一次问答，但答复是**字节**（`rpc-raw`），不是 base64
 const monitors = await ctx.screen.monitors();  // [{index,name,width,height,scaleFactor,primary}]
-const shot = await ctx.screen.capture();       // 不传参数 = 主显示器
-// shot = { png: <base64>, width, height, monitor, name, bytes }
-img.src = `data:image/png;base64,${shot.png}`;
+const png = await ctx.screen.capture();        // Uint8Array；不传参数 = 主显示器
+img.src = URL.createObjectURL(new Blob([png], { type: 'image/png' }));
+// 等价写法：ctx.bytes('screen', 'capture') —— capture 是「只有字节答复」的动作
 
 // 文件拖放 —— 主窗口侧只发给**当前活动视图**
 ctx.onDrop((paths, info) => console.log(paths, info.viewId));
@@ -504,8 +504,12 @@ ctx.onDrop((paths, info) => console.log(paths, info.viewId));
   先读、写、再写回去（`senses` 就是这么做的，而且只在用户按按钮时才做）。
 - **`watch()` 要 `rpc:clipboard` + `rpc:stream` 两个权限。** 监听剪贴板等于读取用户复制的
   **一切**，这不是 `rpc:stream` 所描述的东西，所以提供者**有自己的权限**。
-- **`capture()` 是网关最重的载荷**（1080p PNG ≈ 0.5–2 MB，base64 再大三分之一）。
+- **`capture()` 是网关最重的载荷**（1080p PNG ≈ 0.5–2 MB）。**base64 那条路已经删掉了**：
+  答复直接是字节，省掉 33% 的膨胀和一次 JSON 解析（1 MiB 图从约 4.2 ms 降到 0.2 ms）。
   一次性可以，**别放进循环**。
+- **一个动作只有一种编码。** `capture` 只走 `rpc-raw`；用 `ctx.rpc('screen','capture')`
+  会得到 `unsupported`，错误里直接写「用 `ctx.bytes`」。哪个动作有字节答复看
+  `host/schema` 的 `binaryActions`（目前只有 `screen/capture`）。
 - **拖放只到活动视图（主窗口侧）。** 这是刻意的：否则一个插件能静默捡走本该给别人的路径。
   也正因为如此 `onDrop` **不需要权限** —— 你只会看到用户**对着你的界面**丢下的东西
   （视图是你的，窗口也是你的）。丢在别的视图上时，`debug.log` 会写
@@ -769,7 +773,7 @@ async function closeMe() {
 |---|---|---|
 | 能力 | `ui` · `windows` · `registerView` · `focusView` | `label` · `close` · `drag` · `dispose` |
 
-**其余 27 个能力两边都有**，包括 `storage` / `bus` / `events` / `onHotkey` / `onDrop` /
+**其余 28 个能力两边都有**，包括 `storage` / `bus` / `events` / `onHotkey` / `onDrop` /
 `stream` / `streamRaw` / `uplink` / `sidecar` / `pty` / `clipboard` / `screen` /
 `files` / `log` / `closeStream` / `sessions` / `schemes` / `schema` / `paths` / `protocol` /
 `cleanup`。

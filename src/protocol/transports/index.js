@@ -9,6 +9,7 @@
 import { descriptors } from '../registry.js';
 import { ProtocolError } from '../errors.js';
 import { rpcTransport } from './rpc.js';
+import { rpcRawTransport } from './rpcRaw.js';
 import { channelJsonTransport } from './channelJson.js';
 import { channelInTransport } from './channelIn.js';
 import { channelRawTransport } from './channelRaw.js';
@@ -19,6 +20,7 @@ import { inProcessTransport } from './inProcess.js';
 
 const IMPLS = [
   rpcTransport,
+  rpcRawTransport,
   channelJsonTransport,
   channelInTransport,
   channelRawTransport,
@@ -62,6 +64,7 @@ assertComplete();
 
 export {
   rpcTransport,
+  rpcRawTransport,
   channelJsonTransport,
   channelInTransport,
   channelRawTransport,

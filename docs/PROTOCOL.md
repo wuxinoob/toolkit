@@ -1,6 +1,6 @@
 # The toolbox message protocol
 
-One envelope, 8 schemes, a table-driven gateway. This document is the contract;
+One envelope, 9 schemes, a table-driven gateway. This document is the contract;
 `src/protocol/` (JS) and `src-tauri/src/protocol/` (Rust) are its two mirrors,
 and both validate the same rules.
 
@@ -57,7 +57,7 @@ transport (how bytes move)  ×  codec (how a message is framed)
 |---|---|---|
 | `json-envelope` | one JSON object per message | `invoke`, `Channel<Envelope>` |
 | `line-json` | one JSON object per `\n` line | sidecar stdio pipes |
-| `raw-binary` | 1 kind byte + payload (`0x01` data, `0x02` end, `0x03` exit, `0x04` err) | `Channel<InvokeResponseBody>`, PTY bytes |
+| `raw-binary` | 1 kind byte + payload (`0x01` data, `0x02` end, `0x03` exit, `0x04` err) | `Channel<InvokeResponseBody>`, PTY bytes, one-shot replies (`rpc-raw`) |
 | `object` | by reference, no serialization | the window-local bus |
 
 Keeping these apart is what makes the schemes interchangeable: the same
@@ -107,6 +107,7 @@ Declared in `src/protocol/registry.js`, one implementation per scheme in
 | id | transport · codec | dir | capabilities |
 |---|---|---|---|
 | `rpc` | invoke · json-envelope | up | `requestResponse`, `ordered` |
+| `rpc-raw` | invoke · raw-binary | up | `requestResponse`, `binary`, `ordered` |
 | `channel-in` | invoke (batched) · json-envelope | **up** | `uplink`, `ordered` |
 | `channel-json` | channel · json-envelope | down | `push`, `ordered`, `crossWindow` |
 | `channel-raw` | channel · raw-binary | down | `push`, `binary`, `ordered`, `crossWindow` |
@@ -167,12 +168,59 @@ Ask what the traffic *is*, not which API is convenient:
 | need | scheme |
 |---|---|
 | a call that returns a value | `rpc` |
+| a call whose answer is bytes (one screenshot, one file) | `rpc-raw` |
 | the host keeps sending after the call returns | `channel-json` |
-| the same, but the payload is bytes (terminal output, images) | `channel-raw` |
+| the same, but the payload keeps coming (terminal output, frames) | `channel-raw` |
 | every window must hear it | `event-bus` |
 | a plugin-shipped native helper | `stdio-line` |
 | a command-line program in a pseudo-terminal | `pty-stream` |
 | a same-window subscriber that must pay nothing | `in-process` |
+
+### When a frame is lost
+
+`channel-*` frames are numbered and both sides rely on it: the host increments a
+counter per frame, the frontend delivers in order and holds back frames that
+arrive early. That is necessary — a frame above the direct-`eval` threshold goes
+through a `fetch`, and fetches do not resolve in order.
+
+What the framework does **not** do is notice a frame that never arrives. One lost
+frame — a failed `fetch`, a webview that was momentarily gone, a full window
+message queue — leaves the expected index one short, and every later frame is
+parked in a sparse array: the stream stays "open", delivers nothing, never ends,
+and its buffer grows for the life of the window.
+
+`src/protocol/channel.js` is this app's receiver, and its policy is the opposite:
+
+| situation | what happens |
+|---|---|
+| a frame arrives early | held until its turn — at most 256 frames / 2 MiB / 2 s |
+| the hole fills | delivered in order, silently: a real reorder is not an error |
+| the hole does not fill | the stream ends with a `transport` error naming the missing index, the callback is released, and the host is told to stop producing |
+| the backlog exceeds those bounds | the same, immediately |
+
+A stream that ended is recoverable — the caller can open it again. A stream that
+is silently buffering is not. The id is still serialised as `__CHANNEL__:<id>`,
+which is the only part of this the host ever sees.
+
+### One action, one codec
+
+An action answers JSON **or** bytes, never both. The two lists are separate and
+disjoint — `Service::actions()` for the JSON gateway, `Service::binary_actions()`
+for the raw one — so "which encoding is this?" has exactly one answer and does
+not depend on how the caller asked. `screen/capture` is byte-only for that
+reason: it used to return base64 inside a JSON envelope, which is a third larger
+and gets decoded back to bytes by the caller anyway. That encoding is gone;
+`ctx.rpc('screen','capture')` now fails with an `unsupported` error that names
+`ctx.bytes`, and `ctx.screen.capture()` is a thin wrapper over it.
+
+Which actions have a byte answer is published in `host/schema` as
+`binaryActions`, so a plugin asks instead of discovering it by failing.
+
+The one asymmetry between the gateways: `rpc-raw` reports failures as **invoke
+rejections** carrying `{ code, msg }`, not as `err` envelopes — the response
+channel is bytes, so there is nowhere to put an envelope. The JS transport turns
+that rejection into the same `ProtocolError`, so a caller still branches on
+`code` and never learns which gateway answered.
 
 ---
 
@@ -183,6 +231,7 @@ what they need and the hub resolves the scheme:
 
 ```js
 ctx.rpc(svc, act, params, { timeoutMs })  // rpc
+ctx.bytes(svc, act, params, { timeoutMs })// rpc-raw — the same call, answered with bytes
 ctx.storage.get / set / remove / keys     // rpc
 ctx.subscribe / once / publish            // event-bus by default
 ctx.events.on / once / emit               // in-process
@@ -199,7 +248,8 @@ ctx.onHotkey(action, fn)                  // a declared global hotkey
 ctx.protocol                              // the envelope constructors + constants
 ctx.files.pick / save / message           // native dialogs (raw command, gated)
 ctx.clipboard.read / write / watch        // rpc + channel-json (watch is a stream)
-ctx.screen.monitors / capture             // rpc
+ctx.screen.monitors                     // rpc (metadata)
+ctx.screen.capture                       // rpc-raw (PNG bytes)
 ctx.ui.el / render / notify / notifyOS    // the component factory and toasts
 ctx.registerView(viewId, render)          // a view in the main window
 ctx.focusView(viewId)                     // bring one of YOUR views forward
@@ -260,7 +310,7 @@ re-deployed. Built-in plugins ship with the host and cannot go stale, which is
 why only external examples declare `api`.
 
 A secondary window gets **almost** the same surface through `bridge`
-(`src/host/pluginwin-host.js`): 27 capabilities on both sides, and exactly 8
+(`src/host/pluginwin-host.js`): 28 capabilities on both sides, and exactly 8
 one-sided — `ui` / `windows` / `registerView` / `focusView` exist only
 on `ctx`, while `label` / `close` / `drag` / `dispose` exist only on `bridge`.
 The differences are deliberate except for `ui.notifyOS`, which is collateral.

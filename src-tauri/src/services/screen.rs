@@ -7,20 +7,21 @@
 //! *changed* — a service action cannot do that. The rule the two settle:
 //! **pull → service, push → stream provider.**
 //!
-//! ## The payload is base64, and that is a real cost
+//! ## `capture` answers with BYTES, and only bytes
 //!
-//! A 1080p desktop PNG is 0.5–2 MB, and base64 makes it a third larger again,
-//! inside a JSON envelope that both sides parse. It works — Tauri moves large
-//! responses over its own protocol rather than through `eval` — but it is the
-//! heaviest thing this gateway carries, and it is a one-shot for a reason.
+//! A 1080p desktop PNG is 0.5–2 MB. Carried as base64 inside a JSON envelope it
+//! is a third larger, parsed as text on both sides, and decoded back to bytes by
+//! the caller anyway — four copies of something that was already a byte array.
+//! That encoding is **gone**: `capture` is a byte-only action, reachable through
+//! `ctx.bytes('screen','capture')` / `bridge.bytes(...)` (the `rpc-raw` scheme),
+//! and asking for it over `ctx.rpc` is an `unsupported` error that names the
+//! right method.
 //!
-//! The lighter shape is a `raw-binary` stream provider (the bytes never become
-//! text). It was not done here because a one-shot capture as a "stream" would be
-//! a stream that opens, emits once and ends — a shape that exists (`blob`) but
-//! reads as a workaround when the honest description is "one question, one
-//! answer".
+//! It is still request/response, not a stream: one question, one answer. The
+//! stream shape would be "open, emit once, end", which reads as a workaround.
+//!
+//! `monitors` stays JSON — it is metadata, and there is nothing to encode.
 
-use base64::Engine as _;
 use serde_json::{json, Value};
 
 use super::{Service, ServiceError};
@@ -91,8 +92,15 @@ impl Service for ScreenService {
     fn name(&self) -> &'static str {
         "screen"
     }
+    /// JSON actions. `capture` is deliberately NOT here: its answer is bytes,
+    /// and the two lists are disjoint so "which encoding does this action use"
+    /// has exactly one answer.
     fn actions(&self) -> &'static [&'static str] {
-        &["monitors", "capture"]
+        &["monitors"]
+    }
+    /// Byte actions (`rpc-raw`). `capture` lives here and nowhere else.
+    fn binary_actions(&self) -> &'static [&'static str] {
+        &["capture"]
     }
 
     fn dispatch(
@@ -100,7 +108,7 @@ impl Service for ScreenService {
         _app: &tauri::AppHandle,
         _plugin_id: &str,
         action: &str,
-        params: Value,
+        _params: Value,
     ) -> Result<Value, ServiceError> {
         match action {
             // Enumerating is separate from capturing so a plugin can offer a
@@ -109,68 +117,75 @@ impl Service for ScreenService {
                 Self::monitors()?.iter().map(|(i, _)| i.to_json()).collect(),
             )),
 
-            "capture" => {
-                let monitors = Self::monitors()?;
-                if monitors.is_empty() {
-                    return Err(ServiceError::new(code::INTERNAL, "no usable monitors found"));
-                }
-
-                // Default to the PRIMARY monitor rather than index 0: the order
-                // of `Monitor::all()` is the OS's, not the user's, and "capture
-                // the screen" almost always means the one they are looking at.
-                let requested = params.get("monitor").and_then(|v| v.as_u64());
-                let picked = match requested {
-                    Some(i) => monitors.iter().find(|(info, _)| info.index as u64 == i),
-                    None => monitors
-                        .iter()
-                        .find(|(info, _)| info.primary)
-                        .or_else(|| monitors.first()),
-                }
-                .ok_or_else(|| {
-                    ServiceError::bad_params(format!(
-                        "no monitor {} (there are {})",
-                        requested.unwrap_or(0),
-                        monitors.len()
-                    ))
-                })?;
-                let (info, monitor) = picked;
-
-                let pixels = u64::from(info.width) * u64::from(info.height);
-                if pixels > MAX_PIXELS {
-                    return Err(ServiceError::new(
-                        code::INTERNAL,
-                        format!(
-                            "monitor {} is {}x{} — too large to return through the gateway",
-                            info.index, info.width, info.height
-                        ),
-                    ));
-                }
-
-                let image = monitor.capture_image().map_err(|e| {
-                    ServiceError::new(code::INTERNAL, format!("capture failed: {e}"))
-                })?;
-
-                let mut png = Vec::new();
-                image
-                    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-                    .map_err(|e| {
-                        ServiceError::new(code::INTERNAL, format!("png encode failed: {e}"))
-                    })?;
-
-                Ok(json!({
-                    "png": base64::engine::general_purpose::STANDARD.encode(&png),
-                    "width": info.width,
-                    "height": info.height,
-                    "monitor": info.index,
-                    "name": info.name,
-                    "bytes": png.len(),
-                }))
-            }
-
             _ => Err(ServiceError::new(
                 code::UNKNOWN_ACTION,
                 format!("unknown screen action `{action}`"),
             )),
         }
     }
+
+    /// The capture, as PNG bytes. This is the ONLY encoding `capture` has.
+    fn dispatch_bytes(
+        &self,
+        _app: &tauri::AppHandle,
+        _plugin_id: &str,
+        action: &str,
+        params: Value,
+    ) -> Option<Result<Vec<u8>, ServiceError>> {
+        match action {
+            "capture" => Some(capture_png(&params)),
+            _ => None,
+        }
+    }
+}
+
+/// One capture, resolved to the monitor the caller asked for.
+///
+/// The monitor pick, the size guard and the PNG encode live here rather than in
+/// `dispatch_bytes` so the selection rules have exactly one home — the reason
+/// this is a function and not three lines inside the trait method.
+fn capture_png(params: &Value) -> Result<Vec<u8>, ServiceError> {
+    let monitors = ScreenService::monitors()?;
+    if monitors.is_empty() {
+        return Err(ServiceError::new(code::INTERNAL, "no usable monitors found"));
+    }
+
+    // Default to the PRIMARY monitor rather than index 0: the order of
+    // `Monitor::all()` is the OS's, not the user's, and "capture the screen"
+    // almost always means the one they are looking at.
+    let requested = params.get("monitor").and_then(|v| v.as_u64());
+    let picked = match requested {
+        Some(i) => monitors.iter().find(|(info, _)| info.index as u64 == i),
+        None => monitors.iter().find(|(info, _)| info.primary).or_else(|| monitors.first()),
+    }
+    .ok_or_else(|| {
+        ServiceError::bad_params(format!(
+            "no monitor {} (there are {})",
+            requested.unwrap_or(0),
+            monitors.len()
+        ))
+    })?;
+    let (info, monitor) = picked;
+
+    let pixels = u64::from(info.width) * u64::from(info.height);
+    if pixels > MAX_PIXELS {
+        return Err(ServiceError::new(
+            code::INTERNAL,
+            format!(
+                "monitor {} is {}x{} — too large to return through the gateway",
+                info.index, info.width, info.height
+            ),
+        ));
+    }
+
+    let image = monitor
+        .capture_image()
+        .map_err(|e| ServiceError::new(code::INTERNAL, format!("capture failed: {e}")))?;
+
+    let mut png = Vec::new();
+    image
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .map_err(|e| ServiceError::new(code::INTERNAL, format!("png encode failed: {e}")))?;
+
+    Ok(png)
 }
