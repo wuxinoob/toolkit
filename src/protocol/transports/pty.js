@@ -60,6 +60,7 @@ import { descriptor } from '../registry.js';
 import { ProtocolError } from '../errors.js';
 import { Code } from '../codes.js';
 import { rpcTransport } from './rpc.js';
+import { toBytes } from '../codec.js';
 
 const DSR = [0x1b, 0x5b, 0x36, 0x6e]; // ESC [ 6 n
 const CPR = '\x1b[1;1R';
@@ -97,14 +98,6 @@ function consumeBell(u8) {
   let w = 0;
   for (let i = 0; i < u8.length; i += 1) if (u8[i] !== BEL) out[w++] = u8[i];
   return { data: out, bells };
-}
-
-function toU8(chunk) {
-  if (chunk instanceof Uint8Array) return chunk;
-  if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk);
-  if (ArrayBuffer.isView(chunk)) return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-  if (typeof chunk === 'string') return new TextEncoder().encode(chunk);
-  return new Uint8Array(chunk ?? 0);
 }
 
 function hasDsr(u8) {
@@ -198,6 +191,10 @@ export const ptyStreamTransport = {
       stopped = true;
       if (drainTimer) clearTimeout(drainTimer);
       if (dsrTimer) clearTimeout(dsrTimer);
+      // Anything coalesced but not yet sent goes out FIRST: a terminal frame
+      // that overtook the last output would lose it, and "the marker arrived,
+      // then no terminal frame" is the failure this file already has scars from.
+      flush();
       onFrame?.(env);
       onEnd?.(env);
       releaseNativeSession();
@@ -231,6 +228,49 @@ export const ptyStreamTransport = {
     let bellCount = 0;
     const isWindows = /win/i.test(globalThis.navigator?.platform ?? '');
 
+    /**
+     * Output coalescing — fewer, larger frames.
+     *
+     * Every data frame costs the HOST's main thread: a frame over 1 KiB goes
+     * through `Channel::fetch`, which is a **synchronous command**
+     * (`tauri/src/ipc/channel.rs`), so one 4 KiB chunk costs an `eval`, a
+     * main-thread command, and another `eval`. The pty reads 4 KiB at a time
+     * and there is no backpressure anywhere, so a chatty child can queue tens
+     * of thousands of those. When the window's message queue reaches its 10 000
+     * limit, `PostMessageW` starts failing with `ERROR_NOT_ENOUGH_QUOTA`
+     * (0x80070718) and every IPC call in the app silently stops arriving — the
+     * UI goes dead, with no error on the JS side at all.
+     *
+     * Merging whatever arrives inside one animation frame fixes the arithmetic:
+     * xterm repaints at ≤60 fps anyway, so a 16 ms window is invisible, and a
+     * busy terminal costs ~10–30× fewer main-thread round trips.
+     *
+     * The cap exists so a single flush cannot build a multi-megabyte frame (the
+     * merge allocates a new buffer); past it, flush immediately.
+     */
+    const COALESCE_MS = 16;
+    const COALESCE_MAX = 256 * 1024;
+    let pending = [];
+    let pendingBytes = 0;
+    let flushTimer = null;
+
+    const flush = () => {
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      if (pendingBytes === 0) return;
+      const merged = new Uint8Array(pendingBytes);
+      let at = 0;
+      for (const part of pending) {
+        merged.set(part, at);
+        at += part.length;
+      }
+      pending = [];
+      pendingBytes = 0;
+      onFrame?.(Envelope.data(ch, merged));
+    };
+
     const emitData = (u8) => {
       if (stopped) return;
       lastDataAt = Date.now();
@@ -248,7 +288,10 @@ export const ptyStreamTransport = {
       // Nothing left to render (a chunk that was only bells) — an empty data
       // frame would be a frame that says nothing.
       if (chunk.data.length === 0) return;
-      onFrame?.(Envelope.data(ch, chunk.data));
+      pending.push(chunk.data);
+      pendingBytes += chunk.data.length;
+      if (pendingBytes >= COALESCE_MAX) flush();
+      else if (!flushTimer) flushTimer = setTimeout(flush, COALESCE_MS);
     };
 
     // ---- fact 1: the output stream (may never end; see the header) ----
@@ -269,7 +312,7 @@ export const ptyStreamTransport = {
           return;
         }
         if (stopped) return;
-        emitData(toU8(data));
+        emitData(toBytes(data));
       }
     })();
 

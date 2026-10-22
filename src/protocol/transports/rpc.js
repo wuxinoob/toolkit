@@ -24,7 +24,17 @@ import { ProtocolError, guard } from '../errors.js';
  */
 export const DEFAULT_TIMEOUT_MS = 45_000;
 
-function withTimeout(promise, ms, what) {
+/**
+ * Race a promise against a caller-side deadline.
+ *
+ * Exported because the channel transports need the same policy on their OPEN
+ * and CLOSE calls: an `invoke` that never settles (a wedged IPC bridge after a
+ * machine resume is the case that was reported) would otherwise leave
+ * `await ctx.stream(...)` pending forever — and a plugin whose `activate()`
+ * awaits that never finishes, so its view is never registered and the panel is
+ * blank. A timeout turns that into a rejection the caller can see.
+ */
+export function withTimeout(promise, ms, what) {
   if (!ms || ms <= 0) return promise;
   let timer = null;
   return Promise.race([

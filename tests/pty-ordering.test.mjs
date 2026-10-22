@@ -166,6 +166,11 @@ const { MessageHub } = await import('../src/protocol/hub.js');
 
 const tick = async (n = 4) => {
   for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r));
+  // Output is COALESCED into one frame per animation frame (16 ms) — that is
+  // what keeps a chatty child from flooding the host's message queue. So a
+  // frame is not visible until that window closes; asserting earlier would be
+  // asserting the absence of a feature that exists on purpose.
+  await new Promise((r) => setTimeout(r, 25));
 };
 
 const openPty = (hub, ch, sink) =>
@@ -354,6 +359,45 @@ test('BEL is consumed and counted, never delivered', async () => {
   output('still here');
   await tick();
   assert.equal(delivered(), 'beforeafterstill here');
+});
+
+/**
+ * Output is COALESCED — and the last chunk still arrives before the exit frame.
+ *
+ * This is not a style preference. Every frame over 1 KiB costs the host's main
+ * thread three round trips (`Channel::fetch` is a synchronous command), the pty
+ * reads 4 KiB at a time, and nothing provides backpressure. A chatty child can
+ * therefore queue tens of thousands of messages; at the window's 10 000 limit
+ * `PostMessageW` fails with `ERROR_NOT_ENOUGH_QUOTA` (0x80070718) and every IPC
+ * call in the app stops arriving — the UI goes dead with no JS error at all.
+ * One frame per animation frame is what keeps that arithmetic sane.
+ *
+ * The second half is the dangerous half: batching must not swallow the tail.
+ * `finish()` flushes before emitting a terminal frame, which is the only reason
+ * a process that exits right after writing is not truncated.
+ */
+test('output is coalesced per window, and the tail is flushed before exit', async () => {
+  resetPty();
+  const sink = { frames: [], ended: null };
+  const hub = new MessageHub();
+  await openPty(hub, 'p9', sink);
+
+  for (const part of ['a', 'b', 'c', 'd', 'e', 'f']) output(part);
+  await new Promise((r) => setTimeout(r, 40));
+
+  const data = () => sink.frames.filter((f) => f.kind === 'data');
+  assert.equal(data().length, 1, 'six reads inside one window must become ONE frame');
+  assert.equal(new TextDecoder().decode(data()[0].p), 'abcdef', 'in order, nothing lost');
+
+  // Write, then exit immediately: the flush must happen BEFORE the terminal
+  // frame, or the tail is lost (the failure this transport was already bitten by).
+  output('tail');
+  setExit(0);
+  await new Promise((r) => setTimeout(r, 300)); // past DRAIN_MS
+
+  const kinds = sink.frames.map((f) => f.kind);
+  assert.deepEqual(kinds.slice(-2), ['data', 'exit'], `got ${kinds.join(',')}`);
+  assert.equal(new TextDecoder().decode(sink.frames.at(-2).p), 'tail', 'the tail survived');
 });
 
 /**

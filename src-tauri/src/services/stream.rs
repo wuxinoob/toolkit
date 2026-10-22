@@ -152,9 +152,33 @@ fn now_ms() -> u64 {
 /// bytes. Same producer, two wires.
 pub struct TickerProvider;
 
+/// How often a ticker may fire.
+///
+/// The floor used to be **1 ms** — 1000 frames a second, forever. Every frame
+/// costs the host's main thread at least one round trip (`Channel` delivery is
+/// an `eval`; a frame over 8 KiB is `eval` + synchronous `fetch` + `eval`), so a
+/// 1 ms ticker is a sustained queue flood that looks like an idle app: the
+/// counter is unreadable at that rate, nothing on screen changes, and the first
+/// visible symptom is that every other control in the app stops responding.
+/// 16 ms is one display frame — the fastest rate that is still meaningful.
+///
+/// The ceiling is the `setTimeout` limit for the same reason as everywhere else
+/// in this codebase: a delay above it does not wait longer, it fires at once.
+///
+/// `pub` for one reason: `cargo test` cannot load a test binary in this project
+/// (see `examples/host-checks.rs`), so the limits are pinned there instead — and
+/// an example is a separate crate, which can only see public items.
+pub fn ticker_interval(params: &Value) -> u64 {
+    params
+        .get("intervalMs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(500)
+        .clamp(16, 60_000)
+}
+
 impl TickerProvider {
     fn run(&self, plugin_id: &str, ch: &str, params: Value, sink: Sink) -> Result<(), String> {
-        let interval = params.get("intervalMs").and_then(|v| v.as_u64()).unwrap_or(500).clamp(1, 60_000);
+        let interval = ticker_interval(&params);
         let count = params.get("count").and_then(|v| v.as_u64()).unwrap_or(10).min(100_000);
         let raw = sink.is_raw();
         let cid = ch.to_string();
@@ -202,13 +226,7 @@ impl StreamProvider for BlobProvider {
         "blob"
     }
     fn open_raw(&self, plugin_id: &str, ch: &str, params: Value, sink: RawSink) -> Result<(), String> {
-        let chunks = params.get("chunks").and_then(|v| v.as_u64()).unwrap_or(8).min(10_000);
-        let size = params
-            .get("chunkBytes")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(4096)
-            .clamp(1, 1 << 20);
-        let delay = params.get("delayMs").and_then(|v| v.as_u64()).unwrap_or(0).min(1000);
+        let (chunks, size, delay) = blob_plan(&params)?;
         run_stream(plugin_id, ch, Sink::Raw(sink), move |sink, cancel, bytes| {
             for i in 0..chunks {
                 if cancel.load(Ordering::SeqCst) {
@@ -224,6 +242,37 @@ impl StreamProvider for BlobProvider {
             Ok(Outcome::End)
         })
     }
+}
+
+/// Hard ceiling on what ONE `blob` stream will emit.
+///
+/// `blob` exists to prove capability negotiation, not to move data. Its own
+/// limits still allow 10 000 × 1 MiB = 10 GiB, emitted as fast as the thread can
+/// allocate, with `delayMs: 0` by default and no backpressure anywhere in the
+/// path — one call would be enough to wedge the window. Refusing at open time
+/// reports it in the caller's own terms instead of as a dead UI later.
+const MAX_BLOB_BYTES: u64 = 64 << 20;
+
+/// `(chunks, chunkBytes, delayMs)`, validated as a whole.
+///
+/// `pub` so `examples/host-checks.rs` can pin the ceiling — see the note on
+/// [`ticker_interval`].
+pub fn blob_plan(params: &Value) -> Result<(u64, usize, u64), String> {
+    let chunks = params.get("chunks").and_then(|v| v.as_u64()).unwrap_or(8).min(10_000);
+    let size = params
+        .get("chunkBytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(4096)
+        .clamp(1, 1 << 20);
+    let delay = params.get("delayMs").and_then(|v| v.as_u64()).unwrap_or(0).min(1000);
+    let total = chunks.saturating_mul(size);
+    if total > MAX_BLOB_BYTES {
+        return Err(format!(
+            "blob would emit {total} bytes in one stream — the ceiling is {MAX_BLOB_BYTES} \
+             (this provider demonstrates the wire, it is not a data mover)"
+        ));
+    }
+    Ok((chunks, size as usize, delay))
 }
 
 pub fn providers() -> &'static [Box<dyn StreamProvider>] {

@@ -193,7 +193,7 @@ test('trace: a stream open and its frames are traced', async () => {
   // pins is that the wrap point is reached, which is the part that was missing.
   //
   // The line shape is fixed by `trace('frame', ...)` and covered by the tests
-  // that do not need a host; see the `tracedCallback` note in hub.js.
+  // that do not need a host; see the meter/trace note in hub.js.
 });
 
 test('trace: tracing never breaks delivery', async () => {

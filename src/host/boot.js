@@ -127,6 +127,157 @@ async function report(line) {
 }
 
 /**
+ * Is the host still answering? — a bridge watchdog.
+ *
+ * ## What it is for
+ *
+ * `invoke` is a `fetch` to `http://ipc.localhost/<cmd>` (see Tauri's
+ * `ipc-protocol.js`). A fetch that never settles is not an error the JS layer
+ * can see: Tauri's fallback to `postMessage` only triggers on a **rejection**,
+ * so a bridge that stops answering leaves every pending call pending forever.
+ * `rpc` has a 45 s ceiling, which means the control plane eventually fails —
+ * but a plugin that catches its errors, or a stream open with no ceiling at all,
+ * turns that into "I clicked and nothing happened", with no trace anywhere.
+ *
+ * A resume from standby is exactly when this can happen (an in-flight request
+ * is suspended with the machine), and the report from the field is exactly that
+ * shape: after a long standby most controls do nothing, one plugin's view is
+ * blank and another's buttons are dead — with **no CPU burning**, which rules
+ * out a busy loop.
+ *
+ * ## What it does — and deliberately does not do
+ *
+ * It probes `host/info` (the cheapest call that goes all the way through the
+ * gateway) every 20 s with a 5 s ceiling, and after three consecutive misses:
+ * writes what it saw to `debug.log`, shows a toast that names the recovery
+ * (the tray's 重启应用), and records the outage in `localStorage` so the NEXT
+ * boot reports it even if the user recovered by restarting.
+ *
+ * It does **not** reload or restart on its own. A reload re-runs `boot()`, which
+ * reaps host sessions — and a false positive (a machine busy compiling) would
+ * then kill the user's running terminals. Telling someone is recoverable;
+ * guessing is not.
+ */
+const WATCHDOG = {
+  intervalMs: 20_000,
+  timeoutMs: 5_000,
+  strikes: 3,
+  key: 'toolbox.bridgeOutage',
+};
+
+/**
+ * The page's JS heap, in MB — Chromium's non-standard counter, the only
+ * in-page memory signal there is.
+ *
+ * Reported with an outage because it separates the two ways a bridge dies: a
+ * small heap means the host's message queue filled (too many frames), a huge
+ * one means the renderer is holding hundreds of megabytes and stalling on GC.
+ * Those need opposite fixes, and the number costs one line.
+ */
+function jsHeapMb() {
+  const m = globalThis.performance?.memory;
+  return m && m.usedJSHeapSize ? Math.round(m.usedJSHeapSize / 1048576) : null;
+}
+
+/** Report an outage left by the previous run, then clear it. */
+async function reportPreviousOutage() {
+  try {
+    const prev = globalThis.localStorage?.getItem(WATCHDOG.key);
+    if (!prev) return;
+    globalThis.localStorage.removeItem(WATCHDOG.key);
+    await report(`previous run: the host stopped answering — ${prev}`);
+  } catch {
+    // A locked-down profile must not break boot over a diagnostic.
+  }
+}
+
+function installBridgeWatchdog() {
+  let strikes = 0;
+  let warned = false;
+  let dueAt = Date.now() + WATCHDOG.intervalMs;
+
+  const probe = async () => {
+    // A timer that fires hours late means the machine was asleep, and that is
+    // the ONE fact worth having in the log when the bridge is dead: the two
+    // reported outages both followed a long standby, and nothing else in the
+    // app records that it happened.
+    const lateBy = Date.now() - dueAt;
+    if (lateBy > 60_000) {
+      void report(
+        `bridge watchdog: the frontend was suspended for ~${Math.round(lateBy / 1000)}s ` +
+          `(timer fired ${Math.round(lateBy / 1000)}s late) — resume detected`,
+      );
+    }
+    dueAt = Date.now() + WATCHDOG.intervalMs;
+    try {
+      await hub.request(HOST_ID, 'host', 'info', {}, { timeoutMs: WATCHDOG.timeoutMs });
+      if (strikes > 0) {
+        await report(`bridge watchdog: answering again after ${strikes} missed probe(s)`);
+        strikes = 0;
+        warned = false;
+        try {
+          globalThis.localStorage?.removeItem(WATCHDOG.key);
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch (e) {
+      strikes += 1;
+      try {
+        // Survives a restart, unlike sessionStorage — and a restart is exactly
+        // how someone recovers, which is when the evidence would otherwise go.
+        globalThis.localStorage?.setItem(
+          WATCHDOG.key,
+          `${strikes} missed probe(s) in a row at ${new Date().toISOString()}`,
+        );
+      } catch {
+        /* ignore */
+      }
+      // Once per outage, not once per tick: `report` goes through the very
+      // bridge that is failing, so it is best-effort and can itself hang.
+      if (strikes === 1) {
+        const heap = jsHeapMb();
+        // The busiest channel is the OTHER half of the report: "the bridge is
+        // dead" says what happened, "channel X was doing 400 frames/s" says
+        // what to fix. Reading it here (not from the host) is deliberate — the
+        // counters live in this window and survive the bridge dying.
+        const top = hub.trafficReport()[0];
+        void report(
+          `bridge watchdog: no answer within ${WATCHDOG.timeoutMs}ms ` +
+            `(${e?.code ?? 'error'}: ${e?.message ?? e})` +
+            (heap === null ? '' : ` — js heap ${heap} MB`) +
+            (top
+              ? ` — busiest: ${top.key} ${top.framesPerSec} frames/s ` +
+                `${Math.round(top.bytesPerSec / 1024)} KiB/s`
+              : ''),
+        );
+      }
+      if (strikes >= WATCHDOG.strikes && !warned) {
+        warned = true;
+        toast(
+          '宿主没有响应（界面与后台的连接可能已断开）。若点了没反应，请用托盘菜单的「重启应用」。',
+          'error',
+          15_000,
+        );
+      }
+    }
+    schedule(probe);
+  };
+
+  /**
+   * A repeating timer that must not keep the process alive.
+   *
+   * In the browser this is just `setTimeout`. Under `node --test` a pending
+   * timer IS a live handle, so the boot smoke test would never exit — and an
+   * app-level watchdog should never be the reason a test hangs. `unref` exists
+   * on Node timers only, hence the optional call.
+   */
+  const schedule = (fn) => setTimeout(fn, WATCHDOG.intervalMs)?.unref?.();
+
+  schedule(probe);
+}
+
+/**
  * Drop sessions a previous frontend left behind.
  *
  * A page reload replaces this JS context while the host process keeps running —
@@ -296,6 +447,11 @@ export async function boot() {
       await report(`  plugin ${p.manifest.id}: ${p.status}${p.error ? ` — ${p.error}` : ''}${note}`);
     }
 
+    // 上一轮如果失联过，先把证据写进 debug.log（重启会清掉 localStorage 之外的痕迹）。
+    await reportPreviousOutage();
+    // 桥的看门狗：只观测与告知，不自动重载（重载会回收会话，误判代价太大）。
+    installBridgeWatchdog();
+
     // 更新检查是"顺带知道"，不是启动的一部分：**不 await**，失败也不吵
     // （没网、端点未配、公司代理都会失败，那些都不该看起来像启动出问题）。
     // 有更新时只更新状态，装不装由用户在设置页决定 —— 见 host/updater.js。
@@ -328,4 +484,4 @@ async function runStartupSelftest() {
   }
 }
 
-export { saveSettings };
+export { saveSettings, installBridgeWatchdog };
