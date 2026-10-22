@@ -43,6 +43,9 @@ import {
   shouldRestart,
   describeSchedule,
   describeRestart,
+  describeLastRun,
+  describeNextRun,
+  parseCron,
   pickSession,
   endedSessions,
   DEFAULT_PROFILE,
@@ -351,6 +354,32 @@ function dropEnded(profileId) {
   return ended.length;
 }
 
+/**
+ * Record that a profile started, and why.
+ *
+ * Persisted, not just kept in memory: the question it answers ("did last
+ * night's job run?") is usually asked AFTER a restart. The write is one small
+ * JSON blob on a path that already writes on every profile edit, and it only
+ * happens on a successful spawn.
+ */
+function stampRun(profileId, reason) {
+  const stored = state.profiles.find((x) => x.id === profileId);
+  if (!stored) return;
+  stored.lastRunAt = Date.now();
+  stored.lastRunReason = reason;
+  persistProfiles();
+  // The config drawer and the editor both show this; refresh them so it does
+  // not take a manual re-select to see the run that just happened. The view can
+  // be unmounted (a scheduled launch while another plugin is on screen), and
+  // every render helper needs a root, so bail out rather than throw inside a
+  // spawn.
+  const root = document.querySelector('.pm-root');
+  if (!root) return;
+  renderProfiles(root);
+  renderProfileEditor(root);
+  scheduleRenderDetail();
+}
+
 async function launchProfile(rawProfile, reason = 'manual') {
   const p = normalizeProfile(rawProfile);
   /**
@@ -411,6 +440,10 @@ async function launchProfile(rawProfile, reason = 'manual') {
     profileId: p.id,
   });
   state.log?.('profile', `launch "${p.name}" (${reason}) ch=${session.ch}`);
+  // Run history is written only on a SUCCESSFUL start: "last run" answers "did
+  // it actually run", and a spawn that failed is a different question (the
+  // session's own error is the answer to that one).
+  stampRun(p.id, reason);
   if (reason === 'manual') selectProfile(p.id);
   return session;
 }
@@ -462,6 +495,14 @@ function armSchedules() {
         state.schedTimers.delete(p.id);
         const live = state.profiles.find((x) => x.id === p.id && x.enabled);
         if (!live) return armSchedules();
+        // A delay longer than `setTimeout`'s ceiling is ARMED at the ceiling, so
+        // "the timer fired" is not the same as "it is due". Compare against the
+        // slot this timer was armed FOR: a yearly cron (`0 0 1 1 *`) is ~24 days
+        // short of its slot and must re-arm, not run in the middle of the year.
+        // (Recomputing `dueAt` here would be wrong — it answers the NEXT slot,
+        // which is by definition in the future, so every ordinary firing would
+        // be postponed.)
+        if (when - Date.now() > 1_000) return armSchedules();
         launchProfile(live, 'schedule').finally(() => armSchedules());
       }, delay),
     );
@@ -510,6 +551,12 @@ function stopProfile(profileId) {
 function upsertProfile(raw) {
   const p = normalizeProfile(raw);
   const i = state.profiles.findIndex((x) => x.id === p.id);
+  // Run history is not part of the form: a save must not look like a run, and
+  // it must not erase the answer to "did it run?" either.
+  if (i >= 0 && raw.lastRunAt === undefined) {
+    p.lastRunAt = state.profiles[i].lastRunAt;
+    p.lastRunReason = state.profiles[i].lastRunReason;
+  }
   if (i >= 0) state.profiles[i] = p;
   else state.profiles.push(p);
   persistProfiles();
@@ -988,6 +1035,7 @@ function renderProfileEditor(root) {
       schedKind: p.schedule.kind,
       schedAt: p.schedule.at,
       schedEvery: p.schedule.everyMinutes,
+      schedCron: p.schedule.cron,
       restartPolicy: p.restart.policy,
       maxRetries: p.restart.maxRetries,
       delayMs: p.restart.delayMs,
@@ -1121,8 +1169,31 @@ function renderProfileEditor(root) {
           field('env (KEY=VALUE, one per line)', el('textarea', { rows: 3, value: d.env, onInput: (e) => set('env')(e.target.value) })),
           section('Behaviour'),
           el('div', { style: 'display:flex;gap:14px;font-size:11px;' }, toggle('enabled', 'enabled'), toggle('autoStart', 'start with app')),
-          field('schedule', choice('schedKind', ['none', 'daily', 'interval'], { none: 'manual only' })),
-          pair(field('at (daily)', text('schedAt', { type: 'time' })), field('every (min)', number('schedEvery', 1, 1440))),
+          field('schedule', choice('schedKind', ['none', 'daily', 'interval', 'cron'], {
+            none: 'manual only',
+            daily: 'daily at a time',
+            interval: 'every N minutes',
+            cron: 'cron expression',
+          })),
+          // One control per kind, and only that one. Showing "at" next to
+          // "every" while "manual only" is selected was the report: two fields
+          // that cannot apply, with no way to tell which one wins.
+          d.schedKind === 'daily' ? field('at (daily)', text('schedAt', { type: 'time' })) : null,
+          d.schedKind === 'interval' ? field('every (min)', number('schedEvery', 1, 1440)) : null,
+          d.schedKind === 'cron'
+            ? field('cron (min hour dom month dow)', text('schedCron', { placeholder: '0 9 * * 1-5' }))
+            : null,
+          // What happened last time and what is coming — read from the DRAFT,
+          // so editing the expression shows its effect immediately, and an
+          // invalid one reads "never (check the schedule)" instead of quietly
+          // keeping the previous answer.
+          el(
+            'div',
+            { class: 'tb-hint', style: 'font-size:11px;line-height:1.5;' },
+            `last run ${describeLastRun(editing ?? {})}`,
+            el('br'),
+            `next ${describeNextRun({ schedule: { kind: d.schedKind, at: d.schedAt, everyMinutes: d.schedEvery, cron: d.schedCron } }, null)}`,
+          ),
           field('restart on exit', choice('restartPolicy', ['never', 'on-failure', 'always'])),
           pair(field('max retries', number('maxRetries', 0, 100)), field('delay (ms)', number('delayMs', 0, 600000))),
           section('Terminal'),
@@ -1191,6 +1262,18 @@ function onProfileSubmit(ev) {
   ev.preventDefault();
   const d = state.draft;
   if (!d) return;
+  // An unparseable expression is refused HERE rather than normalised away: the
+  // profile would otherwise save happily and simply never run, which looks
+  // exactly like a schedule that is working until you check.
+  if (d.schedKind === 'cron' && !parseCron(d.schedCron)) {
+    const err = ev.target.querySelector('.pm-profile-err');
+    if (err) {
+      err.textContent =
+        `invalid cron expression "${String(d.schedCron ?? '').trim()}" — ` +
+        `use "minute hour day month weekday", e.g. 0 9 * * 1-5`;
+    }
+    return;
+  }
   upsertProfile({
     id: d.id,
     name: String(d.name ?? '').trim(),
@@ -1204,7 +1287,7 @@ function onProfileSubmit(ev) {
     rows: d.rows,
     enabled: !!d.enabled,
     autoStart: !!d.autoStart,
-    schedule: { kind: d.schedKind, at: d.schedAt, everyMinutes: d.schedEvery },
+    schedule: { kind: d.schedKind, at: d.schedAt, everyMinutes: d.schedEvery, cron: d.schedCron },
     restart: { policy: d.restartPolicy, maxRetries: d.maxRetries, delayMs: d.delayMs },
   });
   state.editingId = null;
@@ -1410,6 +1493,8 @@ function renderDetail() {
       fact('program', [prof.program, ...(prof.args || [])].join(' ') || '—'),
       fact('cwd', prof.cwd || '(inherit)'),
       fact('schedule', describeSchedule(prof.schedule)),
+      fact('last run', describeLastRun(prof)),
+      fact('next run', describeNextRun(prof, state.lastFired.get(prof.id) ?? null)),
       fact('restart', describeRestart(prof.restart) + (s && s.attempts ? ` · ${s.attempts}×` : '')),
       fact('auto-start', prof.autoStart ? 'yes' : 'no'),
       fact('enabled', prof.enabled ? 'yes' : 'no'),

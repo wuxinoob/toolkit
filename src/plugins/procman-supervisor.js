@@ -13,8 +13,11 @@
 /** Where the profiles live in the plugin's own storage. */
 export const PROFILES_KEY = 'profiles';
 
-export const SCHEDULE_KINDS = ['none', 'daily', 'interval'];
+export const SCHEDULE_KINDS = ['none', 'daily', 'interval', 'cron'];
 export const RESTART_POLICIES = ['never', 'on-failure', 'always'];
+
+/** Why a profile last started — shown next to its timestamp. */
+export const RUN_REASONS = ['manual', 'schedule', 'autostart', 'restart'];
 
 /** What a profile looks like when nothing is known about it. */
 export const DEFAULT_PROFILE = Object.freeze({
@@ -28,8 +31,12 @@ export const DEFAULT_PROFILE = Object.freeze({
   rows: 24,
   enabled: true,
   autoStart: false,
-  schedule: { kind: 'none', at: '09:00', everyMinutes: 30 },
+  schedule: { kind: 'none', at: '09:00', everyMinutes: 30, cron: '0 9 * * *' },
   restart: { policy: 'never', maxRetries: 3, delayMs: 2000 },
+  // Run history: filled in by the launcher, shown in the config pane. Part of
+  // the default shape so `normalizeProfile(DEFAULT_PROFILE)` is a fixed point.
+  lastRunAt: 0,
+  lastRunReason: '',
 });
 
 const clampInt = (v, lo, hi, fallback) => {
@@ -73,7 +80,15 @@ export function normalizeProfile(input) {
       kind,
       at: parseClock(sched.at) === null ? '09:00' : String(sched.at),
       everyMinutes: clampInt(sched.everyMinutes, 1, 24 * 60, 30),
+      // Stored as typed, not validated here: an expression that does not parse
+      // makes `dueAt` return null (no schedule) and the editor refuses to save
+      // it, so the user keeps seeing what they typed instead of a silent default.
+      cron: String(sched.cron ?? DEFAULT_PROFILE.schedule.cron).trim().slice(0, 120),
     },
+    // Run history — written by the launcher, never by the form. Normalised here
+    // so a hand-edited or corrupted profile cannot poison the display.
+    lastRunAt: Number.isFinite(raw.lastRunAt) && raw.lastRunAt > 0 ? Number(raw.lastRunAt) : 0,
+    lastRunReason: RUN_REASONS.includes(raw.lastRunReason) ? raw.lastRunReason : '',
     restart: {
       policy,
       maxRetries: clampInt(restart.maxRetries, 0, 100, 3),
@@ -105,6 +120,133 @@ export function parseEnv(lines) {
   return out;
 }
 
+/* ------------------------------------ cron ----------------------------------- */
+
+/**
+ * One cron field (`*`, `a`, `a-b`, `a,b`, and `/n` steps on any of them).
+ *
+ * Returns a Set of allowed values, or null if the field is not valid. Null is
+ * propagated all the way to `dueAt`, which then answers "no schedule" — a
+ * schedule that cannot be computed must be inert, never "run every minute".
+ */
+function parseCronField(spec, lo, hi) {
+  const out = new Set();
+  for (const part of String(spec).split(',')) {
+    if (!part) return null;
+    const slash = part.indexOf('/');
+    const range = slash < 0 ? part : part.slice(0, slash);
+    let step = 1;
+    if (slash >= 0) {
+      const digits = part.slice(slash + 1);
+      if (!/^\d+$/.test(digits)) return null;
+      step = Number.parseInt(digits, 10);
+      if (step < 1) return null;
+    }
+    let start;
+    let end;
+    if (range === '*') {
+      start = lo;
+      end = hi;
+    } else if (/^\d+$/.test(range)) {
+      start = Number.parseInt(range, 10);
+      end = start;
+    } else {
+      const m = /^(\d+)-(\d+)$/.exec(range);
+      if (!m) return null;
+      start = Number.parseInt(m[1], 10);
+      end = Number.parseInt(m[2], 10);
+    }
+    if (start < lo || end > hi || start > end) return null;
+    for (let v = start; v <= end; v += step) out.add(v);
+  }
+  return out.size ? out : null;
+}
+
+/**
+ * Parse a five-field expression: `minute hour day-of-month month day-of-week`.
+ *
+ * Day-of-week accepts 0–7 with BOTH 0 and 7 meaning Sunday, which is the one
+ * cron detail people get wrong often enough that accepting both is cheaper than
+ * explaining it.
+ *
+ * Deliberately NOT supported: names (`MON`, `JAN`) and macros (`@daily`). A
+ * misspelled name would otherwise mean "never matches" — a schedule that looks
+ * configured and silently does nothing, which is the failure mode this whole
+ * file is written to avoid.
+ *
+ * `domAll` / `dowAll` are recorded because POSIX says the two day fields OR
+ * together when both are restricted, and the restricted one wins otherwise.
+ */
+export function parseCron(text) {
+  const parts = String(text ?? '').trim().split(/\s+/);
+  if (parts.length !== 5) return null;
+  const minutes = parseCronField(parts[0], 0, 59);
+  const hours = parseCronField(parts[1], 0, 23);
+  const dom = parseCronField(parts[2], 1, 31);
+  const months = parseCronField(parts[3], 1, 12);
+  const dow = parseCronField(parts[4], 0, 7);
+  if (!minutes || !hours || !dom || !months || !dow) return null;
+  if (dow.has(7)) {
+    dow.delete(7);
+    dow.add(0); // 7 and 0 are both Sunday
+  }
+  return {
+    minutes,
+    hours,
+    dom,
+    months,
+    dow,
+    domAll: parts[2] === '*',
+    dowAll: parts[4] === '*',
+  };
+}
+
+function cronDayMatches(cron, date) {
+  const domOk = cron.dom.has(date.getDate());
+  const dowOk = cron.dow.has(date.getDay());
+  if (cron.domAll && cron.dowAll) return true;
+  if (cron.domAll) return dowOk;
+  if (cron.dowAll) return domOk;
+  return domOk || dowOk; // both restricted: POSIX OR
+}
+
+/**
+ * The first minute strictly after `afterMs` that the expression matches.
+ *
+ * Jumps whole months / days / hours that cannot match instead of walking
+ * minute by minute: `0 0 1 1 *` (once a year) would otherwise scan half a
+ * million minutes on every re-arm. The five-year horizon exists so a leap-day
+ * expression (`0 0 29 2 *`) still resolves; past it the answer is null, i.e.
+ * "no schedule" rather than a wrong one.
+ */
+export function nextCronAfter(text, afterMs) {
+  const cron = typeof text === 'string' ? parseCron(text) : text;
+  if (!cron) return null;
+  let t = Math.floor(afterMs / 60_000) * 60_000 + 60_000; // next whole minute
+  const limit = t + 5 * 366 * 24 * 60 * 60_000;
+  while (t <= limit) {
+    const d = new Date(t);
+    if (!cron.months.has(d.getMonth() + 1)) {
+      t = new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime();
+      continue;
+    }
+    if (!cronDayMatches(cron, d)) {
+      t = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime();
+      continue;
+    }
+    if (!cron.hours.has(d.getHours())) {
+      t = new Date(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours() + 1).getTime();
+      continue;
+    }
+    if (!cron.minutes.has(d.getMinutes())) {
+      t += 60_000;
+      continue;
+    }
+    return t;
+  }
+  return null;
+}
+
 /**
  * When should this profile next start? `null` means "it has no schedule".
  *
@@ -123,6 +265,13 @@ export function dueAt(schedule, nowMs, lastFiredMs = null) {
     // keeps the phase sane in that direction too. It is a no-op for an anchor
     // in the past, which is the ordinary case.
     return Math.min((lastFiredMs ?? nowMs) + every, nowMs + every);
+  }
+  if (kind === 'cron') {
+    // Absolute wall-clock matches, so the anchor is the LATER of "now" and the
+    // last firing: a slot missed while the machine slept is skipped rather than
+    // replayed, which is what a cron user expects of a minute-level schedule.
+    const floor = Math.max(nowMs, lastFiredMs ?? 0);
+    return nextCronAfter(schedule.cron, floor);
   }
   if (kind === 'daily') {
     const minutes = parseClock(schedule.at);
@@ -184,7 +333,60 @@ export function describeSchedule(schedule) {
   const s = normalizeProfile({ schedule }).schedule;
   if (s.kind === 'daily') return `daily at ${s.at}`;
   if (s.kind === 'interval') return `every ${s.everyMinutes} min`;
+  if (s.kind === 'cron') return `cron ${s.cron}`;
   return 'manual';
+}
+
+const pad2 = (n) => String(n).padStart(2, '0');
+
+/** Local `YYYY-MM-DD HH:MM`. Seconds are noise at this scale. */
+export function stamp(ms) {
+  const d = new Date(ms);
+  return (
+    `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +
+    `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+  );
+}
+
+function humanAgo(ms) {
+  if (ms < 60_000) return 'just now';
+  const min = Math.round(ms / 60_000);
+  if (min < 60) return `${min} min ago`;
+  const hours = Math.round(min / 60);
+  if (hours < 24) return `${hours} h ago`;
+  return `${Math.round(hours / 24)} d ago`;
+}
+
+function humanGap(ms) {
+  if (ms < 60_000) return 'in <1 min';
+  const min = Math.round(ms / 60_000);
+  if (min < 60) return `in ${min} min`;
+  const hours = Math.round(min / 60);
+  if (hours < 48) return `in ${hours} h`;
+  return `in ${Math.round(hours / 24)} d`;
+}
+
+/**
+ * When this profile last started, and why — `never` if it has not.
+ *
+ * Worth persisting (not just keeping in memory) because the question it answers
+ * is asked after a restart: "did last night's job run?".
+ */
+export function describeLastRun(profile, nowMs = Date.now()) {
+  const at = Number(profile?.lastRunAt) || 0;
+  if (!at) return 'never';
+  const reason = profile?.lastRunReason ? ` (${profile.lastRunReason})` : '';
+  return `${stamp(at)}${reason} · ${humanAgo(nowMs - at)}`;
+}
+
+/**
+ * When it is next due, given the scheduler's anchor. `—` when there is none,
+ * which is also how an invalid cron expression shows up.
+ */
+export function describeNextRun(profile, lastFiredMs = null, nowMs = Date.now()) {
+  const when = dueAt(profile?.schedule, nowMs, lastFiredMs);
+  if (when === null) return profile?.schedule?.kind === 'none' ? '—' : 'never (check the schedule)';
+  return `${stamp(when)} · ${humanGap(when - nowMs)}`;
 }
 
 /** A short human summary of the restart policy. */

@@ -526,3 +526,25 @@ npm run build / npm run deploy:examples / npm run preview:theme / npm run bench
 
 **验证**：`node --test` **334 项全过**；`npm run build` 通过；文档 `PROTOCOL` §3「When a frame is lost」
 与 `INTERFACES` §3 第 4 条防线。
+
+### 14.33 procman：cron 计划、字段按类型显示、上次运行时间（2026-10-22）
+- **新计划类型 `cron`**（`SCHEDULE_KINDS` 第四项），五字段 `分 时 日 月 周`：
+  支持 `*` / `a` / `a-b` / `a,b` / 任意一项加 `/n`；周 0 与 7 都是周日；
+  **不支持**名字（`MON`）与宏（`@daily`）—— 拼错的名字会变成"永不匹配"，
+  正是本文件一直在避免的静默失败。
+- **解析失败 = 无计划**（`dueAt` 返回 null → 不挂定时器），**编辑器拒绝保存**并给出示例。
+  两道都要：只靠 normalize 会把用户输入悄悄换回默认值。
+- **`nextCronAfter` 按天/小时跳**，不逐分钟走：`0 0 1 1 *` 逐分钟要扫 50 万次；5 年窗口保证
+  `0 0 29 2 *`（闰日）可达。DOM/DOW 双限制时按 POSIX **取或**。
+- **⚠️ `setTimeout` 上限（2^31-1 ≈ 24.8 天）不是"到期"**：`scheduleDelay` 会把超长延迟夹到上限，
+  于是年度 cron 会在年中触发。`armSchedules` 的回调改成**比较当初挂的那个 `when`**
+  （`when - now > 1s` → 重新挂）。**不要在这里重新算 `dueAt`** —— 它回答的是"下一个槽位"，
+  永远在未来，那样每次正常触发都会被推迟。守卫：`tests/procman-schedule.test.mjs` 的"年度 cron"用例
+  （去掉那一行会变红）。
+- **上次运行时间**：`profile.lastRunAt` + `lastRunReason`（`manual|schedule|autostart|restart`），
+  **持久化**（"昨晚的任务跑了吗"通常在重启后才问），只在**成功 spawn** 后写；
+  `upsertProfile` 保存表单时**保留**运行记录（表单不含这两个字段，不能因为保存就被清空）。
+  显示在 Config 抽屉（`last run` / `next run`）和编辑对话框（`last run … / next …`，读的是**草稿**，
+  所以改 cron 立刻能看到下一次）。
+- **表单字段按类型显示**：`none` 只显示 schedule 选择器；`daily` 只显示时间；`interval` 只显示分钟；
+  `cron` 只显示表达式。原来三行并排，选"manual only"时那两个字段仍然可编辑，且没有说明谁生效。

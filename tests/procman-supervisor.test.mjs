@@ -22,6 +22,10 @@ import {
   shouldRestart,
   describeSchedule,
   describeRestart,
+  describeLastRun,
+  describeNextRun,
+  parseCron,
+  nextCronAfter,
   pickSession,
   endedSessions,
 } from '../src/plugins/procman-supervisor.js';
@@ -284,4 +288,116 @@ test('endedSessions answers an empty list when there is nothing to drop', () => 
   assert.deepEqual(endedSessions([live], 'p'), [], 'a live session is not a leftover');
   assert.deepEqual(endedSessions([{ ch: 'a', profileId: 'p', status: 'exited' }], null), []);
   assert.deepEqual(endedSessions([{ ch: 'a', profileId: 'p', status: 'exited' }], ''), []);
+});
+
+// ------------------------------------ cron -----------------------------------
+
+/**
+ * A schedule that cannot be computed must be INERT, never "runs constantly".
+ * That is the property behind every rejection below: the parser returning null
+ * is what makes `dueAt` answer "no schedule" instead of arming a timer.
+ */
+test('parseCron accepts the five-field syntax people actually type', () => {
+  const daily = parseCron('0 9 * * *');
+  assert.ok(daily, 'a plain daily expression parses');
+  assert.deepEqual([...daily.minutes], [0]);
+  assert.deepEqual([...daily.hours], [9]);
+  assert.equal(daily.domAll, true);
+  assert.equal(daily.dowAll, true);
+
+  const step = parseCron('*/15 * * * *');
+  assert.deepEqual([...step.minutes], [0, 15, 30, 45], 'steps expand');
+
+  const weekdays = parseCron('30 8 * * 1-5');
+  assert.deepEqual([...weekdays.dow], [1, 2, 3, 4, 5], 'ranges expand');
+  assert.equal(weekdays.dowAll, false, 'a restricted day field is not "every day"');
+
+  const list = parseCron('0,30 9,18 * * *');
+  assert.deepEqual([...list.hours], [9, 18], 'lists expand');
+
+  assert.deepEqual([...parseCron('0 9 * * 7').dow], [0], '7 is Sunday, like 0');
+  assert.deepEqual([...parseCron('0 9 * * 0').dow], [0]);
+});
+
+test('parseCron rejects what it cannot honour, instead of guessing', () => {
+  for (const bad of [
+    '',
+    '0 9 * *',           // four fields
+    '0 9 * * * *',       // six fields
+    '60 9 * * *',        // minute 60
+    '0 24 * * *',        // hour 24
+    '0 9 0 * *',         // day-of-month starts at 1
+    '0 9 32 * *',
+    '0 9 * 13 *',        // month 13
+    '0 9 * * 8',         // day-of-week 8
+    '*/0 * * * *',       // zero step
+    '5-1 * * * *',       // inverted range
+    '0 9 * * MON',       // names are not supported (documented)
+    '@daily',            // macros are not supported (documented)
+  ]) {
+    assert.equal(parseCron(bad), null, `"${bad}" must be rejected`);
+  }
+});
+
+test('nextCronAfter finds the next match, and is strictly after the anchor', () => {
+  assert.equal(nextCronAfter('0 9 * * *', at(8, 30)), at(9), 'same day, later hour');
+  assert.equal(nextCronAfter('0 9 * * *', at(9)), at(9, 0, 19), 'exactly on the mark rolls to tomorrow');
+  assert.equal(nextCronAfter('*/15 * * * *', at(9, 7)), at(9, 15), 'step lands on the grid');
+  assert.equal(
+    nextCronAfter('0 0 1 * *', at(10, 0, 18)),
+    new Date(2026, 9, 1, 0, 0, 0, 0).getTime(),
+    'monthly rolls to the 1st of NEXT month, not the one just past',
+  );
+  assert.equal(
+    nextCronAfter('0 9 * * 1-5', at(18, 0, 18)), // Friday evening
+    new Date(2026, 8, 21, 9, 0, 0, 0).getTime(), // Monday 21st
+    'a weekday expression skips the weekend',
+  );
+
+  const leap = nextCronAfter('0 0 29 2 *', at(10));
+  const d = new Date(leap);
+  assert.deepEqual([d.getFullYear(), d.getMonth(), d.getDate()], [2028, 1, 29], 'leap day is reachable');
+
+  assert.equal(nextCronAfter('nonsense', at(10)), null, 'an invalid expression has no next time');
+});
+
+test('dueAt treats cron as absolute wall-clock time', () => {
+  const sched = { kind: 'cron', cron: '0 9 * * *' };
+  assert.equal(dueAt(sched, at(8), null), at(9), 'next 09:00 after now');
+
+  // The anchor can be AHEAD of the clock (a manual clock change, an NTP
+  // correction). The answer must stay after it, or the timer fires immediately
+  // and the schedule spins.
+  assert.equal(dueAt(sched, at(8), at(9)), at(9, 0, 19), 'never before the last firing');
+
+  assert.equal(dueAt({ kind: 'cron', cron: 'bad' }, at(8), null), null, 'invalid = no schedule');
+  assert.equal(describeSchedule({ kind: 'cron', cron: '0 9 * * 1-5' }), 'cron 0 9 * * 1-5');
+});
+
+// ------------------------------- run history --------------------------------
+
+test('the last-run line answers "did it run?" without a clock in your head', () => {
+  assert.equal(describeLastRun({ lastRunAt: 0 }), 'never');
+  assert.equal(
+    describeLastRun({ lastRunAt: at(9), lastRunReason: 'schedule' }, at(11)),
+    '2026-09-18 09:00 (schedule) · 2 h ago',
+  );
+  assert.equal(
+    describeLastRun({ lastRunAt: at(9), lastRunReason: '' }, at(9, 30)),
+    '2026-09-18 09:00 · 30 min ago',
+    'a profile with no recorded reason still shows the time',
+  );
+  // Garbage in storage must not print `NaN` at the user.
+  assert.equal(describeLastRun({ lastRunAt: 'yesterday' }), 'never');
+});
+
+test('the next-run line is honest about a schedule it cannot compute', () => {
+  assert.equal(describeNextRun({ schedule: { kind: 'none' } }), '—');
+  assert.equal(
+    describeNextRun({ schedule: { kind: 'cron', cron: 'bad' } }),
+    'never (check the schedule)',
+    'an unparseable expression must not look scheduled',
+  );
+  const line = describeNextRun({ schedule: { kind: 'cron', cron: '0 9 * * *' } }, null, at(8));
+  assert.equal(line, '2026-09-18 09:00 · in 1 h');
 });

@@ -53,7 +53,7 @@ const MINUTE = 60_000;
  * a process must not die because a view was rebuilt), so a second activation
  * with the SAME id would find a live session and skip its auto-start.
  */
-function makeCtx(id = 'p1') {
+function makeCtx(id = 'p1', schedule = { kind: 'interval', everyMinutes: 1 }, overrides = {}) {
   const profile = {
     id,
     name: `watcher-${id}`,
@@ -61,7 +61,8 @@ function makeCtx(id = 'p1') {
     args: ['-e', 'setInterval(() => {}, 1000)'],
     enabled: true,
     autoStart: true,
-    schedule: { kind: 'interval', everyMinutes: 1 },
+    schedule,
+    ...overrides,
   };
   const spawns = [];
   const notifies = [];
@@ -160,4 +161,101 @@ test('a manual Run still says the profile is already running', async (t) => {
   assert.equal(spawns.length, 1, 'pressing Run on a live profile does not start a second copy');
   assert.equal(notifies.length, 1, 'a person pressing Run gets an answer');
   assert.match(notifies[0].msg, /already running/);
+});
+
+// ------------------------------------ cron -----------------------------------
+
+/**
+ * A cron schedule is the one kind whose slots are NOT evenly spaced, so "fire
+ * every time the timer wakes up" and "fire at each matching minute" are
+ * different answers. Both tests below would pass for a schedule that simply
+ * fired once per minute — so the five-minute case is the one that matters: it
+ * must produce nothing for four minutes.
+ */
+test('a cron schedule fires at its matching minutes, once each', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: T0 });
+  const { ctx, spawns, logs } = makeCtx(
+    'cron1',
+    { kind: 'cron', cron: '* * * * *' },
+    { autoStart: false },
+  );
+  t.after(() => deactivate());
+
+  await activate(ctx);
+  assert.equal(spawns.length, 0, 'auto-start is off, so nothing runs yet');
+
+  const advance = async (seconds) => {
+    for (let i = 0; i < seconds; i++) {
+      t.mock.timers.tick(1000);
+      await settle();
+    }
+  };
+
+  // T0 is exactly 09:00:00; the first match is 09:01:00.
+  await advance(60);
+  assert.equal(spawns.length, 1, 'fired at the top of the minute');
+  assert.match(logs.find((l) => /launch/.test(l)) ?? '', /\(schedule\)/, 'and it was the schedule that did it');
+
+  // The process stays up, so the next slot is consumed as a no-op — which is
+  // exactly how we can tell the timer fired at 09:02 without a second spawn.
+  await advance(60);
+  assert.equal(spawns.length, 1, 'one profile still owns one process');
+  assert.equal(
+    logs.filter((l) => /already running/.test(l)).length,
+    1,
+    `the 09:02 slot must fire exactly once, log: ${JSON.stringify(logs)}`,
+  );
+});
+
+test('a five-minute cron is silent for the four minutes in between', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: T0 });
+  const { ctx, spawns } = makeCtx(
+    'cron5',
+    { kind: 'cron', cron: '*/5 * * * *' },
+    { autoStart: false },
+  );
+  t.after(() => deactivate());
+
+  await activate(ctx);
+  for (let i = 0; i < 4 * 60; i++) {
+    t.mock.timers.tick(1000);
+    await settle();
+  }
+  assert.equal(spawns.length, 0, '09:01–09:04 do not match */5');
+
+  for (let i = 0; i < 61; i++) {
+    t.mock.timers.tick(1000);
+    await settle();
+  }
+  assert.equal(spawns.length, 1, '09:05 does');
+});
+
+/**
+ * `setTimeout` cannot hold a delay above 2^31-1 ms (~24.8 days): the timer is
+ * armed at the ceiling instead. So "the timer fired" is not "it is due" — and a
+ * schedule that treats the two as the same runs in the middle of the year.
+ *
+ * `0 0 1 1 *` is ~105 days out from the test clock, i.e. four ceiling-length
+ * checkpoints before the real slot.
+ */
+test('a cron slot beyond the timer ceiling waits, then fires on the day', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: T0 });
+  const { ctx, spawns } = makeCtx(
+    'cronYear',
+    { kind: 'cron', cron: '0 0 1 1 *' },
+    { autoStart: false },
+  );
+  t.after(() => deactivate());
+
+  await activate(ctx);
+
+  for (let i = 0; i < 4; i++) {
+    t.mock.timers.tick(2 ** 31 - 1);
+    await settle();
+    assert.equal(spawns.length, 0, `checkpoint ${i + 1} is not the due date`);
+  }
+
+  t.mock.timers.tick(2 ** 31 - 1);
+  await settle();
+  assert.equal(spawns.length, 1, 'the fifth wake-up crosses Jan 1 and fires');
 });
