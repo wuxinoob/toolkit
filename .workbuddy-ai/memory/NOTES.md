@@ -548,3 +548,29 @@ npm run build / npm run deploy:examples / npm run preview:theme / npm run bench
   所以改 cron 立刻能看到下一次）。
 - **表单字段按类型显示**：`none` 只显示 schedule 选择器；`daily` 只显示时间；`interval` 只显示分钟；
   `cron` 只显示表达式。原来三行并排，选"manual only"时那两个字段仍然可编辑，且没有说明谁生效。
+
+### 14.34 插件接口/协议变更审计（2026-10-23）
+审计范围 `147ccc4..HEAD`（v0.1.3 之后）。**结论：接口变了，而且当初漏了 bump `HOST_API`。**
+
+| 层 | 变了吗 | 内容 |
+|---|---|---|
+| 信封（`v`/`kind`/`id`/`ch`/`svc`/`act`/`code`/`msg`/`p`） | **没变** | `envelope.js`/`envelope.rs` 一行未动，`PROTOCOL_VERSION` 仍 1 |
+| 错误码闭集 | **没变** | `codes.js` / `codes.rs` 都没改（丢帧用的是已有的 `transport`） |
+| 权限词 | **没变** | `ctx.bytes` 复用 `rpc:<svc>`，没有新词 |
+| `ctx` / `bridge` 顶层键 | **各 +1** | `bytes`（其余 28 个键一个没动） |
+| `ctx.screen.capture()` 返回 | **破坏性** | `{png:base64,…}` → `Uint8Array`；`ctx.rpc('screen','capture')` 变成 `unsupported` |
+| `host/schema` | 加法 | 新增 `binaryActions` |
+| 传输行为 | 行为变化，形状不变 | pty 合帧（16ms）、`stdio-line` pollMs 钳 [10,5000] + 120/s 预算、`ticker` 下限 16ms、`blob` 总量 64 MiB、流 open/close 有超时、丢帧→`stream.err(transport)` |
+
+**修掉的缺口**：`HOST_API` 原来还是 4 —— 一个读 `shot.png` 的插件会拿到 `undefined`
+（`Uint8Array` 没这个属性），**静默**。已 bump 到 **5** 并在 `contract.js` 的 History 里写明理由。
+配套：6 个夹具插件的 `plugin.json` 与代码内 `manifest` 都升到 5（有守卫要求两边一致、且等于 `HOST_API`）；
+`docs/PROTOCOL.md` / `plugin-dev/{README,manifest}.md` 的示例版本同步；`FILE-ACCESS-PLAN` 里
+"读二进制必须 base64" 的旧说法改正（`rpc-raw` 已经不需要）。
+**新增守卫** `versions.test.mjs`「每个 HOST_API 版本都要有理由」：bump 了却没写 History 就变红
+（实测删掉第 5 条会红）。它管的是"为什么变"，"忘了 bump"仍靠 `sdk-parity` + 夹具声明。
+
+**已装插件实测**：devtool / eyecare.demo / moment-notes 都是 `api: 3`，权限只用
+`rpc:proc|storage|bus|dialog` + `win:manage`，**都不使用 `screen`/`ticker`/`blob`/`ctx.bytes`** →
+代码零改动；升级后它们的插件行会出现"built for host API 3, this host provides 5"的**告警**
+（预期，重新部署时把 `api` 改成 5 即可消掉）。

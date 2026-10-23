@@ -15,7 +15,7 @@
   "id": "my.plugin",
   "name": "My Plugin",
   "version": "0.1.0",
-  "api": 3,
+  "api": 5,
   "entry": "main.js",
   "description": "一句话说明这个插件干什么",
   "contributes": { },
@@ -165,7 +165,7 @@ Rust 侧 `host/registry.rs`（权威，fail-closed，未注册即拒绝）。
   "id": "my.plugin",
   "name": "My Plugin",
   "version": "0.1.0",
-  "api": 3,
+  "api": 5,
   "entry": "main.js",
   "description": "示例",
   "contributes": {

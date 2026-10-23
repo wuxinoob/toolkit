@@ -104,6 +104,29 @@ test('the plugin API version is a number the host can actually serve', () => {
 });
 
 /**
+ * 接口版本号只有"为什么变"才有用。
+ *
+ * 这一条不假装能发现"改了形状却忘了 bump"（那是 `tests/sdk-parity.test.mjs` 和
+ * 示例插件的 api 声明在做的事），它管的是另一半：**bump 了就必须写清理由**。
+ * 否则下一个人只能去 diff 两版 SDK 才能知道 4 和 5 差在哪 —— 而这正是
+ * `ctx.screen.capture()` 悄悄换返回值时最需要的那句话。
+ */
+test('every host API version has a written reason', () => {
+  const src = read('src', 'protocol', 'contract.js');
+  const api = Number(src.match(/HOST_API\s*=\s*(\d+)/)[1]);
+  const history = src.slice(src.indexOf('History:'), src.indexOf('export const HOST_API'));
+  const missing = [];
+  for (let v = 1; v <= api; v++) {
+    if (!new RegExp(`^\\s*\\*\\s*${v} — `, 'm').test(history)) missing.push(v);
+  }
+  assert.deepEqual(
+    missing,
+    [],
+    `HOST_API=${api}，但 History 里没有这些版本的理由：${missing.join(', ')}`,
+  );
+});
+
+/**
  * `tauri` 的版本，从 `Cargo.lock` 里取。
  *
  * **不能假设换行是 `\n`。** 这个仓库没有 `.gitattributes`，而它的 autocrlf 是打开的：

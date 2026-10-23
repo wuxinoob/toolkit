@@ -41,8 +41,15 @@ import { Code, ALL_CODES } from './codes.js';
  *       without a `key` are reused by position (a deleted row's DOM passes to
  *       the row below it — add `key`), and `defaultValue` is initial-only now
  *       (a live value belongs in `value` / `modelValue`).
+ *   5 — a screenshot answers with BYTES. `ctx.screen.capture()` returns a
+ *       `Uint8Array` instead of `{ png: <base64>, width, height, … }`, and
+ *       `ctx.rpc('screen','capture')` no longer exists (`unsupported`, pointing
+ *       at `ctx.bytes`). Added: `ctx.bytes` / `bridge.bytes`, a request whose
+ *       answer is binary (same `rpc:<svc>` permission). A plugin built for 4
+ *       that reads `shot.png` gets `undefined` — silently, because a
+ *       `Uint8Array` has no such property. That is why this is a bump.
  */
-export const HOST_API = 4;
+export const HOST_API = 5;
 
 export function protocolContract() {
   return Object.freeze({

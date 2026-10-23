@@ -290,14 +290,14 @@ They move independently, so they are tracked separately. A plugin declares the
 host API it was built for in its manifest:
 
 ```jsonc
-{ "id": "probe.demo", "version": "0.1.0", "api": 3, … }
+{ "id": "probe.demo", "version": "0.1.0", "api": 5, … }
 ```
 
 If the declaration does not match, the host records it on the plugin row and the
 boot trace says so:
 
 ```
-  plugin probe.demo: active [built for host API 1, this host provides 3 — re-deploy the plugin if it misbehaves]
+  plugin probe.demo: active [built for host API 4, this host provides 5 — re-deploy the plugin if it misbehaves]
 ```
 
 A mismatch is a **warning, not a failure** — a plugin built for an older shape
@@ -306,7 +306,13 @@ added after a real incident: `ctx.events.on` became async (api 2), and an
 already-deployed plugin calling the returned value directly failed with the
 cryptic `off is not a function`. **API 2 is a breaking change** — any plugin
 built for api 1 that calls the result of `subscribe`/`on` synchronously must be
-re-deployed. Built-in plugins ship with the host and cannot go stale, which is
+re-deployed.
+
+**API 5 is one too**: `ctx.screen.capture()` answers with the PNG itself
+(`Uint8Array`) instead of `{ png: <base64>, … }`, and `ctx.rpc('screen',
+'capture')` is gone. A plugin built for 4 that reads `shot.png` gets `undefined`
+— silently, because a typed array has no such property. The replacement is one
+line: `URL.createObjectURL(new Blob([png], { type: 'image/png' }))`. Built-in plugins ship with the host and cannot go stale, which is
 why only external examples declare `api`.
 
 A secondary window gets **almost** the same surface through `bridge`
