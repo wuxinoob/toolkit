@@ -77,6 +77,14 @@ test('three missed probes surface a toast and leave evidence for the next boot',
   assert.equal(store.toasts.length, 1, 'three consecutive misses must tell the user');
   assert.match(store.toasts[0].message, /重启应用/, 'and must name the recovery');
   assert.match(ls.get(KEY) ?? '', /3 missed probe/, 'the outage survives a restart');
+
+  // The log line alone ("no answer") does not say WHERE it stopped. The watchdog
+  // therefore asks the host directly, and `host_diag` is the only command that
+  // can answer when the gateway is the thing that is broken.
+  assert.ok(
+    calls.some((c) => c.cmd === 'host_diag'),
+    `the watchdog must ask the host where it is stuck — calls: ${calls.map((c) => c.cmd).join(',')}`,
+  );
 });
 
 test('a host that answers again clears the evidence and re-arms the warning', async (t) => {

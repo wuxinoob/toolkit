@@ -155,6 +155,16 @@ pub fn list(plugin: Option<&str>) -> Vec<Value> {
     out
 }
 
+/// `count()` that refuses to wait.
+///
+/// `None` means someone is holding the registry — which is itself the answer the
+/// diagnostic is looking for (a stuck call that parked inside the registry, not
+/// a missing session). Never block on this path: it is used precisely when the
+/// host is suspected of being stuck.
+pub fn count_if_free() -> Option<usize> {
+    registry().try_lock().ok().map(|m| m.len())
+}
+
 pub fn count() -> usize {
     lock().len()
 }

@@ -574,3 +574,40 @@ npm run build / npm run deploy:examples / npm run preview:theme / npm run bench
 `rpc:proc|storage|bus|dialog` + `win:manage`，**都不使用 `screen`/`ticker`/`blob`/`ctx.bytes`** →
 代码零改动；升级后它们的插件行会出现"built for host API 3, this host provides 5"的**告警**
 （预期，重新部署时把 `api` 改成 5 即可消掉）。
+
+### 14.35 待机后「无响应」复查：证据、排除项、还剩下的四种可能（2026-10-24）
+**现场证据**（`%APPDATA%\com.tan18.toolkit\debug.log`，新看门狗写的）：
+```
+bridge watchdog: no answer within 5000ms (timeout: host/info …) — js heap 110 MB — busiest: event-bus "eyecare.cmd" 2 frames/s
+bridge watchdog: answering again after 639 missed probe(s)      ← 另一天：532、272
+```
+**三条硬结论**：
+1. **JS 一直活着**：20s 一次、连续 639 次（≈3.5h）——渲染进程没被冻结。
+2. **不是帧洪水 / 不是泄漏**：堆 67–110 MB、最忙通道 2–4 帧/s。**上一轮的 `0x80070718` 是另一类故障**，
+   那次修复（合帧、预算、有界接收器）没有白做，但它不是这一次的成因。
+3. **宿主停止「完成」一个平凡调用**，然后**自己恢复**（不是崩溃、不是重启）→ 是**某个线程被卡住后松开**，
+   不是状态损坏。
+
+**排除项**：`host/info` 只做 `create_dir_all` + `session::count()`；会话表的锁只在哈希表操作期间持有
+（`kill_all` 先 drain 再跑 stop 闭包），所以不是会话表死锁。
+
+**还剩下四种可能，而日志无法区分**（这正是要补的）：
+| 可能 | 特征 | 修法 |
+|---|---|---|
+| A 主线程不泵消息 | 所有 IPC 都不被 dispatch；JS 照跑；恢复时积压的写盘一次性落地 | 找阻塞主线程的同步调用 |
+| B 异步平面被占满 | `plugin_rpc` 没被 poll 到 | 别在 worker 里做阻塞 I/O |
+| C 某个调用卡住并占着网关要的东西 | 单个 `svc/act` 在途数小时 | 给它超时/挪到阻塞池 |
+| D webview↔host 的 IPC 本身坏了（resume 后） | 请求根本没到 Rust | 只能重载 webview |
+
+**本轮补的仪器**（下一轮直接定性）：
+- `host_diag`（第 17 个原生命令，**不走网关**）：`mainThread`（把空任务 post 到主线程，300ms 内没跑=blocked）、
+  `inFlight`、`oldest{ms,what}`、`sessions`（`try_lock`，`null` = 有人占着会话表）。
+  判据：**`mainThread:ok` + `inFlight==0` 而调用超时 ⇒ 请求根本没到 Rust（D）**；
+  `inFlight>0` 且 `oldest.ms` 很大 ⇒ C，且 `what` 直接点名；`mainThread:blocked` ⇒ A。
+- 网关加了在途计数（`gateway_stats`，两次原子操作，只在 0↔1 时碰锁），`host-checks` 4 条守卫。
+- **`report()` 每行带 UTC 时间戳**：之前看门狗的行没有时间，"是不是睡着的时候开始的"根本没法回答。
+- 看门狗在 strike 1 和每 10 次采样时调用 `host_diag` 并写进日志。
+
+**恢复手段（不再需要重启应用）**：托盘「重新加载界面」→ `location.reload()`，并通过 `sessionStorage`
+告诉下一次 boot **不要 reap 会话**（`plugin_reap_orphans` 的 `keep` 参数）。重载 ~1 秒，进程全部保留。
+`重启应用` 仍然是"干净重来"的那一个。

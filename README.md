@@ -69,7 +69,13 @@ zero code warnings.
 
 The main window's ✕ **hides** it. The app keeps running, so a stray click does not
 tear down live sessions (a pty, a sidecar). Quit from the tray icon: right-click
-for **显示主窗口 / 重启应用 / 退出 Toolbox**, or left-click to bring the window back.
+for **显示主窗口 / 重新加载界面 / 重启应用 / 退出 Toolbox**, or left-click to bring the
+window back.
+
+**重新加载界面** is the recovery for a window that stopped responding: it rebuilds every
+view in about a second and **keeps the running processes**, because the next boot is told
+not to reap them. Use **重启应用** when you want a clean slate instead — that one drains
+every session on the way out.
 
 **重启应用** is the recovery path, and it is a real restart: it requests an exit,
 drains every live session, then starts a new process — the tray is the only

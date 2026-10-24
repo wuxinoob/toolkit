@@ -169,6 +169,50 @@ fn main() {
         "only providers that need one appear, and they name it",
     );
 
+    // ---- gateway bookkeeping (the "why is the UI dead" diagnostic) ----
+    //
+    // The numbers only mean something if they are accurate: `inFlight == 0`
+    // while every call times out is the signature of "the request never
+    // arrived", which is a completely different bug from a stuck service.
+    {
+        let (before, oldest_before) = toolkit_lib::gateway_stats::snapshot();
+        let ticket = toolkit_lib::gateway_stats::enter("check/diag");
+        let (during, oldest_during) = toolkit_lib::gateway_stats::snapshot();
+        drop(ticket);
+        let (after, oldest_after) = toolkit_lib::gateway_stats::snapshot();
+
+        check(
+            "gateway-stats-count-in-flight",
+            during == before + 1 && after == before,
+            &format!("{before} -> {during} -> {after}"),
+        );
+        let during_what = oldest_during.as_ref().map(|(_, w)| w.clone());
+        let during_ms = oldest_during.as_ref().map(|(ms, _)| *ms);
+        check(
+            "gateway-stats-name-the-oldest",
+            during_what.as_deref() == Some("check/diag"),
+            &format!("{:?}", oldest_during),
+        );
+        check(
+            "gateway-stats-clear-when-idle",
+            after == 0 || oldest_after.is_some(),
+            &format!("{after} in flight, oldest {:?}", oldest_after),
+        );
+        // Age is the number that says "this one has been stuck for hours".
+        // Measured with a real sleep, because a just-started call is legitimately
+        // 0ms old — asserting `> 0` there tests the clock's resolution, not us.
+        let slow = toolkit_lib::gateway_stats::enter("check/slow");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let aged = toolkit_lib::gateway_stats::snapshot().1.map(|(ms, _)| ms).unwrap_or(0);
+        drop(slow);
+        check(
+            "gateway-stats-age-is-measured",
+            aged >= 25,
+            &format!("after a 30ms call the oldest reports {aged}ms"),
+        );
+        let _ = (oldest_before, during_ms);
+    }
+
     // ---- provider limits ----
     //
     // Both are "one call wedges the window" limits, and both used to be wide

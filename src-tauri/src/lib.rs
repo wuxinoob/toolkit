@@ -39,6 +39,61 @@ async fn plugin_register(plugin_id: String, permissions: Vec<String>) -> Result<
     Ok(())
 }
 
+/// What the gateway is doing RIGHT NOW — the answer to "the UI is dead, why?".
+///
+/// A stuck UI has five plausible layers and the JS side can only see the last
+/// one (`invoke` never settles). `host/info` timing out proves none of them:
+/// the request may never have reached Rust (main thread / webview IPC), it may
+/// be queued behind a blocked task, or a service may be stuck. So the gateway
+/// keeps two numbers that separate those cases:
+///
+///   `inFlight` — calls currently inside the gateway. **0 while every call
+///   times out means the request never arrived** (main thread or IPC), and no
+///   amount of service-level fixing will help.
+///   `oldest`   — how long the oldest one has been running, and what it is.
+///   Hours-old `proc/recv` is a different bug from hours-old `host/info`.
+///
+/// The counters are two atomics and a mutex touched only when the count crosses
+/// zero, so the hot path stays cheap (this is on every plugin call).
+pub mod gateway_stats {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Instant;
+
+    static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+    fn oldest() -> &'static Mutex<Option<(Instant, String)>> {
+        static OLD: OnceLock<Mutex<Option<(Instant, String)>>> = OnceLock::new();
+        OLD.get_or_init(|| Mutex::new(None))
+    }
+
+    /// Held for the duration of one gateway call; dropping it decrements.
+    pub struct Ticket(());
+
+    impl Drop for Ticket {
+        fn drop(&mut self) {
+            if IN_FLIGHT.fetch_sub(1, Ordering::SeqCst) == 1 {
+                *oldest().lock().unwrap_or_else(|e| e.into_inner()) = None;
+            }
+        }
+    }
+
+    /// Count one call in flight. `what` is `svc/act`, for the diagnostic.
+    pub fn enter(what: impl Into<String>) -> Ticket {
+        if IN_FLIGHT.fetch_add(1, Ordering::SeqCst) == 0 {
+            *oldest().lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), what.into()));
+        }
+        Ticket(())
+    }
+
+    /// `(in flight, (oldest age ms, what))`.
+    pub fn snapshot() -> (usize, Option<(u128, String)>) {
+        let n = IN_FLIGHT.load(Ordering::SeqCst);
+        let o = oldest().lock().unwrap_or_else(|e| e.into_inner()).clone();
+        (n, o.map(|(t, w)| (t.elapsed().as_millis(), w)))
+    }
+}
+
 /// The single request/response gateway.
 ///
 /// Returns `Ok(Envelope)` for every service-level outcome (a `res` or an
@@ -87,6 +142,9 @@ async fn plugin_rpc(
     let svc = msg.svc.clone().unwrap_or_default();
     let act = msg.act.clone().unwrap_or_default();
     let params = msg.p;
+    // From here to the end of the call, this counts as "in flight" — including
+    // the permission gate, which is the other place a call can park.
+    let _in_flight = gateway_stats::enter(format!("{svc}/{act}"));
 
     // The authoritative permission gate. The JS `ctx` gate is a convenience
     // check; this one cannot be bypassed by reaching invoke() directly.
@@ -268,9 +326,59 @@ mod console_exit {
 /// Main window only. This is the host's own boot talking; a plugin window has no
 /// business ending sessions it did not open, and app commands are not ACL-gated,
 /// so the label check is the gate.
+/// Where is the host stuck? — the diagnostic the UI's watchdog calls.
+///
+/// `host/info` timing out proves nothing by itself: the request may never have
+/// reached Rust, it may be queued, or a service may be stuck. This command
+/// separates those cases, and it is deliberately **outside** the gateway and
+/// outside every lock the gateway takes:
+///
+/// | what it reports | meaning |
+/// |---|---|
+/// | `mainThread: "blocked"` | the UI thread is not pumping. Every IPC request is queued behind it; nothing host-side can fix that |
+/// | `mainThread: "ok"`, `inFlight > 0` | a gateway call is stuck — `oldest.what` names it, `oldest.ms` says how long |
+/// | `mainThread: "ok"`, `inFlight == 0` | the request never arrived (webview IPC), i.e. not a host bug |
+/// | `sessions: null` | the session registry is held by someone — also a stuck call |
+///
+/// It runs on the blocking pool so it can still answer when the async runtime's
+/// workers are busy, and it never takes the gateway's permission lock.
 #[tauri::command]
-async fn plugin_reap_orphans(window: tauri::WebviewWindow) -> Result<usize, String> {
+async fn host_diag(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use serde_json::json;
+        // A no-op posted to the UI thread: if it does not run within 300ms, the
+        // thread is not pumping. `recv_timeout` is fine here — we are on the
+        // blocking pool, not on a runtime worker.
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let posted = app
+            .run_on_main_thread(move || {
+                let _ = tx.send(());
+            })
+            .is_ok();
+        let main_ok = posted && rx.recv_timeout(std::time::Duration::from_millis(300)).is_ok();
+
+        let (in_flight, oldest) = gateway_stats::snapshot();
+        Ok(json!({
+            "mainThread": if main_ok { "ok" } else { "blocked" },
+            "inFlight": in_flight,
+            "oldest": oldest.map(|(ms, what)| json!({ "ms": ms as u64, "what": what })),
+            "sessions": crate::services::session::count_if_free(),
+        }))
+    })
+    .await
+    .map_err(|e| format!("diag task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn plugin_reap_orphans(window: tauri::WebviewWindow, keep: Option<bool>) -> Result<usize, String> {
     require_main(&window)?;
+    // `keep` is the UI-reload path: the frontend was rebuilt, not replaced, so
+    // the sessions it was watching are still ITS sessions. Reaping them would
+    // turn "reload the window" into "kill my terminals", which is exactly what
+    // the tray's 重启应用 is for and why this is a separate flag.
+    if keep == Some(true) {
+        return Ok(0);
+    }
     // Killing a process tree waits on children, so it is blocking work — and it
     // runs on the path that reveals the window at boot.
     tauri::async_runtime::spawn_blocking(crate::services::session::kill_all)
@@ -586,6 +694,7 @@ pub fn run() {
             plugin_stream_open_raw,
             plugin_stream_close,
             plugin_reap_orphans,
+            host_diag,
             host_autostart_get,
             host_autostart_set,
             host_update_check,
@@ -625,11 +734,17 @@ pub fn run() {
             // tray cannot be quit from its own UI at all, and starting broken is
             // worse than not starting.
             let show = tauri::menu::MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
+            // Recovery for a wedged window, without losing what it is watching:
+            // a reload rebuilds every view in about a second, and the sessions
+            // survive because `plugin_reap_orphans` is told to keep them.
+            let reload =
+                tauri::menu::MenuItem::with_id(app, "reload", "重新加载界面", true, None::<&str>)?;
             let restart =
                 tauri::menu::MenuItem::with_id(app, "restart", "重启应用", true, None::<&str>)?;
             let quit = tauri::menu::MenuItem::with_id(app, "quit", "退出 Toolbox", true, None::<&str>)?;
             let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
-            let menu = tauri::menu::Menu::with_items(app, &[&show, &restart, &separator, &quit])?;
+            let menu =
+                tauri::menu::Menu::with_items(app, &[&show, &reload, &restart, &separator, &quit])?;
 
             let mut tray = tauri::tray::TrayIconBuilder::new()
                 .tooltip("Toolbox")
@@ -641,6 +756,17 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => show_main_window(app),
+                    // `location.reload()` re-runs `boot()`; the flag in
+                    // sessionStorage is what tells the next boot that these
+                    // sessions belong to it (see `plugin_reap_orphans`).
+                    "reload" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.eval(
+                                "try{sessionStorage.setItem('toolbox.keepSessions','1')}catch(e){};location.reload()",
+                            );
+                        }
+                        show_main_window(app);
+                    }
                     // Restart goes through `request_restart`, NOT `restart`.
                     //
                     // `AppHandle::restart` on the main thread SKIPS the exit

@@ -457,6 +457,18 @@ test('closing the main window hides it, and the tray is the only way out', () =>
     /"restart" => app\.restart\(\)/,
     'app.restart() from a menu callback orphans every live session',
   );
+
+  // A UI reload is the recovery path for "the window stopped responding", and
+  // it must not double as "kill my terminals": a reload re-runs boot(), and
+  // boot reaps host sessions unless it is told to keep them. The flag travels
+  // through sessionStorage because it has to survive the reload itself.
+  assert.match(lib, /MenuItem::with_id\(app, "reload"/, 'the tray menu must offer a reload');
+  assert.match(lib, /toolbox\.keepSessions/, 'the reload must tell the next boot to keep sessions');
+  assert.match(
+    lib,
+    /if keep == Some\(true\)/,
+    'plugin_reap_orphans must honour it, or reloading kills every running process',
+  );
 });
 
 test('the legacy plugin-window URL is translated, not rejected', () => {

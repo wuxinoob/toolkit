@@ -120,9 +120,37 @@ function installCloseToTray() {
  */
 async function report(line) {
   try {
-    await hub.request('__host__', 'host', 'write_debug_log', { content: line });
+    // Timestamped at the SOURCE. The watchdog's own lines used to be the only
+    // evidence of an outage and they had no time on them, which made "when did
+    // this start, and was the machine asleep?" unanswerable after the fact.
+    // UTC, to match the `--- boot <ISO> ---` lines in the same file.
+    const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    await hub.request('__host__', 'host', 'write_debug_log', { content: `${ts} ${line}` });
   } catch (e) {
     console.error('[boot] could not write debug.log', e);
+  }
+}
+
+/**
+ * Ask the host where it is stuck, with a hard ceiling.
+ *
+ * `host_diag` is a raw command (not a gateway action) on purpose: it has to be
+ * answerable when the gateway is the thing that stopped. Its answer separates
+ * "the UI thread is not pumping" from "a gateway call is stuck" from "the
+ * request never arrived" — three problems with three different fixes, and the
+ * log could not tell them apart before.
+ */
+async function diagOnce() {
+  let timer = null;
+  const ceiling = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ error: 'no answer within 3000ms' }), 3000);
+  });
+  try {
+    return await Promise.race([invoke('host_diag'), ceiling]);
+  } catch (e) {
+    return { error: String(e?.message ?? e) };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -242,15 +270,24 @@ function installBridgeWatchdog() {
         // what to fix. Reading it here (not from the host) is deliberate — the
         // counters live in this window and survive the bridge dying.
         const top = hub.trafficReport()[0];
-        void report(
+        const base =
           `bridge watchdog: no answer within ${WATCHDOG.timeoutMs}ms ` +
-            `(${e?.code ?? 'error'}: ${e?.message ?? e})` +
-            (heap === null ? '' : ` — js heap ${heap} MB`) +
-            (top
-              ? ` — busiest: ${top.key} ${top.framesPerSec} frames/s ` +
-                `${Math.round(top.bytesPerSec / 1024)} KiB/s`
-              : ''),
-        );
+          `(${e?.code ?? 'error'}: ${e?.message ?? e})` +
+          (heap === null ? '' : ` — js heap ${heap} MB`) +
+          (top
+            ? ` — busiest: ${top.key} ${top.framesPerSec} frames/s ` +
+              `${Math.round(top.bytesPerSec / 1024)} KiB/s`
+            : '');
+        // The host side is asked separately, and its answer is the difference
+        // between "the UI thread is blocked" and "one gateway call is stuck".
+        void (async () => {
+          const diag = await diagOnce();
+          await report(`${base} — diag ${JSON.stringify(diag)}`);
+        })();
+      } else if (strikes % 10 === 0) {
+        // Keep sampling while it lasts: a growing `oldest.ms` is the signature
+        // of a stuck call, a constant one is a wedged UI thread.
+        void diagOnce().then((diag) => report(`bridge watchdog: still out — diag ${JSON.stringify(diag)}`));
       }
       if (strikes >= WATCHDOG.strikes && !warned) {
         warned = true;
@@ -292,7 +329,18 @@ function installBridgeWatchdog() {
  */
 async function reapOrphanSessions() {
   try {
-    const n = await invoke('plugin_reap_orphans');
+    // The tray's 重新加载界面 sets this before reloading: the sessions are still
+    // watched by the UI that is coming back, so reaping them would turn
+    // "reload the window" into "kill my terminals". One-shot by construction —
+    // the flag is cleared here, whether or not the host honours it.
+    let keep = false;
+    try {
+      keep = globalThis.sessionStorage?.getItem('toolbox.keepSessions') === '1';
+      globalThis.sessionStorage?.removeItem('toolbox.keepSessions');
+    } catch {
+      /* no sessionStorage: nothing to keep */
+    }
+    const n = await invoke('plugin_reap_orphans', { keep });
     if (n > 0) await report(`reaped ${n} session(s) left by a previous frontend`);
   } catch {
     // No host (browser, node --test) — nothing to reap.
