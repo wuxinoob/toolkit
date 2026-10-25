@@ -213,6 +213,30 @@ fn main() {
         let _ = (oldest_before, during_ms);
     }
 
+    // ---- UI heartbeat (what makes a wedged UI visible in the log) ----
+    //
+    // The host writes the evidence itself when the UI stops calling, so the
+    // numbers have to be real: `silent_ms` must grow with wall clock and reset
+    // on the next call.
+    {
+        toolkit_lib::ui_heartbeat::touch();
+        let just_touched = toolkit_lib::ui_heartbeat::silent_ms();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let after = toolkit_lib::ui_heartbeat::silent_ms();
+        toolkit_lib::ui_heartbeat::touch();
+        let reset = toolkit_lib::ui_heartbeat::silent_ms();
+        check(
+            "ui-heartbeat-counts-silence",
+            just_touched <= 5 && after >= 25,
+            &format!("touch->{just_touched}ms, +30ms->{after}ms"),
+        );
+        check(
+            "ui-heartbeat-resets-on-a-call",
+            reset <= 5,
+            &format!("after a call it reads {reset}ms"),
+        );
+    }
+
     // ---- provider limits ----
     //
     // Both are "one call wedges the window" limits, and both used to be wide

@@ -119,15 +119,27 @@ function installCloseToTray() {
  * webview console nobody is watching.
  */
 async function report(line) {
+  // Timestamped at the SOURCE. The watchdog's own lines used to be the only
+  // evidence of an outage and they had no time on them, which made "when did
+  // this start, and was the machine asleep?" unanswerable after the fact.
+  // UTC, to match the `--- boot <ISO> ---` lines in the same file.
+  const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const text = `${ts} ${line}`;
   try {
-    // Timestamped at the SOURCE. The watchdog's own lines used to be the only
-    // evidence of an outage and they had no time on them, which made "when did
-    // this start, and was the machine asleep?" unanswerable after the fact.
-    // UTC, to match the `--- boot <ISO> ---` lines in the same file.
-    const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
-    await hub.request('__host__', 'host', 'write_debug_log', { content: `${ts} ${line}` });
+    // `host_note`, NOT `host/write_debug_log`. The gateway version travels over
+    // the IPC it is reporting on: when that IPC wedges, the evidence never
+    // lands. That is not hypothetical — an unresponsive UI ran for 27 hours and
+    // the log had not one line from it. This command touches nothing but the
+    // file, so it survives a wedged gateway (it still needs IPC to arrive).
+    await invoke('host_note', { line: text });
   } catch (e) {
-    console.error('[boot] could not write debug.log', e);
+    try {
+      // Last resort: the old path. If both fail, the host's own heartbeat
+      // (`ui_heartbeat`) is what tells the story.
+      await hub.request('__host__', 'host', 'write_debug_log', { content: text });
+    } catch (e2) {
+      console.error('[boot] could not write debug.log', e2);
+    }
   }
 }
 

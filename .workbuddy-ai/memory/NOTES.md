@@ -611,3 +611,41 @@ bridge watchdog: answering again after 639 missed probe(s)      ← 另一天：
 **恢复手段（不再需要重启应用）**：托盘「重新加载界面」→ `location.reload()`，并通过 `sessionStorage`
 告诉下一次 boot **不要 reap 会话**（`plugin_reap_orphans` 的 `keep` 参数）。重载 ~1 秒，进程全部保留。
 `重启应用` 仍然是"干净重来"的那一个。
+
+### 14.36 现场实测：无响应时的进程与内存（2026-10-25）
+用户报告"现在无响应"，趁进程还在，量到的数字（**这是第一次拿到故障态的硬数据**）：
+
+| 对象 | 数值 | 说明 |
+|---|---|---|
+| `toolkit.exe` | **1136 MB**、CPU 增量 0、36 线程全 Wait | 启动时是 65 MB；**60 秒采样里内存平在 1137–1138 MB**（不增长） |
+| WebView2 browser（57072） | **2176 MB** | 我们这棵树的根 |
+| WebView2 utility（40260） | **1377 MB** | 一个 utility 进程 1.4 GB 很不正常 |
+| **主渲染进程（46764，11:31:00 创建）** | **1634 MB**、CPU 0% | 最先创建的渲染进程 = 主窗口；**不跑 JS、不涨** |
+| 插件渲染进程（51512） | 85 MB、**持续 25% 一个核** | 有动画在空转 |
+| GPU 进程（43224） | 153 MB、**持续 28%**、累计 4 小时 | 被那个动画带着跑 |
+| 另外还有 45 个 `msedgewebview2` | 多为 **10-18 12:22 启动**，一个累计 **71979s（20 小时）** CPU | **10-18 硬杀留下的孤儿**，还在烧 |
+
+**日志：27 小时零行。** 这是本轮最重要的发现 —— **看门狗的证据本身走网关**，
+网关坏掉时它连"我坏了"都写不出来。设计缺陷，已修（见下）。
+
+**判断**：宿主空闲、看着健康；**主渲染进程占 1.6 GB 且完全不跑 JS**。
+最可能的链条：渲染进程被 Chromium 当后台/被遮挡而冻结（或 resume 后失效）
+→ 帧继续 push → `eval` 投递失败（`PostMessageW` 队列满，wry 只 log 不报错）
+→ **连命令响应也送不出去** → 所有 `invoke` 挂住 → UI 死；
+而 `ChannelDataIpcQueue` 没人 `fetch`，条目永不释放 → **宿主侧 1.1 GB**（无上限、无 TTL，在 Tauri 里）。
+
+**本轮修的（都能独立成立）**：
+1. **`host_note`**（第 18 个命令）：写 `debug.log` 但不经过网关（不查权限表、不碰服务表、不拿锁）。
+   `report()` 改用它，失败才回退到旧路径。
+2. **`ui_heartbeat`**：网关每次调用打点；宿主自己一个线程每 10s 检查，**UI 静默 >60s 就由宿主写一行**
+   —— 带 `mainThread`（post 空任务到 UI 线程，300ms 超时）、`inFlight`、`oldest`、`sessions`。
+   **渲染进程死了也写得出来**，因为写的是宿主自己。
+3. **`additionalBrowserArgs`**：`--disable-background-timer-throttling`
+   `--disable-backgrounding-occluded-windows` `--disable-renderer-backgrounding`
+   `--disable-features=…,CalculateNativeWinOcclusion`。
+   ⚠️ 这个字段会**替换** wry 的默认参数，所以必须把 `msWebOOUI,msPdfOOUI,msSmartScreenProtection` 一起写回去。
+4. 托盘「重新加载界面」（上一轮）：reload 但保留会话。
+
+**还没解决**：Tauri 的 `ChannelDataIpcQueue` 没有上限也没有 TTL，消费者不取就永远留着。
+我们的生产者（pty 在 `tauri-plugin-pty` 里）无法从外部刹车 —— 要真正封住，得 fork 那个插件或在
+`stream.rs` 的 raw sink 上加"消费者心跳"闸（pty 不走 stream.rs，所以只覆盖 blob/ticker）。

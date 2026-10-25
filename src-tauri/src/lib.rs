@@ -94,6 +94,133 @@ pub mod gateway_stats {
     }
 }
 
+/// Is the UI still talking to us? — and if not, say so in the log OURSELVES.
+///
+/// ## Why the host has to tell on itself
+///
+/// Every piece of evidence about a dead UI used to come from the UI: the JS
+/// watchdog writes a line through `host/write_debug_log`, i.e. over the very
+/// IPC it is reporting on. When that IPC is what broke, the evidence never
+/// lands. The result was an app that had been unresponsive for a day with
+/// **not one line** in `debug.log` — we could see it was wedged, and nothing
+/// about where.
+///
+/// So the host keeps a heartbeat (`touch()` on every gateway call) and a small
+/// thread watches it. When the UI has been silent for a minute, the HOST writes
+/// the line — with the numbers only it can see: whether the UI thread can run a
+/// task, how many gateway calls are in flight, and what the oldest one is.
+///
+/// This also covers the case nothing else can: the renderer process is gone or
+/// frozen, so no JS will ever write anything again.
+pub mod ui_heartbeat {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::OnceLock;
+    use std::time::{Duration, Instant};
+
+    fn start() -> &'static Instant {
+        static START: OnceLock<Instant> = OnceLock::new();
+        START.get_or_init(Instant::now)
+    }
+
+    fn now_ms() -> u64 {
+        start().elapsed().as_millis() as u64
+    }
+
+    /// ms since process start at the last gateway call.
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    /// Separate from `LAST == 0`: the very first call can legitimately land at
+    /// 0 ms, and treating that as "no call yet" made the heartbeat report
+    /// silence for a UI that had just spoken (caught by `host-checks`).
+    static SEEN: AtomicBool = AtomicBool::new(false);
+    static SILENT_LOGGED: AtomicBool = AtomicBool::new(false);
+
+    /// Record that the UI talked to us. Called from the gateway.
+    pub fn touch() {
+        LAST.store(now_ms(), Ordering::Relaxed);
+        SEEN.store(true, Ordering::Relaxed);
+    }
+
+    /// How long the UI has been quiet. 0 while booting (nothing has called yet).
+    pub fn silent_ms() -> u64 {
+        if !SEEN.load(Ordering::Relaxed) {
+            return 0;
+        }
+        now_ms().saturating_sub(LAST.load(Ordering::Relaxed))
+    }
+
+    /// `YYYY-MM-DD HH:MM:SS` in UTC, without pulling in a date crate.
+    fn utc_stamp() -> String {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
+        // Civil-from-days (Howard Hinnant): 1970-01-01 is day 0.
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097);
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let y = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = if m <= 2 { y + 1 } else { y };
+        format!(
+            "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}",
+            rem / 3_600,
+            (rem % 3_600) / 60,
+            rem % 60
+        )
+    }
+
+    /// One 10s tick. Public so the setup hook reads as one line.
+    pub fn tick(app: &tauri::AppHandle) {
+        let silent = silent_ms();
+        if silent > 60_000 {
+            if !SILENT_LOGGED.swap(true, Ordering::SeqCst) {
+                let (in_flight, oldest) = crate::gateway_stats::snapshot();
+                // Probe the UI thread from here: it is the one fact that
+                // separates "a call is stuck" from "nothing can be delivered".
+                let (tx, rx) = std::sync::mpsc::channel::<()>();
+                let posted = app
+                    .run_on_main_thread(move || {
+                        let _ = tx.send(());
+                    })
+                    .is_ok();
+                let main_ok = posted && rx.recv_timeout(Duration::from_millis(300)).is_ok();
+                let line = format!(
+                    "{} host: the UI has been silent for {}s — mainThread={}, inFlight={}, oldest={:?}, sessions={:?}",
+                    utc_stamp(),
+                    silent / 1000,
+                    if main_ok { "ok" } else { "blocked" },
+                    in_flight,
+                    oldest,
+                    crate::services::session::count_if_free()
+                );
+                let _ = crate::services::storage::append_debug_log(app, &line);
+            }
+        } else if SILENT_LOGGED.swap(false, Ordering::SeqCst) {
+            let line = format!(
+                "{} host: the UI is talking again (it was silent for {}s)",
+                utc_stamp(),
+                silent / 1000
+            );
+            let _ = crate::services::storage::append_debug_log(app, &line);
+        }
+    }
+
+    /// The watcher thread. One thread, one sleep, no locks on the hot path.
+    pub fn spawn(app: tauri::AppHandle) {
+        let _ = std::thread::Builder::new()
+            .name("ui-heartbeat".into())
+            .spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(10));
+                tick(&app);
+            });
+    }
+}
+
 /// The single request/response gateway.
 ///
 /// Returns `Ok(Envelope)` for every service-level outcome (a `res` or an
@@ -145,6 +272,7 @@ async fn plugin_rpc(
     // From here to the end of the call, this counts as "in flight" — including
     // the permission gate, which is the other place a call can park.
     let _in_flight = gateway_stats::enter(format!("{svc}/{act}"));
+    ui_heartbeat::touch();
 
     // The authoritative permission gate. The JS `ctx` gate is a convenience
     // check; this one cannot be bypassed by reaching invoke() directly.
@@ -367,6 +495,25 @@ async fn host_diag(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     })
     .await
     .map_err(|e| format!("diag task failed: {e}"))?
+}
+
+/// Write one line to `debug.log` WITHOUT the gateway.
+///
+/// The UI watchdog's evidence used to travel as `host/write_debug_log` — over
+/// the very IPC it is reporting on, so a wedged IPC meant no evidence at all.
+/// This command touches nothing but the file: no service table, no permission
+/// registry, no locks. It still needs IPC to arrive, which is why the host also
+/// watches its own heartbeat (`ui_heartbeat`).
+#[tauri::command]
+async fn host_note(window: tauri::WebviewWindow, line: String) -> Result<(), String> {
+    require_main(&window)?;
+    if line.len() > 4_096 {
+        return Err("note too long (max 4096 bytes)".into());
+    }
+    let app = window.app_handle().clone();
+    tauri::async_runtime::spawn_blocking(move || crate::services::storage::append_debug_log(&app, &line))
+        .await
+        .map_err(|e| format!("note task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -695,6 +842,7 @@ pub fn run() {
             plugin_stream_close,
             plugin_reap_orphans,
             host_diag,
+            host_note,
             host_autostart_get,
             host_autostart_set,
             host_update_check,
@@ -713,6 +861,11 @@ pub fn run() {
             // hidden forever and the app would look like it failed to launch.
             // This is the backstop for that, and the reason the hidden start is
             // safe to ship.
+            // Watch the UI's heartbeat from here on: if it stops talking, the
+            // HOST writes the evidence (the UI cannot — its channel is the one
+            // that is broken). See `ui_heartbeat`.
+            ui_heartbeat::spawn(app.handle().clone());
+
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_secs(5));

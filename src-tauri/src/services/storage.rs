@@ -67,6 +67,15 @@ fn params_str(params: &Value, key: &str) -> Result<String, ServiceError> {
         .ok_or_else(|| ServiceError::bad_params(format!("missing string param `{key}`")))
 }
 
+/// Append one line to `debug.log` on the host's behalf.
+///
+/// Public because `host_note` (the UI watchdog's evidence channel) must not go
+/// through the gateway — see the note on that command.
+pub fn append_debug_log(app: &tauri::AppHandle, line: &str) -> Result<(), String> {
+    let root = data_root(app).map_err(|e| e.msg)?;
+    append_debug_log_at(&root, line).map_err(|e| e.msg)
+}
+
 fn append_debug_log_at(data_root: &Path, content: &str) -> Result<(), ServiceError> {
     let path = data_root.join("debug.log");
     if let Ok(meta) = fs::metadata(&path) {
