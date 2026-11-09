@@ -171,7 +171,7 @@ jobs:
             echo "release $TAG 已存在，改为补充/覆盖资产"
             gh release upload "$TAG" $FILES $SIGS --clobber
           else
-            gh release create "$TAG" $FILES $SIGS --title "$TAG" --generate-notes
+            gh release create "$TAG" $FILES $SIGS --title "$TAG" --notes-file "docs/releases/$TAG.md"
           fi
 
       # 更新清单。没有签名文件时脚本会打印告警并成功退出 —— 更新签名是可选的，
