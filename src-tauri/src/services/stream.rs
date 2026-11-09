@@ -390,7 +390,7 @@ impl Service for StreamService {
     }
     fn dispatch(
         &self,
-        _app: &tauri::AppHandle,
+        app: &tauri::AppHandle,
         plugin_id: &str,
         action: &str,
         params: Value,
@@ -418,9 +418,19 @@ impl Service for StreamService {
                     _ => SessionKind::Stream,
                 };
                 let pid = params.get("pid").and_then(|v| v.as_u64()).map(|p| p as u32);
-                let stop = match pid {
-                    Some(p) => session::pid_stop(p),
-                    None => Arc::new(|| {}),
+                let stop = match params.get("ptyHandle") {
+                    Some(handle) => {
+                        if kind != SessionKind::Pty {
+                            return Err(ServiceError::bad_params("ptyHandle requires kind=pty"));
+                        }
+                        let handle = handle.as_u64().and_then(|n| u32::try_from(n).ok())
+                            .ok_or_else(|| ServiceError::bad_params("invalid PTY handle"))?;
+                        tauri_plugin_pty::stop_callback(app, handle).map_err(ServiceError::io)?
+                    }
+                    None => match pid {
+                        Some(p) => session::pid_stop(p),
+                        None => Arc::new(|| {}),
+                    },
                 };
                 session::open(plugin_id, ch, kind, pid, stop)?;
                 Ok(Value::Bool(true))

@@ -31,16 +31,14 @@
  *
  *   The rules live in ./procman-supervisor.js as pure functions (clock math,
  *   restart policy, env parsing) so they are testable without a clock or a pty;
- *   this file owns the timers, the persistence and the UI.
+ *   procman-scheduler.js owns activation-scoped timers; this file owns
+ *   sessions, persistence and the UI.
  */
 
 import {
   PROFILES_KEY,
   normalizeProfile,
   parseEnv,
-  dueAt,
-  scheduleDelay,
-  shouldRestart,
   describeSchedule,
   describeRestart,
   describeLastRun,
@@ -50,6 +48,7 @@ import {
   endedSessions,
   DEFAULT_PROFILE,
 } from './procman-supervisor.js';
+import { createProfileScheduler } from './procman-scheduler.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -90,16 +89,12 @@ const state = {
   profiles: [],
   /** "save as profile" on the run form — a Checkbox is a button, not a form control. */
   runSave: false,
-  /** profileId -> timer, so a schedule can be re-armed without leaking timers. */
-  schedTimers: new Map(),
+  /** Timers belong to one activation, including pending launch continuations. */
+  scheduler: null,
   /** profileId -> when it last fired, so an interval counts from the last run. */
   lastFired: new Map(),
   /** profileId being edited in the form, or null when adding. */
   editingId: null,
-  /** profileId -> whether a restart is already pending (prevents double-arming). */
-  restarting: new Set(),
-  /** Pending restart timers, cleared on deactivate. */
-  restartTimers: new Set(),
   sessions: new Map(), // ch -> session
   /**
    * The profile the user clicked — **the selector for the whole page**.
@@ -152,7 +147,7 @@ const REPLAY_STRIP = /\x1b\[\?1004[hl]|\x1b\[6n/g;
 /* ---------------------------------- sessions ---------------------------------- */
 
 async function spawnFromSpec(spec) {
-  const { ctx, ui } = state;
+  const { ctx, ui, scheduler } = state;
   const ch = `s${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`;
   const session = {
     ch,
@@ -168,7 +163,7 @@ async function spawnFromSpec(spec) {
     /** Set when this session was launched from a profile. */
     profileId: spec.profileId ?? null,
     /** How many times this session has already been restarted. */
-    attempts: 0,
+    attempts: spec.attempts ?? 0,
     /** A user-initiated stop must never be undone by the restart policy. */
     stoppedByUser: false,
     status: 'starting',
@@ -239,7 +234,7 @@ async function spawnFromSpec(spec) {
           scheduleRefreshRows();
           if (state.selectedCh === ch) scheduleRenderDetail();
           state.log?.('pty', `exit ch=${ch} code=${frame.p}`);
-          maybeRestart(session);
+          scheduler.maybeRestart(session);
         } else if (frame.kind === Kind.END) {
           // The stream was closed by us (Stop). Without this the row keeps
           // claiming `running` after a stop, which makes the button look broken.
@@ -253,7 +248,7 @@ async function spawnFromSpec(spec) {
         } else if (frame.kind === Kind.ERR) {
           session.status = 'error';
           session.exitCode = -1;
-          maybeRestart(session);
+          scheduler.maybeRestart(session);
           session.terminal?.write(enc.encode(`\x1b[90m[stream error: ${frame.code} ${frame.msg}]\x1b[0m\r\n`));
           ui.notify(`stream error: ${frame.msg}`, 'error');
         }
@@ -380,7 +375,9 @@ function stampRun(profileId, reason) {
   scheduleRenderDetail();
 }
 
-async function launchProfile(rawProfile, reason = 'manual') {
+async function launchProfile(rawProfile, reason = 'manual', attempts = 0) {
+  const { scheduler } = state;
+  if (scheduler.disposed) return null;
   const p = normalizeProfile(rawProfile);
   /**
    * A firing consumes the slot, whatever comes of it.
@@ -438,109 +435,22 @@ async function launchProfile(rawProfile, reason = 'manual') {
     cwd: p.cwd,
     env: parseEnv(p.env),
     profileId: p.id,
+    attempts,
   });
-  state.log?.('profile', `launch "${p.name}" (${reason}) ch=${session.ch}`);
+  if (scheduler.disposed) return session;
   // Run history is written only on a SUCCESSFUL start: "last run" answers "did
   // it actually run", and a spawn that failed is a different question (the
   // session's own error is the answer to that one).
-  stampRun(p.id, reason);
+  if (session.handle) {
+    state.log?.('profile', `launch "${p.name}" (${reason}) ch=${session.ch}`);
+    stampRun(p.id, reason);
+  }
   if (reason === 'manual') selectProfile(p.id);
   return session;
 }
 
-/** Schedule timers only — re-armed from scratch by `armSchedules`. */
-function clearScheduleTimers() {
-  for (const t of state.schedTimers.values()) clearTimeout(t);
-  state.schedTimers.clear();
-}
-
-/**
- * Every timer this plugin owns. **Deactivate only.**
- *
- * `armSchedules` used to call this, which made "re-arm the schedules" also
- * cancel any RESTART that was counting down — so editing an unrelated profile,
- * or any scheduled firing, silently swallowed a restart that the policy had
- * already decided on. The two timers have nothing to do with each other.
- */
-function clearSchedules() {
-  clearScheduleTimers();
-  for (const t of state.restartTimers) clearTimeout(t);
-  state.restartTimers.clear();
-  state.restarting.clear();
-}
-
-/**
- * Arm one timer per enabled profile that has a schedule.
- *
- * Re-armed from scratch whenever the profile list changes, so a stale timer can
- * never point at a profile that was deleted or disabled. `dueAt` counts from the
- * LAST FIRING, so a machine that slept through several intervals runs once on
- * wake rather than firing a burst of catch-up runs.
- *
- * The delay goes through `scheduleDelay`, which floors it at 1s: an overdue
- * slot (the wake-up case) must fire promptly but must never be a 0ms timer,
- * because that is the shape of a busy loop rather than a schedule.
- */
 function armSchedules() {
-  clearScheduleTimers();
-  const now = Date.now();
-  for (const p of state.profiles) {
-    if (!p.enabled || p.schedule.kind === 'none') continue;
-    const when = dueAt(p.schedule, now, state.lastFired.get(p.id) ?? null);
-    const delay = scheduleDelay(when, now);
-    if (delay === null) continue;
-    state.schedTimers.set(
-      p.id,
-      setTimeout(() => {
-        state.schedTimers.delete(p.id);
-        const live = state.profiles.find((x) => x.id === p.id && x.enabled);
-        if (!live) return armSchedules();
-        // A delay longer than `setTimeout`'s ceiling is ARMED at the ceiling, so
-        // "the timer fired" is not the same as "it is due". Compare against the
-        // slot this timer was armed FOR: a yearly cron (`0 0 1 1 *`) is ~24 days
-        // short of its slot and must re-arm, not run in the middle of the year.
-        // (Recomputing `dueAt` here would be wrong — it answers the NEXT slot,
-        // which is by definition in the future, so every ordinary firing would
-        // be postponed.)
-        if (when - Date.now() > 1_000) return armSchedules();
-        launchProfile(live, 'schedule').finally(() => armSchedules());
-      }, delay),
-    );
-    state.log?.('profile', `armed "${p.name}" in ${Math.round(delay / 1000)}s`);
-  }
-}
-
-/** Apply the restart policy after a session ended. */
-function maybeRestart(session) {
-  const { profileId } = session;
-  if (!profileId || session.stoppedByUser) return;
-  if (state.restarting.has(profileId)) return; // already armed for this profile
-  const profile = state.profiles.find((p) => p.id === profileId);
-  if (!profile || !profile.enabled) return;
-  if (!shouldRestart(profile.restart, session.exitCode, session.attempts)) {
-    if (profile.restart.policy !== 'never') {
-      state.log?.('profile', `not restarting "${profile.name}" (attempts ${session.attempts}/${profile.restart.maxRetries})`);
-    }
-    return;
-  }
-
-  const attempt = session.attempts + 1;
-  const delay = profile.restart.delayMs;
-  state.restarting.add(profileId);
-  state.log?.('profile', `restart "${profile.name}" in ${delay}ms (attempt ${attempt}/${profile.restart.maxRetries})`);
-  session.terminal?.write(
-    enc.encode(`\x1b[90m[restarting in ${delay}ms — attempt ${attempt}/${profile.restart.maxRetries}]\x1b[0m\r\n`),
-  );
-  const timer = setTimeout(async () => {
-    state.restartTimers.delete(timer);
-    state.restarting.delete(profileId);
-    // The attempts counter carries across restarts, so the cap is a total
-    // budget — otherwise a crash loop with a long delay restarts forever.
-    const next = await launchProfile(profile, 'restart');
-    if (next) next.attempts = attempt;
-    scheduleRefreshRows();
-  }, Math.max(0, delay));
-  state.restartTimers.add(timer);
+  state.scheduler.arm();
 }
 
 /** Stop every session of a profile (a user action, so no restart follows). */
@@ -1606,11 +1516,24 @@ function ringText(s) {
 /* --------------------------------- lifecycle ---------------------------------- */
 
 export async function activate(ctx) {
+  state.scheduler?.dispose();
   state.ctx = ctx;
   state.ui = ctx.ui ?? { notify: console.log };
   state.log = (cat, msg) => ctx.log.info(`[${cat}]`, msg);
+  const scheduler = createProfileScheduler({
+    profiles: () => state.profiles,
+    lastFired: state.lastFired,
+    launch: launchProfile,
+    log: state.log,
+    onRestart: (session, profile, attempt) => session.terminal?.write(enc.encode(
+      `\x1b[90m[restarting in ${profile.restart.delayMs}ms — attempt ${attempt}/${profile.restart.maxRetries}]\x1b[0m\r\n`,
+    )),
+  });
+  state.scheduler = scheduler;
+  ctx.cleanup(() => scheduler.dispose());
 
   const savedProfiles = await ctx.storage.get(PROFILES_KEY);
+  if (scheduler.disposed) return;
   const hasProfiles = Array.isArray(savedProfiles) && savedProfiles.length > 0;
   state.profiles = (hasProfiles ? savedProfiles : DEFAULT_PROFILES).map(normalizeProfile);
   if (!hasProfiles) persistProfiles();
@@ -1621,6 +1544,7 @@ export async function activate(ctx) {
   for (const p of state.profiles) {
     if (p.enabled && p.autoStart && !runningFor(p.id).length) {
       await launchProfile(p, 'autostart');
+      if (scheduler.disposed) return;
     }
   }
   armSchedules();
@@ -1668,7 +1592,7 @@ export async function activate(ctx) {
 export function deactivate() {
   // Timers are the one thing that must NOT outlive the plugin: a schedule that
   // kept firing after deactivate would launch processes nobody can see.
-  clearSchedules();
+  state.scheduler?.dispose();
   // Sessions themselves are not killed here on purpose — but note that the ctx
   // disposer closes this plugin's streams, which does end them (see README).
   // Only detach view DOM here.

@@ -45,6 +45,56 @@ globalThis.window = {
 // dynamic imports AFTER shims are in place
 const { makeBridge, deliverWindowDrop } = await import('../src/host/pluginwin-host.js');
 const { hub } = await import('../src/protocol/hub.js');
+const { buildCtx } = await import('../src/host/ctx.js');
+const { Disposer } = await import('../src/host/disposer.js');
+
+for (const surface of ['ctx', 'bridge']) {
+  const create = (id) => {
+    const manifest = { id, permissions: ['rpc:stream'] };
+    if (surface === 'bridge') {
+      const sdk = makeBridge(id, `plugin-${id}`, manifest);
+      return { sdk, dispose: () => sdk.dispose() };
+    }
+    const scope = new Disposer();
+    return { sdk: buildCtx({ manifest }, scope), dispose: () => scope.run() };
+  };
+
+  test(`${surface}: teardown owns a stream even while native open is still pending`, async () => {
+    openGateway();
+    await closeAllStreams();
+    let finishOpen;
+    invokeImpl = async (cmd) => {
+      if (cmd === 'plugin_stream_open') await new Promise((resolve) => { finishOpen = resolve; });
+    };
+    const { sdk, dispose } = create(`pending.${surface}`);
+    const opening = sdk.stream('ticker', 'late');
+    let disposed = false;
+    const closing = dispose().then(() => { disposed = true; });
+    await new Promise(setImmediate);
+    assert.equal(disposed, false, 'teardown must account for an opening resource');
+    finishOpen();
+    await Promise.all([opening, closing]);
+    assert.equal(hub.streams.has(`pending.${surface}/late`), false);
+    assert.equal(invokeCalls.filter((c) => c.cmd === 'plugin_stream_close').length, 1);
+  });
+
+  test(`${surface}: a delayed subscription is released when activation has already ended`, async () => {
+    let finishSubscribe;
+    let releases = 0;
+    const original = hub.subscribe;
+    hub.subscribe = () => new Promise((resolve) => { finishSubscribe = resolve; });
+    try {
+      const { sdk, dispose } = create(`subscription.${surface}`);
+      const subscribing = sdk.subscribe('late', () => {});
+      const closing = dispose();
+      finishSubscribe(() => { releases += 1; });
+      await Promise.all([subscribing, closing]);
+      assert.equal(releases, 1);
+    } finally {
+      hub.subscribe = original;
+    }
+  });
+}
 
 /** A host that accepts everything the bridge might open. */
 function openGateway() {

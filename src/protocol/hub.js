@@ -241,8 +241,43 @@ export class MessageHub {
   constructor() {
     /** `${pluginId}/${ch}` -> live stream handle, so a leak is visible. */
     this.streams = new Map();
+    /**
+     * Channels whose `open` is still awaiting.
+     *
+     * `streams` only gets the key AFTER the transport resolves, so two
+     * concurrent opens of the same channel both passed the "already open" check
+     * and both started — the second `set` silently replaced the first handle,
+     * and the first poll loop kept running with nobody able to close it. When
+     * the replacement was closed, the orphan reported the kill as an `exit`,
+     * which every sidecar plugin reads as "the helper crashed".
+     */
+    this.opening = new Set();
+    /**
+     * Calls that have been sent and not answered yet: `{ key, at }`.
+     *
+     * Not a debugging nicety — it is the only place that can answer "what was
+     * the UI waiting on when it stopped answering?" from inside the window.
+     * `trafficReport` measures the volume of frames, which is a different
+     * question, and the host's own `oldest` cannot say whether the call is
+     * stuck in the host or its answer never came back.
+     */
+    this.pending = new Set();
     /** `${pluginId}` -> unsubscribe fns, torn down with the plugin. */
     this.subscriptions = new Map();
+  }
+
+  /**
+   * Calls still unanswered after `minMs`, oldest first.
+   *
+   * Exposed for the liveness beacon: when the bridge stops answering, this is
+   * what the page can still say about itself with no IPC at all.
+   */
+  stuckCalls(minMs = 10_000) {
+    const now = Date.now();
+    return [...this.pending]
+      .map((c) => ({ key: c.key, ageMs: now - c.at }))
+      .filter((c) => c.ageMs >= minMs)
+      .sort((a, b) => b.ageMs - a.ageMs);
   }
 
   // ------------------------------ control plane ------------------------------
@@ -253,7 +288,27 @@ export class MessageHub {
    * cancel the host, which is why the timeout lives here and not in the envelope.
    */
   request(pluginId, svc, act, params = null, opts = {}) {
-    const p = transport('rpc').request({ pluginId, svc, act, params, ...opts });
+    // Registered before the call is issued, so a call that never settles is
+    // visible as a stuck call instead of vanishing into a pending promise.
+    const entry = { key: `${svc}/${act}`, at: Date.now() };
+    this.pending.add(entry);
+    let raw;
+    try {
+      raw = transport('rpc').request({ pluginId, svc, act, params, ...opts });
+    } catch (e) {
+      this.pending.delete(entry);
+      throw e;
+    }
+    const settle = (fn) => (v) => {
+      this.pending.delete(entry);
+      return fn(v);
+    };
+    const p = raw.then(
+      settle((v) => v),
+      settle((e) => {
+        throw e;
+      }),
+    );
     if (!TRACE || TRACE_EXEMPT(svc, act)) return p;
 
     const t0 = performance.now();
@@ -376,9 +431,11 @@ export class MessageHub {
     if (TRACE) trace('open', '->', pluginId, `${schemeId} ch=${ch}`, `provider=${provider}`);
 
     const key = `${pluginId}/${ch}`;
-    if (this.streams.has(key)) {
+    if (this.streams.has(key) || this.opening.has(key)) {
       throw ProtocolError.protocol(`stream \`${key}\` is already open`);
     }
+    this.opening.add(key);
+    try {
 
     const t = transport(schemeId);
     // A fast producer can emit its terminal frame WHILE `open` is still
@@ -394,6 +451,9 @@ export class MessageHub {
     const handle = await t.open({ pluginId, provider, ch, params, onFrame: frameIn, onEnd: finish });
     if (!settled) this.streams.set(key, handle);
     return handle;
+    } finally {
+      this.opening.delete(key);
+    }
   }
 
   /** Talk to a helper executable shipped inside the plugin folder. */

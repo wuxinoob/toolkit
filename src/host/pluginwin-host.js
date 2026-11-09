@@ -57,7 +57,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { hub } from '../protocol/hub.js';
-import { protocolContract } from '../protocol/contract.js';
+import { watchStuckCalls } from './liveness.js';
+import { createPluginSdk } from './plugin-sdk.js';
+import { Disposer } from './disposer.js';
 import { PLUGIN_ATTR, applyPluginTheme } from './pluginTheme.js';
 
 function renderError(title, detail) {
@@ -178,317 +180,23 @@ async function watchWindowDrops(label) {
  * one contract rather than two dialects.
  */
 export function makeBridge(pluginId, label, manifest) {
-  const prefix = `[plugin:${pluginId}]`;
-  const perms = manifest?.permissions ?? [];
-  const has = (perm) => perms.includes(perm);
-  const gate = (svc, fn) =>
-    has(`rpc:${svc}`) ? fn() : Promise.reject(new Error(`${prefix} missing permission "rpc:${svc}"`));
-
-  const disposer = [];
-  const track = (off) => {
-    disposer.push(off);
-    return off;
-  };
-
-  /**
-   * Streams this window opened.
-   *
-   * Same bookkeeping as `ctx`, and for the same two reasons:
-   *
-   *   - `closeStream(ch)` must be able to say "not mine" without asking the host.
-   *     Closing is deliberately ungated (it is strictly weaker than opening), so
-   *     the local set is what keeps it honest.
-   *   - `dispose()` has to release them. This window owns a real host-side
-   *     session for every `pty` / `sidecar` / `stream` it opened, and this window
-   *     is the only thing that will ever close them — the plugin's JS context is
-   *     gone the moment the window goes. Without this, closing a plugin window
-   *     left its helper PROCESSES running until the next app start.
-   */
-  const openStreams = new Set();
-  const trackStream = (handle) => {
-    openStreams.add(handle.ch);
-    return handle;
-  };
-
-  const subscribeWith = (scheme, topic, fn) => {
-    const p = hub.subscribe(pluginId, topic, fn, { scheme });
-    p.then(track).catch(() => {});
-    return p;
-  };
-  const publishWith = (scheme, topic, payload) => hub.publish(pluginId, topic, payload, { scheme });
-
+  const disposer = new Disposer();
   return {
     pluginId,
     label,
-    manifest,
-
-    /** The same wire contract `ctx.protocol` exposes. */
-    protocol: protocolContract(),
-
-    /**
-     * Window-local logging. `console.*` in this window, with the plugin's id
-     * prefixed — the same shape as `ctx.log`.
-     *
-     * It does NOT reach `debug.log`: only the host's own logger writes that file.
-     * A plugin whose failure is only visible here is a plugin the user cannot
-     * debug, so surface anything that matters in the UI as well.
-     */
-    log: {
-      info: (...a) => console.info(prefix, ...a),
-      warn: (...a) => console.warn(prefix, ...a),
-      error: (...a) => console.error(prefix, ...a),
-    },
-
-    request: (svc, act, params = null, opts = {}) =>
-      gate(svc, () => hub.request(pluginId, svc, act, params, opts)),
-
-    /**
-     * The same call, answered with BYTES instead of JSON.
-     *
-     * Same permission as `request` (`rpc:<svc>`) — a binary answer is not a
-     * wider capability, just a different codec — and the same shape a
-     * main-window plugin gets as `ctx.bytes`, so code ports between the two.
-     */
-    bytes: (svc, act, params = null, opts = {}) =>
-      gate(svc, () => hub.requestBytes(pluginId, svc, act, params, opts)),
-
-    storage: {
-      get: (key) => gate('storage', () => hub.request(pluginId, 'storage', 'get', { key })),
-      set: (key, value) => gate('storage', () => hub.request(pluginId, 'storage', 'set', { key, value })),
-      remove: (key) => gate('storage', () => hub.request(pluginId, 'storage', 'remove', { key })),
-      keys: () => gate('storage', () => hub.request(pluginId, 'storage', 'keys', {})),
-    },
-
-    // same three shapes as ctx: subscribe / once / publish
-    subscribe: (topic, fn, { scheme = 'event-bus' } = {}) => subscribeWith(scheme, topic, fn),
-    once: (topic, fn, { scheme = 'event-bus' } = {}) => hub.once(pluginId, topic, fn, { scheme }).then(track),
-    publish: (topic, payload = null, { scheme = 'event-bus' } = {}) =>
-      scheme === 'event-bus'
-        ? gate('bus', () => publishWith('event-bus', topic, payload))
-        : publishWith(scheme, topic, payload),
-
-    events: {
-      on: (topic, fn) => subscribeWith('in-process', topic, fn),
-      once: (topic, fn) => hub.once(pluginId, topic, fn, { scheme: 'in-process' }).then(track),
-      emit: (topic, payload = null) => publishWith('in-process', topic, payload),
-    },
-
-    bus: {
-      subscribe: (topic, fn) => subscribeWith('event-bus', topic, fn),
-      once: (topic, fn) => hub.once(pluginId, topic, fn, { scheme: 'event-bus' }).then(track),
-      publish: (topic, payload = null) => gate('bus', () => publishWith('event-bus', topic, payload)),
-    },
-
-    /**
-     * The host's sensing surface — the same shapes and the same permissions as
-     * `ctx.clipboard` / `ctx.screen`.
-     *
-     * These reached the main window first, which made "read the clipboard" a
-     * capability that quietly depended on WHERE a plugin put its UI: the same
-     * code worked in a view and failed with `undefined is not a function` in the
-     * plugin's own window. A window-scoped plugin hits the same gateway and the
-     * same registry, so there is nothing to decide here — only to mirror.
-     */
-    clipboard: {
-      read: () => gate('clipboard', () => hub.request(pluginId, 'clipboard', 'read', {})),
-      write: (text) => gate('clipboard', () => hub.request(pluginId, 'clipboard', 'write', { text })),
-      // `watch` is a stream, so it needs `rpc:stream`; the `clipboard` provider
-      // then adds `rpc:clipboard` of its own, natively. Declare both.
-      watch: (ch, handlers = {}) =>
-        gate('stream', async () => {
-          const h = await hub.stream(pluginId, 'channel-json', {
-            provider: 'clipboard',
-            ch,
-            ...handlers,
-          });
-          track(() => hub.close(pluginId, ch));
-          return trackStream(h);
-        }),
-    },
-
-    screen: {
-      monitors: () => gate('screen', () => hub.request(pluginId, 'screen', 'monitors', {})),
-      // Bytes, not base64 — same as `ctx.screen.capture` in the main window.
-      capture: (opts = {}) => gate('screen', () => hub.requestBytes(pluginId, 'screen', 'capture', opts)),
-    },
-
-    /**
-     * Native dialogs, opened by the HOST on your behalf — same shape and the
-     * same `rpc:dialog` permission as `ctx.files`.
-     *
-     * A raw command, not a gateway action: the gateway is synchronous and would
-     * deadlock waiting on a modal. See `plugin_dialog` in `lib.rs`.
-     *
-     * **What you get back is a path the USER picked**, in a dialog they could see
-     * and cancel. That is the grant — there is no `bridge.fs`.
-     */
-    files: {
-      /** Pick file(s). Resolves `[]` when the user cancels — not an error. */
-      pick: (options = {}) =>
-        gate('dialog', () =>
-          invoke('plugin_dialog', {
-            pluginId,
-            action: 'open',
-            params: {
-              title: options.title ?? null,
-              multiple: !!options.multiple,
-              folder: !!options.folder,
-              directory: options.directory ?? null,
-              filters: options.filters ?? null,
-            },
-          }),
-        ).then((r) => r?.paths ?? []),
-
-      /** Ask where to save. Resolves `null` when the user cancels. */
-      save: (options = {}) =>
-        gate('dialog', () =>
-          invoke('plugin_dialog', {
-            pluginId,
-            action: 'save',
-            params: {
-              title: options.title ?? null,
-              defaultPath: options.defaultPath ?? null,
-            },
-          }),
-        ).then((r) => r?.path ?? null),
-
-      /** A native message box. */
-      message: (message, options = {}) =>
-        gate('dialog', () =>
-          invoke('plugin_dialog', {
-            pluginId,
-            action: 'message',
-            params: { message, title: options.title ?? null },
-          }),
-        ),
-    },
-
-    /** Hotkeys are registered by the host at activate; this only listens. */
-    onHotkey: (action, fn) =>
-      subscribeWith('event-bus', `hotkey:${action}`, (env) => {
-        if (env.svc && env.svc !== pluginId) return;
-        fn(env);
-      }),
-
-    /**
-     * Files dropped on THIS window. `fn(paths, info)` with `info = { label }`.
-     *
-     * Same shape as `ctx.onDrop` — including the returned Promise of a cancel
-     * function — with one difference in the second argument: a view gets
-     * `{ viewId }` (which view the user aimed at) and a window gets
-     * `{ label }` (there is only one possible target, so there is nothing to
-     * route and nothing to disambiguate).
-     *
-     * **No permission**, for the same reason as `ctx.onDrop`: a drop lands on
-     * the window the user aimed at, so a plugin can only ever see its own.
-     *
-     * **Do not write an HTML5 `ondrop` instead** — Tauri's `dragDropEnabled`
-     * is on by default and silently suppresses the browser's drag events, which
-     * looks like "nothing happened" with no error.
-     */
+    ...createPluginSdk(pluginId, manifest ?? {}, disposer),
     onDrop: (fn) => {
       if (typeof fn !== 'function') {
-        return Promise.reject(new Error(`${prefix} onDrop(fn): fn must be a function`));
+        return Promise.reject(new Error(`[plugin:${pluginId}] onDrop(fn): fn must be a function`));
       }
       dropHandlers.add(fn);
-      return Promise.resolve(() => dropHandlers.delete(fn));
+      const off = () => dropHandlers.delete(fn);
+      disposer.track(off);
+      return Promise.resolve(off);
     },
-
-    // Every stream creator registers the handle for teardown, exactly like
-    // `ctx` does. The close is fire-and-forget because `dispose()` runs on
-    // `beforeunload`, where nothing can be awaited — but it IS issued, which is
-    // what stops a plugin window from leaving a helper process behind.
-    stream: (provider, ch, handlers = {}) =>
-      gate('stream', async () => {
-        const h = await hub.stream(pluginId, 'channel-json', { provider, ch, ...handlers });
-        track(() => hub.close(pluginId, ch));
-        return trackStream(h);
-      }),
-    streamRaw: (provider, ch, handlers = {}) =>
-      gate('stream', async () => {
-        const h = await hub.stream(pluginId, 'channel-raw', { provider, ch, ...handlers });
-        track(() => hub.close(pluginId, ch));
-        return trackStream(h);
-      }),
-    sidecar: (ch, opts) =>
-      gate('proc', async () => {
-        const h = await hub.sidecar(pluginId, ch, opts);
-        track(() => hub.close(pluginId, ch));
-        return trackStream(h);
-      }),
-    /** Uplink: push frames to a host-side sink (same shape as ctx.uplink). */
-    uplink: (ch, opts = {}) =>
-      gate('stream', async () => {
-        const h = await hub.uplink(pluginId, ch, { sink: opts.sink, params: opts.params });
-        track(() => hub.close(pluginId, ch));
-        return trackStream(h);
-      }),
-    pty: (ch, opts) =>
-      gate('stream', async () => {
-        const h = await hub.pty(pluginId, ch, opts);
-        track(() => hub.close(pluginId, ch));
-        return trackStream(h);
-      }),
-
-    /**
-     * Close a stream this window opened.
-     *
-     * Deliberately ungated, like `ctx.closeStream`: opening it already required
-     * the capability, and this can only touch streams this window registered.
-     * Closing is strictly weaker than opening, so a gate here would only make
-     * the permission model harder to reason about.
-     */
-    closeStream: (ch) => {
-      if (!openStreams.has(ch)) return Promise.resolve(false);
-      openStreams.delete(ch);
-      return hub.close(pluginId, ch);
-    },
-
-    sessions: () => gate('host', () => hub.sessions(pluginId)),
-
-    /**
-     * The host's folders and the user's well-known folders, as absolute paths —
-     * the same answer `ctx.paths()` gives, from the same action (`host/paths`).
-     *
-     * A window needs it for the same reason a view does, and one more: a window
-     * is where a plugin typically asks the user to save something, so "where
-     * should the default location be" is a question it has to answer. Read-only —
-     * this reports where a folder is, it does not grant access to it.
-     */
-    paths: () => gate('host', () => hub.request(pluginId, 'host', 'paths', {})),
-
-    schemes: () => hub.schemes(),
-    schema: () => gate('host', () => hub.schema(pluginId)),
-
     close: () => getCurrentWindow().close(),
     drag: () => getCurrentWindow().startDragging(),
-    cleanup: (fn) => track(fn),
-    /**
-     * Release everything this window acquired.
-     *
-     * Returns a promise (it did not before) so a caller that CAN wait — a test,
-     * or a plugin that closes itself deliberately — can. `beforeunload` ignores
-     * the result, which is why the stream closes above are fire-and-forget.
-     */
-    dispose: () => {
-      // Drops first: it is the one input that is not a `hub` subscription, so
-      // nothing else in this teardown would release it.
-      dropHandlers.clear();
-      // `[...disposer]`, not `disposer`: `reverse()` returns the SAME array, so
-      // clearing `disposer.length` below would empty the list we are about to
-      // run and turn this whole method into a no-op. (It did exactly that until
-      // a test noticed nothing was being released.)
-      const fns = [...disposer].reverse();
-      disposer.length = 0;
-      const results = fns.map((off) => {
-        try {
-          return off?.();
-        } catch {
-          return undefined; // already gone
-        }
-      });
-      return Promise.allSettled(results);
-    },
+    dispose: () => disposer.run({ parallel: true }),
   };
 }
 
@@ -496,6 +204,16 @@ export async function mountPluginWindow() {
   const q = new URLSearchParams(window.location.search);
   const pluginId = q.get('plugin');
   const label = q.get('label') || `plugin-${pluginId}`;
+  // Publish this window's liveness into its TITLE when a call stops coming
+  // back, so the host can read it with GetWindowText — no IPC. This window has
+  // no gateway watchdog on purpose (its probes would keep the host's global
+  // "the UI is silent" clock fresh and hide a dead main window), so it watches
+  // its own pending table instead.
+  try {
+    watchStuckCalls(hub);
+  } catch {
+    /* a diagnostic must never stop a plugin window from mounting */
+  }
   try {
     if (!pluginId) throw new Error('missing ?plugin=<id> in the window URL');
 

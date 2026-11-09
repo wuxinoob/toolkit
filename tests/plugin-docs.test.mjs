@@ -1,3 +1,4 @@
+import { ctxSurface, bridgeSurface } from './helpers/sdk-surfaces.mjs';
 /**
  * Doc-sync guards for the plugin-facing documentation.
  *
@@ -127,50 +128,24 @@ function selftestIds() {
 /** Every permission literal the JS side can gate on, across both windows. */
 function jsGatedPermissions() {
   const found = new Set();
-  for (const rel of ['src/host/ctx.js', 'src/host/pluginwin-host.js']) {
+  for (const rel of ['src/host/ctx.js', 'src/host/plugin-sdk.js']) {
     const text = read(...rel.split('/'));
     for (const m of text.matchAll(/'(rpc:[a-z_]+|win:manage)'/g)) found.add(m[1]);
-    // The bridge helper spells its gate as `gate('svc', …)` rather than a
-    // literal permission, so it needs its own pattern.
-    for (const m of text.matchAll(/\bgate\('([a-z_]+)'/g)) found.add(`rpc:${m[1]}`);
+    // Shared SDK helpers name the service; window-only permissions are literals.
+    for (const m of text.matchAll(/\b(?:gate|request|bytes|open)\('([a-z_]+)'/g)) found.add(`rpc:${m[1]}`);
   }
   return found;
 }
 
 /**
- * The capabilities the MAIN window exposes: the `ctx` object literal, plus the
- * methods bolted on afterwards (`ctx.cleanup`).
+ * Read the actual constructed SDKs, including shared capabilities and aliases.
  */
 function ctxCapabilities() {
-  const text = read('src', 'host', 'ctx.js');
-  const open = text.indexOf('  const ctx = {');
-  const close = text.indexOf('\n  // `ctx.onSettingsChanged`');
-  assert.ok(open >= 0 && close > open, 'could not bracket the ctx object literal in ctx.js (the extraction is stale)');
-  const literal = text.slice(open, close);
-  // `[,:]` — `id` and `manifest` are shorthand, exactly as on the bridge. Demanding
-  // a colon here is what made `pluginId` look window-only.
-  const keys = new Set([...literal.matchAll(/^\s{4}([A-Za-z_]\w*)\s*[,:]/gm)].map((m) => m[1]));
-  // Methods bolted on after the literal (`ctx.cleanup = …`) are part of the
-  // surface too, so the scan is not limited to the object body.
-  for (const m of text.matchAll(/^\s*ctx\.([A-Za-z_]\w*)\s*=/gm)) keys.add(m[1]);
-  return keys;
+  return new Set(Object.keys(ctxSurface));
 }
 
-/** The capabilities a plugin's OWN window exposes (the `bridge` object). */
 function bridgeCapabilities() {
-  const text = read('src', 'host', 'pluginwin-host.js');
-  const from = text.indexOf('export function makeBridge');
-  const to = text.indexOf('export async function mountPluginWindow');
-  assert.ok(from >= 0 && to > from, 'could not bracket makeBridge() in pluginwin-host.js (the extraction is stale)');
-  const fn = text.slice(from, to);
-  const at = fn.lastIndexOf('\n  return {');
-  assert.ok(at >= 0, 'could not find the object makeBridge() returns (the extraction is stale)');
-  const literal = fn.slice(at);
-  // `[,:]`, not `:` — `pluginId`, `label` and `manifest` are shorthand
-  // properties, and demanding a colon silently dropped three capabilities from
-  // the bridge's surface (which made an earlier version of these guards pass
-  // while missing the very fields they exist to compare).
-  return new Set([...literal.matchAll(/^\s{4}([A-Za-z_]\w*)\s*[,:]/gm)].map((m) => m[1]));
+  return new Set(Object.keys(bridgeSurface));
 }
 
 /**

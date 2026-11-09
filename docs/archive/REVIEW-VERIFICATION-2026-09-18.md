@@ -1,3 +1,5 @@
+> 历史快照，已归档；当前实现见 [架构说明](../ARCHITECTURE.md)。
+
 # 分支评审复核 + 结论（2026-09-18）
 
 范围：`codex/plugin-communication-lifecycle` 相对 `main` 的变更，以及

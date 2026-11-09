@@ -49,8 +49,8 @@ const MINUTE = 60_000;
  * The profile from the report: an interval schedule and a process that stays up.
  *
  * The id is a parameter because the plugin module is a singleton for the whole
- * test file — sessions and timers outlive `deactivate()` (that is deliberate:
- * a process must not die because a view was rebuilt), so a second activation
+ * test file — session records remain after `deactivate()` while timers are
+ * disposed. View unmounting leaves processes running, so a second activation
  * with the SAME id would find a live session and skip its auto-start.
  */
 function makeCtx(id = 'p1', schedule = { kind: 'interval', everyMinutes: 1 }, overrides = {}) {
@@ -100,6 +100,33 @@ function makeCtx(id = 'p1', schedule = { kind: 'interval', everyMinutes: 1 }, ov
 /** Let promise chains (launchProfile → .finally → armSchedules) settle. */
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
+test('deactivation during a scheduled spawn cannot re-arm the schedule', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: T0 });
+  const { ctx, spawns } = makeCtx('pending-stop', undefined, { autoStart: false });
+  const originalPty = ctx.pty;
+  let finish;
+  ctx.pty = async (ch, cfg) => {
+    const handle = await originalPty(ch, cfg);
+    if (spawns.length === 1) {
+      await new Promise((resolve) => { finish = resolve; });
+      cfg.onFrame({ kind: 'exit', p: 0 });
+    }
+    return handle;
+  };
+  t.after(() => deactivate());
+  await activate(ctx);
+  t.mock.timers.tick(MINUTE);
+  await settle();
+  assert.equal(spawns.length, 1);
+
+  deactivate();
+  finish();
+  await settle();
+  t.mock.timers.tick(MINUTE);
+  await settle();
+  assert.equal(spawns.length, 1, 'a completed old spawn must not start another process after deactivation');
+});
+
 test('a schedule that finds the process up consumes the slot instead of spinning', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: T0 });
   const { ctx, spawns, notifies, logs } = makeCtx();
@@ -144,6 +171,114 @@ test('a schedule that finds the process up consumes the slot instead of spinning
     firings() >= 10 && firings() <= 12,
     `one firing per interval, not one per event-loop turn — saw ${firings()} firings in 11 minutes`,
   );
+});
+
+test('an old session exit cannot restart a newly activated plugin', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: T0 });
+  const settings = { restart: { policy: 'always', delayMs: 1000, maxRetries: 1 } };
+  const old = makeCtx('restart-owner', { kind: 'none' }, settings);
+  const fresh = makeCtx('restart-owner', { kind: 'none' }, { ...settings, autoStart: false });
+  t.after(() => deactivate());
+  await activate(old.ctx);
+  deactivate();
+  await activate(fresh.ctx);
+
+  old.spawns[0].cfg.onFrame({ kind: 'exit', p: 1 });
+  t.mock.timers.tick(1000);
+  await settle();
+  assert.equal(fresh.spawns.length, 0, 'old frame callbacks belong to the disposed activation');
+});
+
+test('an active restart still runs once and observes its retry budget', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: T0 });
+  const { ctx, spawns } = makeCtx('restart-live', { kind: 'none' }, {
+    restart: { policy: 'always', delayMs: 1000, maxRetries: 1 },
+  });
+  t.after(() => deactivate());
+  await activate(ctx);
+  spawns[0].cfg.onFrame({ kind: 'exit', p: 1 });
+  t.mock.timers.tick(1000);
+  await settle();
+  assert.equal(spawns.length, 2);
+
+  spawns[1].cfg.onFrame({ kind: 'exit', p: 1 });
+  t.mock.timers.tick(1000);
+  await settle();
+  assert.equal(spawns.length, 2, 'the configured single retry is exhausted');
+});
+
+test('disabling a profile cancels a restart already counting down', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: T0 });
+  const { ctx, spawns } = makeCtx('restart-disabled', { kind: 'none' }, {
+    restart: { policy: 'always', delayMs: 1000, maxRetries: 1 },
+  });
+  t.after(() => deactivate());
+  await activate(ctx);
+  spawns[0].cfg.onFrame({ kind: 'exit', p: 1 });
+  globalThis.window.__toolbox.procman.state.profiles[0].enabled = false;
+  t.mock.timers.tick(1000);
+  await settle();
+  assert.equal(spawns.length, 1, 'an armed timer must re-read the current enabled state');
+});
+
+test('a failed PTY start preserves the last successful run history', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: T0 });
+  const previousRun = T0 - MINUTE;
+  const { ctx, spawns } = makeCtx('failed-history', { kind: 'none' }, {
+    lastRunAt: previousRun, lastRunReason: 'manual',
+  });
+  const writes = [];
+  ctx.storage.set = async (key, value) => writes.push({ key, value: structuredClone(value) });
+  ctx.pty = async (ch, cfg) => {
+    spawns.push({ ch, cfg });
+    throw new Error('program not found');
+  };
+  t.after(() => deactivate());
+  await activate(ctx);
+  const profile = globalThis.window.__toolbox.procman.state.profiles[0];
+  assert.equal(spawns.length, 1, 'the launch was attempted');
+  assert.equal(profile.lastRunAt, previousRun, 'a failed start must not appear as a new successful run');
+  assert.equal(profile.lastRunReason, 'manual');
+  assert.equal(writes.length, 0, 'failure must not persist a replacement run history');
+});
+
+test('a process that starts and exits with failure still records its actual start', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: T0 });
+  const { ctx } = makeCtx('short-history', { kind: 'none' }, {
+    lastRunAt: T0 - MINUTE, lastRunReason: 'manual',
+  });
+  const originalPty = ctx.pty;
+  ctx.pty = async (ch, cfg) => {
+    const handle = await originalPty(ch, cfg);
+    cfg.onFrame({ kind: 'exit', p: 1 });
+    return handle;
+  };
+  t.after(() => deactivate());
+  await activate(ctx);
+  const profile = globalThis.window.__toolbox.procman.state.profiles[0];
+  assert.equal(profile.lastRunAt, T0);
+  assert.equal(profile.lastRunReason, 'autostart');
+});
+
+test('exit frames before PTY acquisition completes still consume the retry budget', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: T0 });
+  const { ctx, spawns } = makeCtx('early-exit-budget', { kind: 'none' }, {
+    restart: { policy: 'always', delayMs: 1000, maxRetries: 2 },
+  });
+  const originalPty = ctx.pty;
+  ctx.pty = async (ch, cfg) => {
+    const handle = await originalPty(ch, cfg);
+    // Native exit can arrive before the JavaScript open Promise resolves.
+    cfg.onFrame({ kind: 'exit', p: 1 });
+    return handle;
+  };
+  t.after(() => deactivate());
+  await activate(ctx);
+  for (let second = 0; second < 5; second++) {
+    t.mock.timers.tick(1000);
+    await settle();
+  }
+  assert.equal(spawns.length, 3, 'one initial start and two retries must exhaust the budget');
 });
 
 test('a manual Run still says the profile is already running', async (t) => {

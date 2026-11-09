@@ -273,7 +273,7 @@ test('every spelling of "output ended" ends the stream, not just EOF', async () 
   }
 });
 
-test('the session is registered WITHOUT a pid', async () => {
+test('the session registers its PTY handle without claiming an OS pid', async () => {
   // What spawn returns is the plugin's session HANDLE, not an OS pid. Registering
   // it as one would make app exit `taskkill` an unrelated process number.
   resetPty();
@@ -283,8 +283,8 @@ test('the session is registered WITHOUT a pid', async () => {
   assert.equal(opens.length, 1);
   assert.deepEqual(
     opens[0].args.msg.p,
-    { ch: 'p4', kind: 'pty' },
-    'the host does not own this process, so it must not claim a pid',
+    { ch: 'p4', kind: 'pty', ptyHandle: 7 },
+    'the host gets a PTY stop callback, without treating its handle as an OS pid',
   );
 });
 

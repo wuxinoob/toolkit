@@ -86,14 +86,21 @@ test('a window a plugin creates is handed to the disposer', async () => {
   // so this counts the DELTA: what the create adds.
   const before = tracked.length;
 
-  // Deliberately not awaited: `create` resolves on a `tauri://created` event that
-  // never fires without a real webview. The tracking happens before that, which
-  // is the part under test.
-  ctx.windows.create('plugin-t-win', { url: 'pluginwin.html?plugin=x' }).catch(() => {});
-  await flush();
+  assert.equal(await ctx.windows.create('plugin-t-win', { url: 'pluginwin.html?plugin=x' }), 'created');
 
-  const created = invokes.find((c) => c.cmd === 'plugin:webview|create_webview_window');
+  // The HOST creates it — see `host_window_create`: a window built from JS asks
+  // WebView2 for a different browser command line than the main window started
+  // with, and the second environment for the same user-data folder is refused
+  // with 0x8007139F. That is the whole reason the ACL permission was revoked, so
+  // this also pins that nothing reaches for the JS constructor behind our back.
+  const created = invokes.find((c) => c.cmd === 'host_window_create');
   assert.ok(created, `the window should have been created (saw ${invokes.map((c) => c.cmd)})`);
+  assert.equal(created.args.label, 'plugin-t-win');
+  assert.equal(
+    invokes.filter((c) => c.cmd === 'plugin:webview|create_webview_window').length,
+    0,
+    'nothing may create a window through the JS API any more',
+  );
   assert.equal(tracked.length - before, 1, 'the created window must be tracked for teardown');
 
   // Running that disposer is exactly what `deactivate` does.

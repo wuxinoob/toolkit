@@ -326,6 +326,26 @@ test('lifecycle: a failing cleanup does not stop the rest', async () => {
   assert.deepEqual(seen, ['third', 'first'], 'the throw is contained, the rest still run');
 });
 
+test('lifecycle: failed activation removes its partially registered views', async () => {
+  invokeImpl = async () => null;
+  const plugin = await loadPlugin({
+    manifest: {
+      id: 'partial.activation', name: 'Partial activation',
+      contributes: { views: [{ id: 'partial', title: 'Partial' }] },
+    },
+    activate(ctx) {
+      ctx.registerView('partial', () => {});
+      store.activeViewId = 'partial.activation/partial';
+      throw new Error('activation interrupted');
+    },
+  });
+  await activate(plugin, { silent: true });
+  assert.equal(store.plugins.find((p) => p.manifest.id === plugin.manifest.id).status, 'error');
+  assert.equal(store.views.some((v) => v.pluginId === plugin.manifest.id), false);
+  assert.notEqual(store.activeViewId, 'partial.activation/partial');
+  assert.equal(plugin._ctx, null);
+});
+
 test('lifecycle: deactivate does not resolve before an async cleanup finishes', async () => {
   ls.clear();
   resetEvents();

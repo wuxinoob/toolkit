@@ -32,7 +32,8 @@
  * applies, which is why there is no flash of the wrong theme on window open.
  * ========================================================================== */
 
-@import 'tailwindcss';
+/* Only front-end code supplies utilities; Cargo caches and docs are not UI sources. */
+@import 'tailwindcss' source('../');
 @import 'tw-animate-css';
 
 /* vue-sonner ships its own stylesheet and does NOT import it from the component

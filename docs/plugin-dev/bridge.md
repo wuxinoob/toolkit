@@ -5,8 +5,10 @@
 > 但差异是真实的，而且其中**一处是「连带缺席」而不是设计**（`notifyOS`）。
 >
 > **这一页是差异的唯一权威清单。** `api.md` 只留摘要并链到这里，不重复列举。
-> `tests/plugin-docs.test.mjs` 逐行比对本文的表格与 `ctx.js` / `pluginwin-host.js`，
+> `tests/plugin-docs.test.mjs` 比对本文的表格与两侧实际构造的 SDK 对象，
 > 任何一侧增删方法而不更新本文，就是一条红测试。
+
+公共能力由 `src/host/plugin-sdk.js` 一次实现，两个窗口只组合各自的视图、拖放和窗口操作；清理共用 `disposer.js`。
 
 ---
 

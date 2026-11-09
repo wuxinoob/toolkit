@@ -321,7 +321,7 @@ one-sided — `ui` / `windows` / `registerView` / `focusView` exist only
 on `ctx`, while `label` / `close` / `drag` / `dispose` exist only on `bridge`.
 The differences are deliberate except for `ui.notifyOS`, which is collateral.
 Full matrix and the substitute for each:
-[`plugin-dev/bridge.md`](./plugin-dev/bridge.md).
+[`plugin-dev/bridge.md`](plugin-dev/bridge.md).
 
 ### Timeouts
 
@@ -432,7 +432,7 @@ modal dialog needs the main thread's message loop and the gateway is
 synchronous. **Every command is `async fn`** — a non-async Tauri command runs on
 the message thread and blocks every window, and the symptom is "the UI is
 laggy", not "a command blocked". `tests/main-thread.test.mjs` enforces it. The
-full inventory of 13 is in [`INTERFACES.md`](./INTERFACES.md) §1.
+full inventory of 13 is in [`INTERFACES.md`](INTERFACES.md) §1.
 
 ---
 
@@ -454,8 +454,8 @@ reach the gateway.
 > so a plugin sharing the main window's JS context can reach every service by
 > naming itself `__host__`. The fix is "token is identity" (Rust mints a token at
 > `plugin_register`, the gateway takes the token instead of an id). Analysis and
-> work estimate: [`COMMS-AUDIT-2026-09-23.md`](./COMMS-AUDIT-2026-09-23.md) §1;
-> classification and priority: [`INTERFACE-REVIEW-2026-09-27.md`](./INTERFACE-REVIEW-2026-09-27.md) §3.
+> work estimate: [`COMMS-AUDIT-2026-09-23.md`](COMMS-AUDIT-2026-09-23.md) §1;
+> classification and priority: [`INTERFACE-REVIEW-2026-09-27.md`](INTERFACE-REVIEW-2026-09-27.md) §3.
 
 ### One capability, one permission
 

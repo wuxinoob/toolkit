@@ -63,6 +63,13 @@ struct ProcState {
     /// Lines discarded to stay under the cap, reported to the consumer.
     dropped: u64,
     exited: Option<i32>,
+    /// Why WE stopped it, when the exit came from our own kill.
+    ///
+    /// `None` means the process ended on its own. The distinction matters to
+    /// the caller: a sidecar plugin that treats "the helper exited" as a failure
+    /// shows an error and stops retrying, while "the host stopped it on purpose"
+    /// is a normal end of stream.
+    killed: Option<&'static str>,
 }
 
 struct ProcShared {
@@ -81,6 +88,35 @@ struct ProcHandle {
 fn registry() -> &'static Mutex<HashMap<ProcKey, ProcHandle>> {
     static REG: OnceLock<Mutex<HashMap<ProcKey, ProcHandle>>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Take a lock, but never wait for it longer than `budget`.
+///
+/// Every call here runs **on the async gateway**, and a gateway call that waits
+/// on a mutex has no deadline of its own: the caller times out at 45 s, the
+/// worker stays parked, and `inFlight` grows. That is not hypothetical — the
+/// host logged `inFlight=2, oldest=Some((188610, "proc/recv"))` while the UI was
+/// dead: two polls had been queued behind a lock for three minutes.
+///
+/// Returning `None` is the honest answer: "this pipe is busy, try again" — the
+/// caller's own timeout applies, the worker is released, and one stuck pipe
+/// cannot take the whole proc service (and the plugins polling it) down with it.
+pub fn lock_within<'a, T>(m: &'a Mutex<T>, budget: std::time::Duration) -> Option<std::sync::MutexGuard<'a, T>> {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        match m.try_lock() {
+            Ok(guard) => return Some(guard),
+            // A panicked holder must not turn into a permanent outage: the data
+            // behind it is still valid (see the `unwrap_or_else` convention).
+            Err(std::sync::TryLockError::Poisoned(e)) => return Some(e.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if std::time::Instant::now() >= deadline {
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }
 }
 
 fn params_str(params: &Value, key: &str) -> Result<String, ServiceError> {
@@ -170,12 +206,34 @@ fn reader_thread(stdout: std::process::ChildStdout, child: Arc<Mutex<Child>>, sh
 /// Spawn the sidecar. No path validation here — callers validate; tests use
 /// this directly with system binaries.
 fn spawn_handle(exe: &Path, args: &[String], cwd: &Path) -> Result<ProcHandle, ServiceError> {
-    let mut child = Command::new(exe)
-        .args(args)
+    let mut cmd = Command::new(exe);
+    cmd.args(args)
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit()) // sidecar diagnostics land in the host console
+        // NOT `inherit`: the host is a GUI process with no console, so an
+        // inherited stderr handle is invalid anyway. Worse, without
+        // CREATE_NO_WINDOW Windows allocates a console for every console-app
+        // sidecar — which spawns a `conhost.exe` that outlives the child. A
+        // machine that had been running for 17 hours with a 30-minute schedule
+        // had **19 leaked conhost.exe** under the host. The sidecar's own
+        // stderr is a diagnostic; `recv` on stdout is the supported channel.
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        /// `DETACHED_PROCESS` — the child gets **no console at all**.
+        ///
+        /// `CREATE_NO_WINDOW` was the obvious choice and it is wrong: it still
+        /// allocates a console, it just hides its window, so Windows still
+        /// starts a `conhost.exe` for every spawn. A host that had been up for
+        /// 14 hours on a 30-minute schedule had **20 leaked conhost.exe** under
+        /// it. `DETACHED_PROCESS` is the flag that means "no console", and the
+        /// stdio it needs is already piped (stdout) or null (stderr).
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        cmd.creation_flags(DETACHED_PROCESS);
+    }
+    let mut child = cmd
         .spawn()
         .map_err(|e| ServiceError::spawn_failed(format!("spawn {}: {e}", exe.display())))?;
     let stdin = child
@@ -255,7 +313,11 @@ fn write_line(h: &ProcHandle, line: &str) -> Result<(), ServiceError> {
 /// the process exits, so the last messages are never lost.
 fn recv_from(shared: &Arc<ProcShared>, timeout: Duration) -> Value {
     let deadline = Instant::now() + timeout;
-    let mut st = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut st) = lock_within(&shared.state, timeout) else {
+        // Someone is holding this pipe's state. Say "nothing yet" rather than
+        // parking a gateway worker until the caller gives up.
+        return json!({ "timeout": true, "busy": true });
+    };
     loop {
         if let Some(line) = st.lines.pop_front() {
             st.queued_bytes = st.queued_bytes.saturating_sub(line.len());
@@ -269,7 +331,12 @@ fn recv_from(shared: &Arc<ProcShared>, timeout: Duration) -> Value {
             return out;
         }
         if let Some(code) = st.exited {
-            return json!({ "exited": true, "code": code });
+            let killed = st.killed;
+            let mut out = json!({ "exited": true, "code": code });
+            if let Some(why) = killed {
+                out["killed"] = json!(why);
+            }
+            return out;
         }
         let now = Instant::now();
         if now >= deadline {
@@ -291,7 +358,15 @@ fn recv_from(shared: &Arc<ProcShared>, timeout: Duration) -> Value {
 /// that closes stdout but keeps running would hang `kill`, `kill_all`, and the
 /// session drain on app exit). Killing by pid lets the reader's `wait()` return,
 /// and the reader then reaps the child and publishes the exit code.
-fn kill_handle(h: &ProcHandle) {
+fn kill_handle(h: &ProcHandle, why: &'static str) {
+    // Recorded BEFORE the kill: the reader thread sets `exited` the moment the
+    // process is gone, and a consumer that reads it first must not see "it died"
+    // for a stop we asked for.
+    h.shared
+        .state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .killed = Some(why);
     session::pid_stop(h.pid)();
     // Best-effort reap; the reader thread normally does this. Never block on the
     // lock here — that is the deadlock this function exists to avoid.
@@ -303,7 +378,7 @@ fn kill_handle(h: &ProcHandle) {
 /// Stop closure handed to the session registry: kills the process only, so it
 /// is safe to call while the registry is being drained.
 fn stop_closure(h: ProcHandle) -> Arc<dyn Fn() + Send + Sync> {
-    Arc::new(move || kill_handle(&h))
+    Arc::new(move || kill_handle(&h, "session stop"))
 }
 
 fn kill_one(plugin: &str, key: &str) -> bool {
@@ -311,7 +386,7 @@ fn kill_one(plugin: &str, key: &str) -> bool {
     let removed = registry().lock().unwrap_or_else(|e| e.into_inner()).remove(&pkey);
     match removed {
         Some(h) => {
-            kill_handle(&h);
+            kill_handle(&h, "proc/kill");
             session::close(plugin, key);
             true
         }
@@ -336,7 +411,7 @@ fn kill_all_for(plugin: &str) -> usize {
             Some(stop) => stop(),
             // No session record (unexpected for a sidecar): kill it here so the
             // process cannot outlive the call.
-            None => kill_handle(h),
+            None => kill_handle(h, "proc/kill_all"),
         }
     }
     removed.len()
@@ -366,25 +441,47 @@ fn action_spawn(root: &Path, plugin_id: &str, params: &Value) -> Result<Value, S
     let exe_path = resolve_exe_at(Path::new(&dir), &exe)?;
 
     let pkey = ProcKey { plugin: plugin_id.into(), key: key.clone() };
-    let mut map = registry().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(h) = map.get(&pkey) {
-        return Ok(json!({ "reused": true, "pid": h.pid }));
+    // The registry lock is NOT held across the spawn.
+    //
+    // `CreateProcess` can take seconds (a scanner, a slow disk, a suspended
+    // parent), and every other proc call — `recv` above all — needs this same
+    // lock. Holding it here means one slow spawn freezes every sidecar in the
+    // app, which is what a dead UI with `inFlight=2, oldest=proc/recv` looks
+    // like from the outside.
+    {
+        let map = registry().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(h) = map.get(&pkey) {
+            return Ok(json!({ "reused": true, "pid": h.pid }));
+        }
+        if map.keys().filter(|k| k.plugin == plugin_id).count() >= MAX_PROCS_PER_PLUGIN {
+            return Err(ServiceError::conflict(format!(
+                "too many sidecars for `{plugin_id}` (max {MAX_PROCS_PER_PLUGIN}) — proc.killAll() first"
+            )));
+        }
     }
-    let per_plugin = map.keys().filter(|k| k.plugin == plugin_id).count();
-    if per_plugin >= MAX_PROCS_PER_PLUGIN {
-        return Err(ServiceError::conflict(format!(
-            "too many sidecars for `{plugin_id}` (max {MAX_PROCS_PER_PLUGIN}) — proc.killAll() first"
-        )));
-    }
+
     let handle = spawn_handle(&exe_path, &args, Path::new(&dir))?;
     let pid = handle.pid;
     // Register with the unified session registry BEFORE publishing the handle,
     // so a failure can never leave an untracked child running.
     if let Err(e) = session::open(plugin_id, &key, SessionKind::Sidecar, Some(pid), stop_closure(handle.clone())) {
-        kill_handle(&handle);
+        kill_handle(&handle, "spawn rollback");
         return Err(e);
     }
-    map.insert(pkey, handle);
+    // Re-check: another spawn for the same key may have won while this one was
+    // outside the lock. Keep the first process and stop ours — two sidecars for
+    // one channel is worse than a wasted spawn.
+    {
+        let mut map = registry().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = map.get(&pkey) {
+            let winner = existing.pid;
+            drop(map);
+            session::close(plugin_id, &key);
+            kill_handle(&handle, "spawn lost a race");
+            return Ok(json!({ "reused": true, "pid": winner }));
+        }
+        map.insert(pkey, handle);
+    }
     Ok(json!({ "reused": false, "pid": pid }))
 }
 
@@ -416,12 +513,24 @@ fn action_recv(plugin_id: &str, params: &Value) -> Result<Value, ServiceError> {
         .and_then(|v| v.as_u64())
         .unwrap_or(5000)
         .min(RECV_TIMEOUT_CAP_MS);
-    let h = registry()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&ProcKey { plugin: plugin_id.into(), key })
-        .cloned()
-        .ok_or_else(|| ServiceError::not_found("sidecar not running — spawn first"))?;
+    let pkey = ProcKey { plugin: plugin_id.into(), key };
+    // A slice of the caller's budget, not all of it: the pipe itself still needs
+    // time to answer after the lookup.
+    let lookup = Duration::from_millis(ms.min(250));
+    let h = match lock_within(registry(), lookup) {
+        Some(map) => map.get(&pkey).cloned(),
+        None => None,
+    };
+    let Some(h) = h else {
+        // Either the registry is busy or there is no such sidecar. The
+        // difference matters to the caller: a busy registry must look like
+        // "nothing yet", not like "your helper is gone" (that would make a
+        // plugin tear down and respawn a perfectly healthy process).
+        if lock_within(registry(), Duration::from_millis(1)).is_none() {
+            return Ok(json!({ "timeout": true, "busy": true }));
+        }
+        return Err(ServiceError::not_found("sidecar not running — spawn first"));
+    };
     Ok(recv_from(&h.shared, Duration::from_millis(ms)))
 }
 
@@ -711,7 +820,7 @@ mod tests {
         write_line(&h, "abc").unwrap();
         let line = recv_from(&h.shared, Duration::from_secs(15));
         assert_eq!(line["line"], json!("got:abc"), "stdin must reach sidecar stdout");
-        kill_handle(&h);
+        kill_handle(&h, "test");
     }
 
     #[cfg(windows)]

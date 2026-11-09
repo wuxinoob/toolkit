@@ -14,9 +14,12 @@
 //! branching: it validates the envelope, checks the permission registry, and
 //! looks the service up. Adding a capability means adding a table entry.
 
+pub mod forensics;
+pub mod gateway_stats;
 pub mod host;
 pub mod protocol;
 pub mod services;
+pub mod ui_heartbeat;
 
 use serde_json::{json, Value};
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -39,187 +42,14 @@ async fn plugin_register(plugin_id: String, permissions: Vec<String>) -> Result<
     Ok(())
 }
 
-/// What the gateway is doing RIGHT NOW — the answer to "the UI is dead, why?".
+/// Set when the HOST rebuilt the main webview itself (`ui_heartbeat`).
 ///
-/// A stuck UI has five plausible layers and the JS side can only see the last
-/// one (`invoke` never settles). `host/info` timing out proves none of them:
-/// the request may never have reached Rust (main thread / webview IPC), it may
-/// be queued behind a blocked task, or a service may be stuck. So the gateway
-/// keeps two numbers that separate those cases:
-///
-///   `inFlight` — calls currently inside the gateway. **0 while every call
-///   times out means the request never arrived** (main thread or IPC), and no
-///   amount of service-level fixing will help.
-///   `oldest`   — how long the oldest one has been running, and what it is.
-///   Hours-old `proc/recv` is a different bug from hours-old `host/info`.
-///
-/// The counters are two atomics and a mutex touched only when the count crosses
-/// zero, so the hot path stays cheap (this is on every plugin call).
-pub mod gateway_stats {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Mutex, OnceLock};
-    use std::time::Instant;
-
-    static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
-
-    fn oldest() -> &'static Mutex<Option<(Instant, String)>> {
-        static OLD: OnceLock<Mutex<Option<(Instant, String)>>> = OnceLock::new();
-        OLD.get_or_init(|| Mutex::new(None))
-    }
-
-    /// Held for the duration of one gateway call; dropping it decrements.
-    pub struct Ticket(());
-
-    impl Drop for Ticket {
-        fn drop(&mut self) {
-            if IN_FLIGHT.fetch_sub(1, Ordering::SeqCst) == 1 {
-                *oldest().lock().unwrap_or_else(|e| e.into_inner()) = None;
-            }
-        }
-    }
-
-    /// Count one call in flight. `what` is `svc/act`, for the diagnostic.
-    pub fn enter(what: impl Into<String>) -> Ticket {
-        if IN_FLIGHT.fetch_add(1, Ordering::SeqCst) == 0 {
-            *oldest().lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), what.into()));
-        }
-        Ticket(())
-    }
-
-    /// `(in flight, (oldest age ms, what))`.
-    pub fn snapshot() -> (usize, Option<(u128, String)>) {
-        let n = IN_FLIGHT.load(Ordering::SeqCst);
-        let o = oldest().lock().unwrap_or_else(|e| e.into_inner()).clone();
-        (n, o.map(|(t, w)| (t.elapsed().as_millis(), w)))
-    }
-}
-
-/// Is the UI still talking to us? — and if not, say so in the log OURSELVES.
-///
-/// ## Why the host has to tell on itself
-///
-/// Every piece of evidence about a dead UI used to come from the UI: the JS
-/// watchdog writes a line through `host/write_debug_log`, i.e. over the very
-/// IPC it is reporting on. When that IPC is what broke, the evidence never
-/// lands. The result was an app that had been unresponsive for a day with
-/// **not one line** in `debug.log` — we could see it was wedged, and nothing
-/// about where.
-///
-/// So the host keeps a heartbeat (`touch()` on every gateway call) and a small
-/// thread watches it. When the UI has been silent for a minute, the HOST writes
-/// the line — with the numbers only it can see: whether the UI thread can run a
-/// task, how many gateway calls are in flight, and what the oldest one is.
-///
-/// This also covers the case nothing else can: the renderer process is gone or
-/// frozen, so no JS will ever write anything again.
-pub mod ui_heartbeat {
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    use std::sync::OnceLock;
-    use std::time::{Duration, Instant};
-
-    fn start() -> &'static Instant {
-        static START: OnceLock<Instant> = OnceLock::new();
-        START.get_or_init(Instant::now)
-    }
-
-    fn now_ms() -> u64 {
-        start().elapsed().as_millis() as u64
-    }
-
-    /// ms since process start at the last gateway call.
-    static LAST: AtomicU64 = AtomicU64::new(0);
-    /// Separate from `LAST == 0`: the very first call can legitimately land at
-    /// 0 ms, and treating that as "no call yet" made the heartbeat report
-    /// silence for a UI that had just spoken (caught by `host-checks`).
-    static SEEN: AtomicBool = AtomicBool::new(false);
-    static SILENT_LOGGED: AtomicBool = AtomicBool::new(false);
-
-    /// Record that the UI talked to us. Called from the gateway.
-    pub fn touch() {
-        LAST.store(now_ms(), Ordering::Relaxed);
-        SEEN.store(true, Ordering::Relaxed);
-    }
-
-    /// How long the UI has been quiet. 0 while booting (nothing has called yet).
-    pub fn silent_ms() -> u64 {
-        if !SEEN.load(Ordering::Relaxed) {
-            return 0;
-        }
-        now_ms().saturating_sub(LAST.load(Ordering::Relaxed))
-    }
-
-    /// `YYYY-MM-DD HH:MM:SS` in UTC, without pulling in a date crate.
-    fn utc_stamp() -> String {
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
-        // Civil-from-days (Howard Hinnant): 1970-01-01 is day 0.
-        let z = days + 719_468;
-        let era = z.div_euclid(146_097);
-        let doe = z.rem_euclid(146_097);
-        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-        let y = yoe + era * 400;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let d = doy - (153 * mp + 2) / 5 + 1;
-        let m = if mp < 10 { mp + 3 } else { mp - 9 };
-        let y = if m <= 2 { y + 1 } else { y };
-        format!(
-            "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}",
-            rem / 3_600,
-            (rem % 3_600) / 60,
-            rem % 60
-        )
-    }
-
-    /// One 10s tick. Public so the setup hook reads as one line.
-    pub fn tick(app: &tauri::AppHandle) {
-        let silent = silent_ms();
-        if silent > 60_000 {
-            if !SILENT_LOGGED.swap(true, Ordering::SeqCst) {
-                let (in_flight, oldest) = crate::gateway_stats::snapshot();
-                // Probe the UI thread from here: it is the one fact that
-                // separates "a call is stuck" from "nothing can be delivered".
-                let (tx, rx) = std::sync::mpsc::channel::<()>();
-                let posted = app
-                    .run_on_main_thread(move || {
-                        let _ = tx.send(());
-                    })
-                    .is_ok();
-                let main_ok = posted && rx.recv_timeout(Duration::from_millis(300)).is_ok();
-                let line = format!(
-                    "{} host: the UI has been silent for {}s — mainThread={}, inFlight={}, oldest={:?}, sessions={:?}",
-                    utc_stamp(),
-                    silent / 1000,
-                    if main_ok { "ok" } else { "blocked" },
-                    in_flight,
-                    oldest,
-                    crate::services::session::count_if_free()
-                );
-                let _ = crate::services::storage::append_debug_log(app, &line);
-            }
-        } else if SILENT_LOGGED.swap(false, Ordering::SeqCst) {
-            let line = format!(
-                "{} host: the UI is talking again (it was silent for {}s)",
-                utc_stamp(),
-                silent / 1000
-            );
-            let _ = crate::services::storage::append_debug_log(app, &line);
-        }
-    }
-
-    /// The watcher thread. One thread, one sleep, no locks on the hot path.
-    pub fn spawn(app: tauri::AppHandle) {
-        let _ = std::thread::Builder::new()
-            .name("ui-heartbeat".into())
-            .spawn(move || loop {
-                std::thread::sleep(Duration::from_secs(10));
-                tick(&app);
-            });
-    }
-}
+/// The fresh page boots from scratch, so its `boot()` asks the host to reap
+/// "sessions left by a previous frontend" — but the host never went away and
+/// those ptys and sidecars are still the user's. Consumed once, by the next
+/// `plugin_reap_orphans` call.
+pub static KEEP_SESSIONS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// The single request/response gateway.
 ///
@@ -254,6 +84,10 @@ pub mod ui_heartbeat {
 #[tauri::command]
 async fn plugin_rpc(
     app: tauri::AppHandle,
+    // Injected by Tauri, not sent by the caller — which is the point: the
+    // window label is the one piece of attribution a plugin cannot fake, and
+    // without it `oldest=proc/recv` says nothing about WHICH window is stuck.
+    window: tauri::WebviewWindow,
     plugin_id: String,
     msg: Envelope,
 ) -> Result<Envelope, String> {
@@ -269,9 +103,13 @@ async fn plugin_rpc(
     let svc = msg.svc.clone().unwrap_or_default();
     let act = msg.act.clone().unwrap_or_default();
     let params = msg.p;
+    // `svc/act@window` — the label is the one piece of attribution a plugin
+    // cannot fake, and without it "oldest=proc/recv" does not say WHICH window
+    // stopped answering.
+    let what = format!("{svc}/{act}@{}", window.label());
     // From here to the end of the call, this counts as "in flight" — including
     // the permission gate, which is the other place a call can park.
-    let _in_flight = gateway_stats::enter(format!("{svc}/{act}"));
+    let in_flight = std::sync::Arc::new(gateway_stats::enter(what));
     ui_heartbeat::touch();
 
     // The authoritative permission gate. The JS `ctx` gate is a convenience
@@ -280,13 +118,23 @@ async fn plugin_rpc(
         return Ok(Envelope::err(Some(id), "denied", e));
     }
 
+    in_flight.mark("queued");
+    // Keep the ticket alive if the invoke is cancelled while native work runs.
+    let in_task = in_flight.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        match services::route(&app, &plugin_id, &svc, &act, params) {
+        in_task.mark("running");
+        let out = match services::route(&app, &plugin_id, &svc, &act, params) {
             Ok(v) => Ok(Envelope::res(id, v)),
             // The service classified it; the caller gets that code, not a
             // synthesized `svc/act` string it cannot branch on.
             Err(e) => Ok(Envelope::err(Some(id), e.code, e.msg)),
-        }
+        };
+        // Last act of the BLOCKING thread. If an entry stays `[returned]` for
+        // hours, the work finished and the future was never polled again —
+        // that is runtime-worker starvation, not a slow service, and it is the
+        // one explanation the old four numbers could not reach.
+        in_task.mark("returned");
+        out
     })
     .await
     .map_err(|e| format!("rpc task failed: {e}"))?
@@ -380,7 +228,25 @@ async fn plugin_stream_open(
     on_frame: Channel<Envelope>,
 ) -> Result<(), String> {
     host::registry::is_allowed(&plugin_id, "rpc:stream")?;
-    services::stream::open_json(&plugin_id, &provider, &ch, params.unwrap_or(Value::Null), on_frame)
+    // Stream traffic is UI traffic too. `touch()` used to be called only from
+    // `plugin_rpc`, so a window whose only activity was opening a pty or a
+    // sidecar stream looked exactly like a dead window — and the ladder would
+    // reload (and then REBUILD) a perfectly healthy page. "No calls" has to
+    // mean "nothing arrived", not "nothing arrived on one of the two paths".
+    ui_heartbeat::touch();
+    // `spawn_blocking`, like every other command: a provider's `open` spawns a
+    // process (pty, sidecar) or does file I/O, and doing that on an async
+    // WORKER parks that worker for as long as the spawn takes — antivirus
+    // scanning a `.venv` executable is seconds. Parked workers are how a
+    // runtime stops resuming futures, and 2026-10-30 has the signature of
+    // exactly that: `proc/recv@main[returned]` — work finished, the future was
+    // never polled again — with the freeze landing on the same second as a
+    // `[pty] spawn`.
+    tauri::async_runtime::spawn_blocking(move || {
+        services::stream::open_json(&plugin_id, &provider, &ch, params.unwrap_or(Value::Null), on_frame)
+    })
+    .await
+    .map_err(|e| format!("stream open task failed: {e}"))?
 }
 
 /// Open a push stream framed as `raw-binary` (1 kind byte + payload).
@@ -393,7 +259,14 @@ async fn plugin_stream_open_raw(
     on_frame: Channel<InvokeResponseBody>,
 ) -> Result<(), String> {
     host::registry::is_allowed(&plugin_id, "rpc:stream")?;
-    services::stream::open_raw(&plugin_id, &provider, &ch, params.unwrap_or(Value::Null), on_frame)
+    ui_heartbeat::touch();
+    // Same reason as `plugin_stream_open`: never spawn a process or touch the
+    // disk on a runtime worker.
+    tauri::async_runtime::spawn_blocking(move || {
+        services::stream::open_raw(&plugin_id, &provider, &ch, params.unwrap_or(Value::Null), on_frame)
+    })
+    .await
+    .map_err(|e| format!("stream open task failed: {e}"))?
 }
 
 /// Cancel an open stream (cooperative, through the unified session registry).
@@ -491,6 +364,7 @@ async fn host_diag(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
             "inFlight": in_flight,
             "oldest": oldest.map(|(ms, what)| json!({ "ms": ms as u64, "what": what })),
             "sessions": crate::services::session::count_if_free(),
+            "pty": tauri_plugin_pty::backend::diagnostics(),
         }))
     })
     .await
@@ -516,6 +390,82 @@ async fn host_note(window: tauri::WebviewWindow, line: String) -> Result<(), Str
         .map_err(|e| format!("note task failed: {e}"))?
 }
 
+/// Copy the browser arguments a window must run with.
+///
+/// ## Why this exists at all
+///
+/// WebView2 keys **one browser process per user data folder**, and that
+/// process's command line is fixed by whoever started it. Two environments that
+/// share the folder but ask for different `additionalBrowserArguments` cannot
+/// coexist: the second `CreateCoreWebView2Environment` fails with
+/// `ERROR_INVALID_STATE` (0x8007139F), which Tauri reports as
+/// `failed to create webview: WebView2 error: WindowsError(Error { code:
+/// HRESULT(0x8007139F), … })`. Tauri's own config docs say the same thing —
+/// "Webview instances with different browser arguments must also have
+/// different data directories" — and wry builds a **fresh environment for every
+/// webview**, so this is not a corner case: it is the default for any window
+/// created at runtime.
+///
+/// `None` (no main window, or no args configured) is a no-op: inheriting
+/// nothing is the same as leaving wry's defaults everywhere, which is uniform
+/// and therefore safe.
+pub fn inherit_browser_args(
+    target: &mut tauri::utils::config::WindowConfig,
+    from: Option<&str>,
+) {
+    if let Some(args) = from {
+        target.additional_browser_args = Some(args.to_string());
+    }
+}
+
+/// Create a window at runtime — the ONLY way one gets created.
+///
+/// ## Why this is a host command instead of `new WebviewWindow(label, opts)`
+///
+/// The JS constructor sends a `WindowConfig` with no `additionalBrowserArgs`, so
+/// the new webview asks WebView2 for wry's DEFAULT command line while the main
+/// window has already started the browser process with the configured one. Same
+/// user data folder, different arguments ⇒ `0x8007139F` ⇒ **every plugin window
+/// fails to open**, with an error naming neither the cause nor the fix.
+///
+/// So the arguments are inherited from the main window's config here, once, for
+/// every window this app makes. The `core:webview:allow-create-webview-window`
+/// permission is revoked in `capabilities/default.json` at the same time: a
+/// second creator is a second way to reproduce the bug.
+///
+/// `build()` waits for the event loop (that is where a window is really made),
+/// so it blocks — hence `spawn_blocking`, like every other blocking call here.
+#[tauri::command]
+async fn host_window_create(
+    window: tauri::WebviewWindow,
+    label: String,
+    options: serde_json::Value,
+) -> Result<(), String> {
+    require_main(&window)?;
+    let app = window.app_handle().clone();
+
+    let mut config: tauri::utils::config::WindowConfig = serde_json::from_value(options)
+        .map_err(|e| format!("window options for \"{label}\" are invalid: {e}"))?;
+    config.label = label.clone();
+
+    let args = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == "main")
+        .and_then(|w| w.additional_browser_args.clone());
+    inherit_browser_args(&mut config, args.as_deref());
+
+    tauri::async_runtime::spawn_blocking(move || {
+        tauri::WebviewWindowBuilder::from_config(&app, &config)
+            .and_then(|builder| builder.build().map(|_| ()))
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("window task failed: {e}"))?
+}
+
 #[tauri::command]
 async fn plugin_reap_orphans(window: tauri::WebviewWindow, keep: Option<bool>) -> Result<usize, String> {
     require_main(&window)?;
@@ -523,7 +473,7 @@ async fn plugin_reap_orphans(window: tauri::WebviewWindow, keep: Option<bool>) -
     // the sessions it was watching are still ITS sessions. Reaping them would
     // turn "reload the window" into "kill my terminals", which is exactly what
     // the tray's 重启应用 is for and why this is a separate flag.
-    if keep == Some(true) {
+    if keep == Some(true) || KEEP_SESSIONS.swap(false, std::sync::atomic::Ordering::SeqCst) {
         return Ok(0);
     }
     // Killing a process tree waits on children, so it is blocking work — and it
@@ -795,7 +745,68 @@ fn show_main_window(app: &tauri::AppHandle) {
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
+        // The window was hidden on purpose; silence accumulated while it was
+        // away is not an outage. Without this the first visible tick reloads
+        // the page the user just asked for.
+        ui_heartbeat::reset_silence();
+        return;
     }
+    // No window to show — which is exactly the case this menu item exists for.
+    //
+    // It used to be `if let Some(w) = ...` and nothing else, so a closed main
+    // window turned 显示主窗口 into a no-op: the user clicked, nothing happened,
+    // and the only thing that ever brought it back was the recovery ladder's
+    // 180 s "rebuild the webview" rung — which is why it "took over a minute".
+    //
+    // The window can be genuinely gone, not just hidden: close-to-tray is
+    // installed by the FRONTEND, so a ✕ before the page finishes booting (dev
+    // mode takes ~10 s) destroys it, and the process survives because the
+    // plugin windows are still open.
+    //
+    // Off the main thread: `build()` waits for the event loop.
+    let app = app.clone();
+    let _ = std::thread::Builder::new()
+        .name("main-window".into())
+        .spawn(move || {
+            let config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|w| w.label == "main")
+                .cloned();
+            let Some(config) = config else {
+                let _ = crate::services::storage::append_debug_log(
+                    &app,
+                    "host: cannot rebuild the main window — no `main` entry in tauri.conf.json",
+                );
+                return;
+            };
+            match ui_heartbeat::build_main_window(&app, &config) {
+                Ok(()) => {
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                    // The rebuilt page starts with a fresh, silent clock — and
+                    // the window is created `visible: false` by config, so the
+                    // silence that accumulated while it was gone would make the
+                    // very next tick "repair" it with a reload. That reload is
+                    // the extra "starting up" screen the user sees on reopen.
+                    ui_heartbeat::reset_silence();
+                    let _ = crate::services::storage::append_debug_log(
+                        &app,
+                        "host: the main window was rebuilt on demand (it did not exist)",
+                    );
+                }
+                Err(e) => {
+                    let _ = crate::services::storage::append_debug_log(
+                        &app,
+                        &format!("host: could not rebuild the main window: {e}"),
+                    );
+                }
+            }
+        });
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -843,6 +854,7 @@ pub fn run() {
             plugin_reap_orphans,
             host_diag,
             host_note,
+            host_window_create,
             host_autostart_get,
             host_autostart_set,
             host_update_check,
@@ -854,8 +866,8 @@ pub fn run() {
             services::external::plugin_open_dir
         ])
         .setup(|app| {
-            // The main window is created hidden so nobody ever sees an unpainted
-            // frame; the frontend reveals it after its first paint (see
+            // The main window starts hidden; the frontend reveals it after
+            // mounting its shell DOM (see
             // `src/main.js`). If the frontend never gets that far — a JS error,
             // a dev server that is down, a blank page — the window would stay
             // hidden forever and the app would look like it failed to launch.
@@ -865,6 +877,15 @@ pub fn run() {
             // HOST writes the evidence (the UI cannot — its channel is the one
             // that is broken). See `ui_heartbeat`.
             ui_heartbeat::spawn(app.handle().clone());
+            // And keep a continuous record of the minutes BEFORE that happens:
+            // the ladder above only knows what the world looks like at the
+            // moment it fires, which is too late to say what changed.
+            forensics::spawn(app.handle().clone());
+            // And a 1 Hz probe ON the async runtime: if futures stop being
+            // resumed, this counter freezes while the plain-thread ticker keeps
+            // writing. That difference is the only way to tell "a service is
+            // slow" from "the runtime is not running".
+            forensics::spawn_async_beat();
 
             let handle = app.handle().clone();
             std::thread::spawn(move || {
@@ -914,9 +935,7 @@ pub fn run() {
                     // sessions belong to it (see `plugin_reap_orphans`).
                     "reload" => {
                         if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.eval(
-                                "try{sessionStorage.setItem('toolbox.keepSessions','1')}catch(e){};location.reload()",
-                            );
+                            let _ = w.eval(ui_heartbeat::UI_RELOAD_JS);
                         }
                         show_main_window(app);
                     }
@@ -960,17 +979,83 @@ pub fn run() {
 
             Ok(())
         })
+        // Close-to-tray belongs HERE, not in the frontend.
+        //
+        // The frontend installs `onCloseRequested` during `boot()`, which in dev
+        // takes ~10 s — and a ✕ before that (or after the page died) DESTROYS
+        // the window instead of hiding it. The process then survives because
+        // the plugin windows are still open, so the app is left with no main
+        // window: the tray's 显示主窗口 was a no-op (`if let Some`), and the only
+        // thing that ever rebuilt it was the ladder's 180 s rung. That is the
+        // "takes over a minute to show" report, and the invalid-HWND
+        // `PostMessage failed 0x80070578` is the same event seen from the other
+        // side: something posted to a window that no longer existed.
+        //
+        // The host can decide this without the frontend: ✕ = hide, and quitting
+        // goes through the tray (or `app.exit`), which is the documented UX.
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    let _ = crate::services::storage::append_debug_log(
+                        window.app_handle(),
+                        "host: main CloseRequested — prevented and hidden",
+                    );
+                }
+                tauri::WindowEvent::Destroyed => {
+                    let app = window.app_handle().clone();
+                    let _ = crate::services::storage::append_debug_log(
+                        &app,
+                        "host: the main window was DESTROYED (CloseRequested did not prevent it)",
+                    );
+                    // Never leave the app without a main window: the tray item
+                    // is then the only way back, and the user has to know to
+                    // click it. `RECREATING` means WE destroyed it on purpose
+                    // (the rebuild rung), which builds its own replacement.
+                    if !ui_heartbeat::RECREATING.load(std::sync::atomic::Ordering::SeqCst) {
+                        // Debounced: a failing build must not spin.
+                        static LAST: std::sync::atomic::AtomicU64 =
+                            std::sync::atomic::AtomicU64::new(0);
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0);
+                        let prev = LAST.swap(now, std::sync::atomic::Ordering::SeqCst);
+                        if now.saturating_sub(prev) > 5_000 {
+                            show_main_window(&app);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_app, event| {
+        .run(|_app, event| match event {
+            // The watchdog rebuilds the main webview by destroying it, and
+            // destroying the LAST window asks the app to exit — which would
+            // drain every session and quit, the opposite of "rebuild the UI".
+            // Only the implicit request (`code: None`) is refused, so an
+            // explicit quit from the tray still goes through even in that
+            // window.
+            tauri::RunEvent::ExitRequested { api, code: None, .. }
+                if ui_heartbeat::RECREATING.load(std::sync::atomic::Ordering::SeqCst) =>
+            {
+                api.prevent_exit();
+            }
             // ONE shutdown path for every live endpoint — sidecars, streams and
             // PTY sessions alike. Previously only sidecars were stopped, so PTY
             // children were orphaned.
-            if let tauri::RunEvent::Exit = event {
+            tauri::RunEvent::Exit => {
                 let n = services::session::kill_all();
                 if n > 0 {
                     eprintln!("[host] stopped {n} live session(s) on exit");
                 }
             }
+            _ => {}
         });
 }

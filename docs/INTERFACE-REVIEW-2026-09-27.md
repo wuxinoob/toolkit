@@ -1,3 +1,5 @@
+> 历史审计（日期见标题），不作为当前接口清单；现状与未解决问题见 [架构说明](ARCHITECTURE.md)。
+
 # 接口分类、核查与优化方向（2026-09-27）
 
 > 本文回答四件事：**接口分几类、每类被什么约束、现在被什么验证、下一步优化什么**。
@@ -127,7 +129,7 @@
 | **稳定度** | **最高（冻结）**：`PROTOCOL_VERSION = 1`；两侧 `validate()` 拒绝不匹配版本 |
 | **谁依赖** | 所有东西 |
 | **被什么验证** | `tests/protocol.test.mjs`、`tests/sdk-parity.test.mjs`、`tests/codes.test.mjs`（Rust↔JS 漂移）、`selftest` t01–t03 |
-| **文档** | [`PROTOCOL.md`](PROTOCOL.md)、[`MESSAGE-FRAMEWORK.md`](MESSAGE-FRAMEWORK.md)（设计来由）、[`plugin-dev/architecture.md`](plugin-dev/architecture.md) §④ |
+| **文档** | [`PROTOCOL.md`](PROTOCOL.md)、[`MESSAGE-FRAMEWORK.md`](archive/MESSAGE-FRAMEWORK.md)（设计来由）、[`plugin-dev/architecture.md`](plugin-dev/architecture.md) §④ |
 | **缺口** | 无结构性缺口。这是全套接口里**唯一真正做到了「声明即验证」**的一层，可以作为其他层的模板 |
 
 ---

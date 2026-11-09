@@ -6,9 +6,11 @@
 
 use serde_json::{Map, Value};
 use std::{
+    collections::HashMap,
     fs,
     io::Write,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock},
 };
 use tauri::Manager;
 
@@ -40,23 +42,78 @@ fn plugin_data_dir_at(data_root: &Path, plugin_id: &str) -> Result<PathBuf, Serv
 }
 
 fn store_path_at(data_root: &Path, plugin_id: &str) -> Result<PathBuf, ServiceError> {
-    Ok(plugin_data_dir_at(data_root, plugin_id)?.join("data.json"))
+    // Lock the actual directory, including Windows case aliases and relative roots.
+    let dir = fs::canonicalize(plugin_data_dir_at(data_root, plugin_id)?)
+        .map_err(|e| ServiceError::io(format!("resolve store dir: {e}")))?;
+    Ok(dir.join("data.json"))
 }
 
 fn read_store(path: &Path) -> Result<Map<String, Value>, ServiceError> {
     match fs::read_to_string(path) {
-        Ok(text) => {
-            let v: Value = serde_json::from_str(&text).map_err(|e| ServiceError::io(format!("corrupt store: {e}")))?;
-            Ok(v.as_object().cloned().unwrap_or_default())
-        }
-        Err(_) => Ok(Map::new()), // not exists -> empty
+        Ok(text) => serde_json::from_str(&text)
+            .map_err(|e| ServiceError::io(format!("corrupt store: {e}"))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
+        Err(e) => Err(ServiceError::io(format!("read store: {e}"))),
     }
 }
 
 fn write_store(path: &Path, map: &Map<String, Value>) -> Result<(), ServiceError> {
     let text = serde_json::to_string_pretty(map).map_err(|e| ServiceError::internal(format!("serialize store: {e}")))?;
-    fs::write(path, text).map_err(|e| ServiceError::io(format!("write store: {e}")))?;
+    // Persist replaces in one filesystem operation. Failed writes leave the old
+    // file intact; NamedTempFile removes its temporary file on failure.
+    let mut pending = tempfile::NamedTempFile::new_in(path.parent().unwrap())
+        .map_err(|e| ServiceError::io(format!("create store temp: {e}")))?;
+    pending
+        .write_all(text.as_bytes())
+        .map_err(|e| ServiceError::io(format!("write store: {e}")))?;
+    pending
+        .as_file()
+        .sync_all()
+        .map_err(|e| ServiceError::io(format!("sync store: {e}")))?;
+    pending
+        .persist(path)
+        .map_err(|e| ServiceError::io(format!("replace store: {e}")))?;
     Ok(())
+}
+
+fn dispatch_storage_at(
+    data_root: &Path,
+    plugin_id: &str,
+    action: &str,
+    params: Value,
+) -> Result<Value, ServiceError> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    let path = store_path_at(data_root, plugin_id)?;
+    let store_lock = {
+        let mut locks = LOCKS
+            .get_or_init(Mutex::default)
+            .lock()
+            .map_err(|_| ServiceError::internal("store lock registry poisoned"))?;
+        locks.entry(path.clone()).or_default().clone()
+    };
+    // Only this store is held across IO. Other plugins never wait on its disk work.
+    let _guard = store_lock
+        .lock()
+        .map_err(|_| ServiceError::internal("store lock poisoned"))?;
+    let mut map = read_store(&path)?;
+    match action {
+        "get" => Ok(map
+            .get(&params_str(&params, "key")?)
+            .cloned()
+            .unwrap_or(Value::Null)),
+        "keys" => Ok(Value::Array(map.keys().cloned().map(Value::String).collect())),
+        "set" | "remove" => {
+            let key = params_str(&params, "key")?;
+            if action == "set" {
+                map.insert(key, params.get("value").cloned().unwrap_or(Value::Null));
+            } else {
+                map.remove(&key);
+            }
+            write_store(&path, &map)?;
+            Ok(Value::Bool(true))
+        }
+        _ => Err(ServiceError::new(code::UNKNOWN_ACTION, format!("unknown action `storage/{action}`"))),
+    }
 }
 
 fn params_str(params: &Value, key: &str) -> Result<String, ServiceError> {
@@ -98,7 +155,7 @@ pub struct StorageService;
 /// `host` service: paths / metadata / the unified session list / debug artifacts.
 pub struct HostService;
 
-fn data_root(app: &tauri::AppHandle) -> Result<PathBuf, ServiceError> {
+pub(crate) fn data_root(app: &tauri::AppHandle) -> Result<PathBuf, ServiceError> {
     app.path()
         .app_data_dir()
         .map_err(|e| ServiceError::io(format!("app data dir: {e}")))
@@ -306,34 +363,7 @@ pub fn dispatch_at(
 ) -> Result<Value, ServiceError> {
     match (service, action) {
         // ---- storage: namespaced JSON KV, persisted on disk ----
-        ("storage", "get") => {
-            let key = params_str(&params, "key")?;
-            let map = read_store(&store_path_at(data_root, plugin_id)?)?;
-            Ok(map.get(&key).cloned().unwrap_or(Value::Null))
-        }
-        ("storage", "set") => {
-            let key = params_str(&params, "key")?;
-            let value = params.get("value").cloned().unwrap_or(Value::Null);
-            let path = store_path_at(data_root, plugin_id)?;
-            let mut map = read_store(&path)?;
-            map.insert(key, value);
-            write_store(&path, &map)?;
-            Ok(Value::Bool(true))
-        }
-        ("storage", "remove") => {
-            let key = params_str(&params, "key")?;
-            let path = store_path_at(data_root, plugin_id)?;
-            let mut map = read_store(&path)?;
-            map.remove(&key);
-            write_store(&path, &map)?;
-            Ok(Value::Bool(true))
-        }
-        ("storage", "keys") => {
-            let map = read_store(&store_path_at(data_root, plugin_id)?)?;
-            Ok(Value::Array(
-                map.keys().map(|k| Value::String(k.clone())).collect(),
-            ))
-        }
+        ("storage", _) => dispatch_storage_at(data_root, plugin_id, action, params),
 
         // ---- host: paths / metadata / debug artifacts ----
         ("host", "info") => {

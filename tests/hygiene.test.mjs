@@ -21,8 +21,7 @@
  * unique must actually be unique.
  *
  * The doc check is deliberately narrow — top-level (`##`) headings only. Deeper
- * levels legitimately repeat: `SUPPLEMENT.md` gives every lesson the same four
- * `###` subheadings, and that is structure, not duplication.
+ * levels may legitimately repeat across examples; that is structure, not duplication.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';

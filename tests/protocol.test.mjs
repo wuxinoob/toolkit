@@ -551,6 +551,37 @@ test('hub: duplicate channel ids are refused and close() releases the stream', a
   assert.equal(await hub.close('p.dup', 'dup'), false, 'closing twice is a no-op');
 });
 
+test('hub: a second open of the same channel cannot slip in while the first is awaiting', async () => {
+  // `streams` only gets the key AFTER the transport resolves, so two concurrent
+  // opens both passed the duplicate check. The second `set` then replaced the
+  // first handle: the first poll loop kept running with nobody able to close it,
+  // and when the replacement was closed the orphan reported the host's kill as
+  // an `exit` — which is exactly how a sidecar plugin ends up showing
+  // "idle.exe 退出（code 1）" for a stop it asked for.
+  let release;
+  const gate = new Promise((r) => (release = r));
+  invokeImpl = async (cmd) => {
+    if (cmd === 'plugin_stream_open') {
+      await gate;
+      return null;
+    }
+    if (cmd === 'plugin_stream_close') return { stopped: true };
+    throw new Error(`unexpected ${cmd}`);
+  };
+
+  const mk = () => ({ provider: 'ticker', ch: 'race', onFrame: () => {} });
+  const first = hub.stream('p.race', 'channel-json', mk());
+  // The first open is in flight, and NOT yet in `streams`.
+  assert.deepEqual(hub.openStreamKeys(), [], 'nothing is registered yet');
+  await assert.rejects(() => hub.stream('p.race', 'channel-json', mk()), /already open/);
+
+  release();
+  await first;
+  assert.deepEqual(hub.openStreamKeys(), ['p.race/race'], 'the winner is registered exactly once');
+  await hub.close('p.race', 'race');
+  assert.deepEqual(hub.openStreamKeys(), [], 'and closing it frees the id');
+});
+
 test('hub: asking for a capability a scheme does not declare fails at setup', async () => {
   // `rpc` is request/response only — it declares no push capability.
   await assert.rejects(

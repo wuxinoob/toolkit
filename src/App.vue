@@ -1,17 +1,19 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue';
 import { toast as sonner } from 'vue-sonner';
 
 import { store, setToastSink } from './host/store.js';
 import { resolveIcon } from './host/icons.js';
 import ViewHost from './components/ViewHost.vue';
-import SettingsView from './views/SettingsView.vue';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Toaster } from '@/components/ui/sonner';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+
+// Settings imports host management code; keep it out of the first shell mount.
+const SettingsView = defineAsyncComponent(() => import('./views/SettingsView.vue'));
 
 const overlayEl = ref(null);
 onMounted(() => {

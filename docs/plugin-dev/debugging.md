@@ -92,7 +92,11 @@ window.__toolbox.selftest()
 
 ## 启动慢
 
-日志里的 `boot timing` 和 `plugin load` 直接指出来：
+先看 `startup timing (ms since navigation)`：它记录从导航开始的 HTML、入口、外壳导入、DOM 挂载、窗口显示和宿主导入时刻。差值可以定位首屏之前的等待；`shown` 表示前端显示命令成功返回，缺失时应检查显示错误。
+
+如果 `html` 很早而 `entry` 很晚，先看 `startup CSS requests (ms)`。2026-11-05 已复现 Tailwind 默认全仓库扫描时包含 3.38 GB 文件，造成十余秒 CSS 生成；当前样式入口已把源限定到 `src`。构建缓存不应成为样式源，细节见 [启动分析](../STARTUP-ANALYSIS.md)。
+
+再看 `boot timing` 和 `plugin load`，它们只覆盖进入 `boot()` 后的阶段：
 
 ```
 boot timing (ms): debug 10 | reap 12 | uikit 399 | schemes 402 | builtins 429 | external 640 | hotkey 646
@@ -102,10 +106,9 @@ boot timing (ms): debug 10 | reap 12 | uikit 399 | schemes 402 | builtins 429 | 
 **内置插件的加载是串行 await 的**（`reconcilePlugins` 的 built-in pass）—— 一个插件的 `activate()` 慢，
 **后面所有插件**的视图都要等它。所以「我的插件让别人的插件也出不来」是真会发生的。
 
-**注意 `plugin load` 的一个陷阱**：`activate()` 第一件事是 `await loadUiKit()`
-（组件词汇表当前 377 个导出），而**先激活的插件替所有人付这笔钱**。所以那行里
-**排第一的插件数字偏大是正常的**，不代表它慢。已把 `loadUiKit()` 移到 `boot()`
-开头并给它自己的 `uikit` 标记，正常情况下那行数字现在是准的。
+`boot timing` 是累计值，阶段耗时需减去前一项。完整组件词汇表由 boot 统一初始化并标记为 `uikit`；`plugin load` 反映单个插件的加载和激活，不包含首屏之前的全部模块请求成本。
+
+主窗口在外壳 DOM 就绪后显示，再导入宿主和插件；显示不依赖隐藏页面的动画帧。启动结构与本机修复前证据见 [启动分析](../STARTUP-ANALYSIS.md)。
 
 **改法**：
 - 慢活（网络、子进程、大文件）不要在 `activate()` 里 await

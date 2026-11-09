@@ -1,0 +1,11 @@
+[default]
+description = "Allows PTY process creation, IO, resize, termination and exit status"
+permissions = [
+    "allow-spawn",
+    "allow-read",
+    "allow-write",
+    "allow-resize",
+    "allow-kill",
+    "allow-exitstatus",
+    "allow-get-all-pids",
+]

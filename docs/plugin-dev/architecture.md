@@ -22,8 +22,9 @@
 
 ## ② 契约层 — `ctx`
 
-宿主注入给你的对象。**这是你的全部能力边界**：`ctx` 上没有的东西就是拿不到，
-没有后门、没有全局变量可绕。
+宿主注入的支持契约。插件通过它调用服务、声明资源归属并参与生命周期清理。
+当前插件运行在受宿主信任的 JavaScript 上下文中；`ctx` 权限检查与原生检查用于约束正常调用，
+不能据此推导出恶意插件隔离。身份与执行上下文的限制见 [信任边界](../ARCHITECTURE.md#信任边界)。
 
 两个独立的变化轴，别混淆：
 
@@ -211,7 +212,7 @@ window.__toolbox.hub         // ⚠️ 见下
 它比你的功能测试更早知道哪里断了。
 
 **它覆盖不到什么**：需要**真人**的东西 —— 原生对话框、系统拖放、OS 通知。
-那部分用 [`tests/fixtures/plugins/fileprobe/`](../../tests/fixtures/plugins/fileprobe/)。
+那部分用 [`tests/fixtures/plugins/fileprobe/`](../../tests/fixtures/plugins/fileprobe)。
 
 ### 把检查放进 `activate()`，让它自己报错
 

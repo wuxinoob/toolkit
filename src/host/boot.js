@@ -2,11 +2,12 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { store, saveSettings, toast, closeToTray } from './store.js';
+import { armBeacon, disarmBeacon } from './liveness.js';
 import { Origin, reconcilePlugins } from './plugins.js';
 import { installDebug } from './debug.js';
 import { logger } from '../core/logger.js';
-import { runSelftest } from '../core/selftest.js';
 import { hub, setTraceSink } from '../protocol/hub.js';
+import { withTimeout } from '../protocol/transports/rpc.js';
 import { events, DROP_TOPIC } from './events.js';
 import { loadUiKit } from './ui.js';
 import { checkForUpdate } from './updater.js';
@@ -113,10 +114,8 @@ function installCloseToTray() {
 }
 
 /**
- * Closed-loop diagnostics: persist a line to {app_data_dir}/debug.log through
- * the gateway. Best-effort by design — the gateway is independent of plugin
- * boot, so even a failed boot can explain itself on disk instead of only in a
- * webview console nobody is watching.
+ * Persist diagnostics independently of gateway dispatch. This still requires
+ * working IPC, so each attempt is bounded and failures stay in the console.
  */
 async function report(line) {
   // Timestamped at the SOURCE. The watchdog's own lines used to be the only
@@ -126,20 +125,9 @@ async function report(line) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
   const text = `${ts} ${line}`;
   try {
-    // `host_note`, NOT `host/write_debug_log`. The gateway version travels over
-    // the IPC it is reporting on: when that IPC wedges, the evidence never
-    // lands. That is not hypothetical — an unresponsive UI ran for 27 hours and
-    // the log had not one line from it. This command touches nothing but the
-    // file, so it survives a wedged gateway (it still needs IPC to arrive).
-    await invoke('host_note', { line: text });
+    await withTimeout(invoke('host_note', { line: text }), 3_000, 'host_note');
   } catch (e) {
-    try {
-      // Last resort: the old path. If both fail, the host's own heartbeat
-      // (`ui_heartbeat`) is what tells the story.
-      await hub.request('__host__', 'host', 'write_debug_log', { content: text });
-    } catch (e2) {
-      console.error('[boot] could not write debug.log', e2);
-    }
+    console.error('[boot] could not write debug.log', e);
   }
 }
 
@@ -223,9 +211,19 @@ function jsHeapMb() {
 async function reportPreviousOutage() {
   try {
     const prev = globalThis.localStorage?.getItem(WATCHDOG.key);
-    if (!prev) return;
-    globalThis.localStorage.removeItem(WATCHDOG.key);
-    await report(`previous run: the host stopped answering — ${prev}`);
+    const beacon = globalThis.localStorage?.getItem('toolbox.beacon');
+    // Either one is worth a line: `prev` means the probes failed, and a
+    // surviving beacon means the app ended WHILE it was in distress — which is
+    // the shape of "I gave up and killed it", and the only record of it.
+    if (!prev && !beacon) return;
+    if (prev) globalThis.localStorage.removeItem(WATCHDOG.key);
+    // The beacon's last words. If it is here, the page was still running
+    // JavaScript when the outage ended — which points at the bridge, not the
+    // renderer. If it is absent, the page never got far enough to arm it.
+    await report(
+      `previous run: the host stopped answering — ${prev ?? '(probes were still passing)'}` +
+        (beacon ? ` — beacon ${beacon}` : ' — no beacon (the page never armed it)'),
+    );
   } catch {
     // A locked-down profile must not break boot over a diagnostic.
   }
@@ -252,6 +250,9 @@ function installBridgeWatchdog() {
     try {
       await hub.request(HOST_ID, 'host', 'info', {}, { timeoutMs: WATCHDOG.timeoutMs });
       if (strikes > 0) {
+        // The bridge is back: stop publishing the distress counter and restore
+        // the title the plugin had chosen.
+        disarmBeacon();
         await report(`bridge watchdog: answering again after ${strikes} missed probe(s)`);
         strikes = 0;
         warned = false;
@@ -276,12 +277,21 @@ function installBridgeWatchdog() {
       // Once per outage, not once per tick: `report` goes through the very
       // bridge that is failing, so it is best-effort and can itself hang.
       if (strikes === 1) {
+        // Arm the OUT-OF-BAND probe. From here on the title carries a counter
+        // the host can read without IPC, which is the only way anyone can tell
+        // "this renderer is dead" from "this renderer is fine, its bridge is
+        // not". The timer that drives it lives in this window: if it stops, the
+        // host sees a frozen title and knows the renderer stopped running JS.
+        armBeacon(e?.message ?? 'no answer');
         const heap = jsHeapMb();
         // The busiest channel is the OTHER half of the report: "the bridge is
         // dead" says what happened, "channel X was doing 400 frames/s" says
         // what to fix. Reading it here (not from the host) is deliberate — the
         // counters live in this window and survive the bridge dying.
         const top = hub.trafficReport()[0];
+        // The call that never came back, named. The host's `oldest` says a call
+        // is stuck but not whether its answer was lost on the way here.
+        const stuck = hub.stuckCalls(5_000)[0];
         const base =
           `bridge watchdog: no answer within ${WATCHDOG.timeoutMs}ms ` +
           `(${e?.code ?? 'error'}: ${e?.message ?? e})` +
@@ -289,7 +299,8 @@ function installBridgeWatchdog() {
           (top
             ? ` — busiest: ${top.key} ${top.framesPerSec} frames/s ` +
               `${Math.round(top.bytesPerSec / 1024)} KiB/s`
-            : '');
+            : '') +
+          (stuck ? ` — stuck: ${stuck.key} ${Math.round(stuck.ageMs / 1000)}s` : '');
         // The host side is asked separately, and its answer is the difference
         // between "the UI thread is blocked" and "one gateway call is stuck".
         void (async () => {
@@ -303,8 +314,14 @@ function installBridgeWatchdog() {
       }
       if (strikes >= WATCHDOG.strikes && !warned) {
         warned = true;
+        // The HOST is already acting on the same signal (`ui_heartbeat`): it
+        // reloads the page, then rebuilds the webview, then notifies. This
+        // toast is for the case where the bridge is merely SLOW — and it names
+        // the tray first, because the tray is the only thing that still works
+        // when the bridge is truly gone.
         toast(
-          '宿主没有响应（界面与后台的连接可能已断开）。若点了没反应，请用托盘菜单的「重启应用」。',
+          '宿主没有响应（界面与后台的连接可能已断开）。宿主会自动尝试恢复；若仍无反应，' +
+            '请用托盘菜单的「重新加载界面」，最后再「重启应用」。',
           'error',
           15_000,
         );
@@ -439,6 +456,14 @@ export async function boot() {
 
   await report(`--- boot ${new Date().toISOString()} ---`);
   try {
+    const startup = performance.getEntriesByType('mark')
+      .filter((entry) => entry.name.startsWith('toolkit:'))
+      .map((entry) => `${entry.name.slice('toolkit:'.length)} ${Math.round(entry.startTime)}`);
+    if (startup.length) await report(`startup timing (ms since navigation): ${startup.join(' | ')}`);
+    const styles = performance.getEntriesByType('resource')
+      .filter((entry) => /\.css(?:\?|$)/.test(entry.name))
+      .map((entry) => `${new URL(entry.name).pathname} ${Math.round(entry.duration)}`);
+    if (styles.length) await report(`startup CSS requests (ms): ${styles.join(' | ')}`);
     installDebug(); // window.__toolbox before plugins attach their own handles
     mark('debug');
 
@@ -535,6 +560,7 @@ export async function boot() {
  */
 async function runStartupSelftest() {
   try {
+    const { runSelftest } = await import('../core/selftest.js');
     const result = await runSelftest();
     await report(result.lines.join('\n'));
     console.info(`[selftest] ${result.pass}/${result.total} passed (see app data debug.log)`);

@@ -147,6 +147,19 @@ export const stdioLineTransport = {
           // (res/err carrying an id) travels the same channel and must not end it.
           if (Envelope.endsStream(env)) return finish(env);
         } else if (r && r.exited) {
+          if (r.killed) {
+            /**
+             * The HOST stopped it — that is a normal end, not a crash.
+             *
+             * `proc/kill` terminates with exit code 1, and every sidecar plugin
+             * reads "the helper exited" as a failure: the eyecare plugin showed
+             * `idle.exe 退出（code 1）` and gave up retrying after three of them,
+             * for a process it had asked the host to stop. The host now records
+             * why it killed, so the two cases can be told apart.
+             */
+            console.warn(`[stdio-line:${ch}] the host stopped this sidecar (${r.killed})`);
+            return finish(Envelope.end(ch));
+          }
           const env = Envelope.exit(ch, r.code);
           onFrame?.(env);
           return finish(env);

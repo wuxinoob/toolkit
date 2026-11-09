@@ -15,7 +15,6 @@
 import { store } from './store.js';
 import { events } from './events.js';
 import { logger } from '../core/logger.js';
-import { runSelftest } from '../core/selftest.js';
 import { hub } from '../protocol/hub.js';
 import { getResolvedTheme, getThemePref, setTheme } from './theme.js';
 import { listPluginThemes } from './pluginTheme.js';
@@ -36,7 +35,7 @@ export function installDebug() {
     pluginThemes: () => listPluginThemes(),
     theme: () => ({ pref: getThemePref(), resolved: getResolvedTheme() }),
     setTheme,
-    selftest: runSelftest,
+    selftest: async () => (await import('../core/selftest.js')).runSelftest(),
   };
   // Object.assign, never replace: plugins attach their own handles to the
   // same namespace and may have activated before/after this call.

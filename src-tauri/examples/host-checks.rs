@@ -213,6 +213,86 @@ fn main() {
         let _ = (oldest_before, during_ms);
     }
 
+    // Overlapping calls can complete out of order. The oldest live request
+    // must advance even when the gateway never becomes completely idle.
+    {
+        let first = toolkit_lib::gateway_stats::enter("check/first");
+        let second = toolkit_lib::gateway_stats::enter("check/second");
+        drop(first);
+        let (count, oldest) = toolkit_lib::gateway_stats::snapshot();
+        check(
+            "gateway-stats-advance-past-a-completed-request",
+            count == 1 && oldest.as_ref().map(|(_, name)| name.as_str()) == Some("check/second"),
+            &format!("{count} live, oldest={oldest:?}"),
+        );
+        drop(second);
+    }
+
+    {
+        let first = toolkit_lib::gateway_stats::enter("check/same");
+        let second = toolkit_lib::gateway_stats::enter("check/same");
+        second.mark("returned");
+        let first_name = toolkit_lib::gateway_stats::snapshot().1.map(|(_, name)| name);
+        first.mark("running");
+        let first_phase = toolkit_lib::gateway_stats::snapshot().1.map(|(_, name)| name);
+        drop(first);
+        let second_phase = toolkit_lib::gateway_stats::snapshot().1.map(|(_, name)| name);
+        drop(second);
+        check(
+            "gateway-stats-phases-belong-to-request-tickets",
+            first_name.as_deref() == Some("check/same")
+                && first_phase.as_deref() == Some("check/same[running]")
+                && second_phase.as_deref() == Some("check/same[returned]"),
+            &format!("first={first_name:?} -> {first_phase:?}, then second={second_phase:?}"),
+        );
+    }
+    {
+        let caller = Arc::new(toolkit_lib::gateway_stats::enter("check/cancelled"));
+        let native_task = caller.clone();
+        drop(caller);
+        native_task.mark("returned");
+        let during = toolkit_lib::gateway_stats::snapshot();
+        drop(native_task);
+        let after = toolkit_lib::gateway_stats::snapshot();
+        check(
+            "gateway-stats-native-work-outlives-a-cancelled-caller",
+            during.0 == 1
+                && during.1.as_ref().map(|(_, name)| name.as_str()) == Some("check/cancelled[returned]")
+                && after == (0, None),
+            &format!("during={during:?}, after={after:?}"),
+        );
+    }
+    {
+        const WORKERS: usize = 8;
+        let entered = Arc::new(std::sync::Barrier::new(WORKERS + 1));
+        let release = Arc::new(std::sync::Barrier::new(WORKERS + 1));
+        let mut workers = Vec::new();
+        for worker in 0..WORKERS {
+            let entered = entered.clone();
+            let release = release.clone();
+            workers.push(std::thread::spawn(move || {
+                let ticket = toolkit_lib::gateway_stats::enter(format!("check/worker.{worker}"));
+                ticket.mark("running");
+                entered.wait();
+                release.wait();
+            }));
+        }
+        entered.wait();
+        let during = toolkit_lib::gateway_stats::snapshot();
+        release.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let after = toolkit_lib::gateway_stats::snapshot();
+        check(
+            "gateway-stats-concurrent-tickets-are-reaped",
+            during.0 == WORKERS
+                && during.1.as_ref().is_some_and(|(_, name)| name.ends_with("[running]"))
+                && after == (0, None),
+            &format!("during={during:?}, after={after:?}"),
+        );
+    }
+
     // ---- UI heartbeat (what makes a wedged UI visible in the log) ----
     //
     // The host writes the evidence itself when the UI stops calling, so the
@@ -234,6 +314,116 @@ fn main() {
             "ui-heartbeat-resets-on-a-call",
             reset <= 5,
             &format!("after a call it reads {reset}ms"),
+        );
+    }
+
+    // ---- proc locks have a deadline ----
+    //
+    // Every proc call runs on the async gateway, and a call that waits on a
+    // mutex has no deadline of its own: the caller gives up at 45 s, the worker
+    // stays parked, and `inFlight` keeps the stuck call forever. The host logged
+    // exactly that (`inFlight=2, oldest=Some((188610, "proc/recv"))`) while the
+    // UI was dead. So the rule is: a lock is waited for with a budget, and
+    // "busy" is a valid answer.
+    {
+        use std::sync::Mutex;
+        use std::time::{Duration, Instant};
+
+        let m = Mutex::new(0u8);
+        let held = m.lock().unwrap();
+        let t0 = Instant::now();
+        let blocked = toolkit_lib::services::proc::lock_within(&m, Duration::from_millis(30));
+        let waited = t0.elapsed();
+        check(
+            "proc-lock-gives-up-instead-of-blocking",
+            blocked.is_none() && waited >= Duration::from_millis(25) && waited < Duration::from_millis(600),
+            &format!("held lock: got={} after {:?}", blocked.is_some(), waited),
+        );
+        drop(held);
+        check(
+            "proc-lock-succeeds-when-free",
+            toolkit_lib::services::proc::lock_within(&m, Duration::from_millis(30)).is_some(),
+            "a free lock must be taken immediately",
+        );
+    }
+
+    // ---- the UI recovery ladder ----
+    //
+    // This is the code that decides to reload or rebuild the window, so its
+    // ordering matters more than its thresholds: a rung that fires too early
+    // reloads a page that was merely idle, and a rung that fires twice in a row
+    // turns a dead bridge into a reload loop. Both are pinned here.
+    {
+        use toolkit_lib::ui_heartbeat::{action_for, Action};
+
+        check(
+            "watchdog-waits-before-acting",
+            action_for(0, 0) == Action::None && action_for(59_000, 0) == Action::None,
+            "a page that has been quiet for less than a minute is just idle",
+        );
+        check(
+            "watchdog-reloads-first",
+            action_for(61_000, 0) == Action::Reload,
+            "the cheapest repair comes first",
+        );
+        check(
+            "watchdog-needs-more-silence-for-each-rung",
+            // Same silence, later attempt: nothing fires until its own threshold.
+            action_for(61_000, 1) == Action::None
+                && action_for(181_000, 1) == Action::Recreate
+                && action_for(181_000, 2) == Action::None
+                && action_for(361_000, 2) == Action::Notify
+                && action_for(361_000, 3) == Action::None
+                && action_for(601_000, 3) == Action::Restart,
+            "each rung waits longer than the previous one",
+        );
+        check(
+            "watchdog-restarts-before-giving-up",
+            // 2026-10-29: reload and recreate both failed, and the old ladder
+            // went straight to "give up" — which left a healthy host with six
+            // dead renderers until someone noticed. A wedged WebView2 browser
+            // process is shared by every window, so only a new process clears
+            // it, and that has to be a rung.
+            action_for(601_000, 3) == Action::Restart && action_for(901_000, 4) == Action::GiveUp,
+            "restart is tried after the rebuild fails, before giving up",
+        );
+        check(
+            "watchdog-stops-instead-of-looping",
+            action_for(24 * 3_600_000, 5) == Action::None,
+            "after giving up it must stay quiet until the UI talks again",
+        );
+        check(
+            "reload-keeps-sessions",
+            toolkit_lib::ui_heartbeat::UI_RELOAD_JS.contains("toolbox.keepSessions"),
+            "a reload without the flag would reap every live pty and sidecar",
+        );
+    }
+
+    // ---- window browser args (the 0x8007139F bug) ----
+    //
+    // WebView2 allows one browser process per user-data folder, and its command
+    // line is fixed by the first window. Every window this app creates must
+    // therefore inherit the SAME `additionalBrowserArgs`; a window built without
+    // them fails with ERROR_INVALID_STATE. The inheritance is one function, so it
+    // is pinned here: copying, and a no-op when there is nothing to copy (which
+    // is the uniform-defaults case and therefore safe).
+    {
+        use tauri::utils::config::WindowConfig;
+
+        let mut w = WindowConfig::default();
+        toolkit_lib::inherit_browser_args(&mut w, Some("--disable-renderer-backgrounding"));
+        check(
+            "window-args-are-inherited",
+            w.additional_browser_args.as_deref() == Some("--disable-renderer-backgrounding"),
+            &format!("{:?}", w.additional_browser_args),
+        );
+
+        let mut untouched = WindowConfig::default();
+        toolkit_lib::inherit_browser_args(&mut untouched, None);
+        check(
+            "window-args-stay-none-when-unconfigured",
+            untouched.additional_browser_args.is_none(),
+            "no configured args means wry's defaults for every window — uniform",
         );
     }
 
@@ -509,6 +699,55 @@ fn main() {
         );
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    // ------------------------------- forensics -------------------------------
+    //
+    // These checks cover the beacon string parser and classifier only. They do
+    // not exercise WebView DOM-to-native title forwarding, which is not yet
+    // installed. Missing native markers cannot establish renderer liveness.
+    {
+        use toolkit_lib::forensics::{classify, parse_beacon};
+
+        check(
+            "beacon-parses-through-a-plugin-title",
+            // The eye-care plugin retitles its own window, so the marker has to
+            // be found wherever the plugin put its text.
+            parse_beacon("护眼助手 · 桥接异常 42s #hb:42") == Some(42),
+            "a retitled window still yields the counter",
+        );
+        check(
+            "beacon-absent-is-none",
+            parse_beacon("Toolkit").is_none() && parse_beacon("#hb:").is_none(),
+            "no marker, or a marker with no digits, is not a beacon",
+        );
+        check(
+            "beacon-classify-separates-the-four-cases",
+            classify(Some(7), Some(8), 0) == "alive"
+                && classify(Some(8), Some(8), 2) == "frozen"
+                && classify(None, None, 0) == "no-beacon"
+                && classify(None, Some(1), 0) == "unknown",
+            "alive / frozen / no-beacon / unknown are four different repairs",
+        );
+
+        // The ladder must be able to say "that rung did not work". Without the
+        // deadline, a rebuild that produces a page that never boots is logged
+        // as a success — which is exactly what happened at 00:24.
+        toolkit_lib::forensics::expect_recovery(2, std::time::Duration::from_millis(50));
+        let armed = toolkit_lib::forensics::recovery_state();
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        let expired = toolkit_lib::forensics::recovery_state();
+        toolkit_lib::forensics::clear_recovery();
+        check(
+            "recovery-verification-expires",
+            matches!(armed, Some((2, false))) && matches!(expired, Some((2, true))),
+            "a rung that is issued and never answered is reported as failed, not as done",
+        );
+        check(
+            "recovery-verification-clears",
+            toolkit_lib::forensics::recovery_state().is_none(),
+            "clearing stops the next tick from re-reporting an old rung",
+        );
     }
 
     let passed = PASSED.load(Ordering::SeqCst);

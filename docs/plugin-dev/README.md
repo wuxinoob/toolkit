@@ -3,8 +3,10 @@
 面向**写插件的人**。讲的是「我要做一个功能，该怎么落地、怎么排查」。
 
 协议与内部实现不在这里 —— 那些在 `docs/PROTOCOL.md`（信封与方案表）、
-`docs/INTERFACES.md`（13 个原生命令 / 9 服务 36 动作）、`docs/UI.md`（样式与令牌）、
-`docs/MESSAGE-FRAMEWORK.md`（消息平面的设计来由）。本手册只引用结论，不重复论证。
+`docs/INTERFACES.md`（原生命令与服务清单）、`docs/UI.md`（样式与令牌）、
+`docs/ARCHITECTURE.md`（现行模块边界与资源生命周期）。本手册只引用结论，不重复论证。
+
+本手册描述受支持的插件契约。当前执行上下文与身份校验的限制见 [信任边界](../ARCHITECTURE.md#信任边界)。
 
 | 文件 | 内容 |
 |---|---|
@@ -14,10 +16,9 @@
 | [bridge.md](bridge.md) | **插件窗口 vs 主窗口**：`bridge` 与 `ctx` 差异的唯一权威清单 + 每处的替代写法 |
 | [ui.md](ui.md) | 界面怎么做：组件工厂 + 令牌 |
 | [storage.md](storage.md) | 本地读写：能写什么、落在哪、为什么不用 fs/sql/store |
-| [FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md) | **已评估（路线 D），fs 读写暂不实施**：文件访问的可行性与四条路线（§七）；插件窗口的 `onDrop` **已实施**、`focusView` 仍是方案（§八） |
+| [FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md) | **已评估（路线 D），fs 读写暂不实施**：文件访问的可行性与四条路线（§七）；插件窗口的 `onDrop` **已实施**、`focusView` 已实施（§八） |
 | [debugging.md](debugging.md) | 出问题时按什么顺序查（**归因手册**） |
 | [recipes.md](recipes.md) | 常见功能的完整最小实现 |
-| [SUPPLEMENT.md](SUPPLEMENT.md) | **补充说明与避坑指南**（多窗口 ACL、DOM 碰撞、bridge 差异） |
 | [MAINTENANCE.md](MAINTENANCE.md) | **给接口维护者**：改了宿主，怎么保证这份手册不是第二份真相 |
 
 > 接口分了几类、每一类被什么验证、还欠什么，在
@@ -35,15 +36,14 @@
 | 页面 | 状态 | 由什么盯着 |
 |---|---|---|
 | [architecture.md](architecture.md) | 已更新 | 9 个方案 id、15 项自检、内置插件名单 |
-| [bridge.md](bridge.md) | **本手册的对等权威清单** | 与 `ctx.js` / `pluginwin-host.js` 逐行比对（含 `onDrop` 的 `info` 差异） |
+| [bridge.md](bridge.md) | **本手册的对等权威清单** | 检查两侧实际构造的 SDK 对象（含 `onDrop` 的 `info` 差异） |
 | [manifest.md](manifest.md) | 已更新 | 权限集合与代码**双向**比对（多写少写都失败） |
-| [api.md](api.md) | 已更新 | 摘要里的 27/4/4 与 `bridge.md` 一致；不得再长出第二张对等表 |
+| [api.md](api.md) | 已更新 | 摘要里的 28/4/4 与 `bridge.md` 一致；不得再长出第二张对等表 |
 | [ui.md](ui.md) | 已更新 | 组件词汇表数量、`.tb-*` 类名必须在 CSS 里真的存在 |
 | [debugging.md](debugging.md) | 已更新 | 15 项自检；`ctx.log` 的落点说法 |
 | [recipes.md](recipes.md) | 已更新 | 引用的示例路径必须存在 |
 | [storage.md](storage.md) | 已核对 | 引用的路径与命令名（存在性由路径测试覆盖） |
-| [FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md) | 已标注状态 | §8.1 `onDrop` ✅ 已实施、§8.2 `focusView` ⏳ 仍是方案、§9 fs 评估 ⏳ **未实施（讨论记录）**、路线 D 的示意代码已标注**不存在** |
-| [SUPPLEMENT.md](SUPPLEMENT.md) | **历史**，顶部有横幅 | 不参与核对；已并入本手册，保留只为记录来由 |
+| [FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md) | 已标注状态 | §8.1 `onDrop` ✅ 已实施、§8.2 `focusView` ✅ 已实施、§9 fs 评估 ⏳ **未实施（讨论记录）**、路线 D 的示意代码已标注**不存在** |
 | [MAINTENANCE.md](MAINTENANCE.md) | 面向维护者 | 改宿主时的操作清单 |
 
 **自动盯住的事实**：服务与动作清单、权限集合、方案 id、内置插件名、自检项数、
@@ -100,7 +100,7 @@ export default {
 ```
 ① 清单层   plugin.json ──────── 权威。声明 id / 权限 / 贡献点
               ↓
-② 契约层   ctx（宿主注入） ──── 你的全部能力边界。没在这上面的就是拿不到
+② 契约层   ctx（宿主注入） ──── 受支持的能力、调用形状与资源归属
               ↓
 ③ 视图层   ctx.registerView ─── 主窗口里的一块内容
    窗口层   ctx.windows      ── 或一个独立窗口（自绘标题栏）
@@ -114,8 +114,8 @@ export default {
 
 - ① 决定**你能做什么**（权限），② 决定**你怎么做**（API 形状），
   ④ 决定**数据怎么走**（传输 × 编码），⑤ 决定**长什么样**。
-- 你**永远不需要** import 宿主的东西 —— 外部插件是 Blob URL 单文件 ESM，
-  **import 不到任何模块**，这是刻意的（见 `docs/UI.md` 开篇的约束）。
+- 外部插件以 Blob URL 单文件 ESM 发布，应预先打包依赖；宿主能力通过 `ctx` 注入，
+  无需引用宿主内部模块路径。
   宿主把需要的东西**作为参数递给你**（`ctx`、`ctx.ui.el`、`ctx.protocol`）。
 
 ---
@@ -130,7 +130,7 @@ export default {
 
 3. **激活要快。** 内置插件的加载是**串行 await** 的（`reconcilePlugins`），一个插件的 `activate()` 慢，
    后面所有插件的视图都要等它 —— 包括**用户自己装的那些**。
-   内置插件现在只剩两个（`builtin.procman`、`builtin.streamlab`），
-   所以启动耗时里真正的大头是**外部插件**和你自己的 `activate()`。
+   内置插件为 `builtin.procman`、`builtin.streamlab`、`builtin.store`，
+   启动耗时应结合首屏、宿主与插件三段计时判断，不能只凭插件数量归因。
    慢活放到 `activate()` 之后异步做，或者用 `ctx.registerView`
    先把视图注册出来（见 [debugging.md](debugging.md#启动慢)）。

@@ -80,4 +80,10 @@ jobs:
       - name: Rust checks (the runnable ones — also generate the ACL schemas)
         run: cargo run --manifest-path src-tauri/Cargo.toml --example host-checks
 
+      - name: PTY lifecycle regression
+        run: cargo run --locked --manifest-path src-tauri/Cargo.toml --example pty-lifecycle-checks
+
+      - name: Storage concurrency and atomic replacement
+        run: cargo run --locked --manifest-path src-tauri/Cargo.toml --example storage-checks
+
       - run: npm test

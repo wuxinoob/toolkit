@@ -10,7 +10,7 @@
 //!   codec     (json-envelope | line-json | raw-binary)
 //!
 //! Adding a new scheme = adding a transport + a codec entry, never a new
-//! branch in the host. See docs/MESSAGE-FRAMEWORK.md.
+//! branch in the host. See docs/archive/MESSAGE-FRAMEWORK.md.
 
 pub mod codec;
 pub mod codes;

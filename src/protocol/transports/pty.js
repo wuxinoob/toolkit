@@ -1,8 +1,8 @@
 /**
  * `pty-stream` transport — command-line subprocesses.
  *
- * Carrier: a pseudo-terminal (tauri-plugin-pty). Codec: raw-binary. This is the
- * transport that wraps a THIRD-PARTY mechanism behind the unified interface:
+ * Carrier: a pseudo-terminal (locally patched tauri-plugin-pty).
+ * Codec: raw-binary. This wraps the PTY mechanism behind the unified interface:
  * callers get the same `open/send/close` + envelope frames as every other
  * scheme, while the pty specifics (ConPTY quirks, resize, ownership) stay
  * confined to this file.
@@ -50,7 +50,11 @@
  * `tauri-plugin-pty` keys its sessions by a counter starting at 0. It is
  * therefore never handed to the session registry as a pid: doing so would make
  * app exit run `taskkill` against an unrelated process number. The host does not
- * own this process; the plugin does, and `plugin:pty|kill` is how it stops.
+ * own the native handles; the PTY backend does, and `plugin:pty|kill` stops it.
+ * `ptyHandle` lets the host register the plugin's native stop callback without
+ * treating that handle as an OS pid. Native reads/waits live on dedicated
+ * threads; process exit closes the master and reaps the reader independently
+ * of this JavaScript flow's lifetime.
  */
 
 import { invoke } from '@tauri-apps/api/core';
@@ -158,7 +162,7 @@ export const ptyStreamTransport = {
         pluginId,
         svc: 'stream',
         act: 'session_open',
-        params: { ch, kind: 'pty' },
+        params: { ch, kind: 'pty', ptyHandle: pid },
       });
     } catch (e) {
       await invoke('plugin:pty|kill', { pid }).catch(() => {});

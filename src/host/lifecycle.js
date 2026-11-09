@@ -6,57 +6,11 @@ import { hub } from '../protocol/hub.js';
 import { HOST_API } from '../protocol/contract.js';
 import { applyPluginTheme, clearPluginTheme } from './pluginTheme.js';
 import { loadUiKit } from './ui.js';
+import { Disposer } from './disposer.js';
+export { Disposer } from './disposer.js';
 
 /** Host identity: used for calls the host makes on a plugin's behalf. */
 const HOST_ID = '__host__';
-
-/**
- * Plugin lifecycle kernel.
- *   discovered -> loaded -> activated -> deactivated -> (dispose)
- *
- * A Disposer collects every cleanup fn registered during activate (bus
- * listeners, streams, DOM nodes, timers via ctx-managed helpers), so
- * deactivate is always a full teardown with no leaks.
- */
-
-export class Disposer {
-  constructor() {
-    this.fns = [];
-    this.running = null;
-  }
-
-  track(fn) {
-    this.fns.push(fn);
-  }
-
-  /**
-   * Run every cleanup, newest first, and AWAIT the async ones.
-   *
-   * Awaiting matters: a cleanup that closes a stream or releases a sidecar has
-   * to finish before the caller treats the plugin as gone, otherwise the
-   * resource can still register itself after teardown. Previously the promises
-   * were dropped, so async cleanups became fire-and-forget and their rejections
-   * surfaced as unhandled rejections.
-   *
-   * Idempotent: a second call returns the first call's promise instead of
-   * running everything twice.
-   */
-  run() {
-    if (this.running) return this.running;
-    const fns = this.fns.reverse();
-    this.fns = [];
-    this.running = (async () => {
-      for (const fn of fns) {
-        try {
-          await fn();
-        } catch (e) {
-          console.error('[lifecycle] dispose error', e);
-        }
-      }
-    })();
-    return this.running;
-  }
-}
 
 export function setPluginState(id, status, error = null) {
   const p = store.plugins.find((x) => x.manifest.id === id);
@@ -225,6 +179,25 @@ function applyThemeContribution(plugin, ctx) {
   }
 }
 
+// Failed activation and normal deactivation release the same owned state.
+async function releasePlugin(plugin) {
+  await releaseHotkeys(plugin);
+  clearPluginTheme(plugin.manifest.id);
+  await plugin._disposer?.run();
+  plugin._disposer = null;
+  plugin._ctx = null;
+  hub.dropSubscriptions(plugin.manifest.id);
+  // Only change selection if this plugin owned it; preserve shell pages.
+  const owned = store.views
+    .filter((v) => v.pluginId === plugin.manifest.id)
+    .map((v) => v.viewId);
+  store.views = store.views.filter((v) => v.pluginId !== plugin.manifest.id);
+  sortViewList();
+  if (owned.includes(store.activeViewId)) {
+    store.activeViewId = store.views[0]?.viewId || null;
+  }
+}
+
 export async function activate(plugin, { silent = false } = {}) {
   if (plugin._ctx) return; // already active
   try {
@@ -244,10 +217,7 @@ export async function activate(plugin, { silent = false } = {}) {
     setPluginState(plugin.manifest.id, 'active');
     if (!silent) toast(`${plugin.manifest.name} enabled`, 'info', 2000);
   } catch (e) {
-    plugin._ctx = null;
-    await releaseHotkeys(plugin);
-    await plugin._disposer?.run();
-    plugin._disposer = null;
+    await releasePlugin(plugin);
     setPluginState(plugin.manifest.id, 'error', String(e));
     toast(`${plugin.manifest.name} failed to activate: ${e}`, 'error');
     console.error(`[lifecycle] activate failed for ${plugin.manifest.id}`, e);
@@ -261,28 +231,7 @@ export async function deactivate(plugin, { silent = false } = {}) {
   } catch (e) {
     console.error(`[lifecycle] deactivate error for ${plugin.manifest.id}`, e);
   } finally {
-    await releaseHotkeys(plugin);
-    clearPluginTheme(plugin.manifest.id);
-    await plugin._disposer?.run();
-    plugin._disposer = null;
-    plugin._ctx = null;
-    hub.dropSubscriptions(plugin.manifest.id);
-    // Only take the user off their page if the page was THIS plugin's.
-    //
-    // The test used to be "is the active id still in `store.views`", and that is
-    // false for the shell's OWN pages: `__settings` is a synthetic id that never
-    // enters `store.views`, so disabling ANY plugin while the user was reading
-    // Settings threw them onto the first plugin's page. The question worth
-    // asking is narrower, and it does not need to know about shell pages at all:
-    // did the page the user is looking at belong to the plugin that just left?
-    const owned = store.views
-      .filter((v) => v.pluginId === plugin.manifest.id)
-      .map((v) => v.viewId);
-    store.views = store.views.filter((v) => v.pluginId !== plugin.manifest.id);
-    sortViewList();
-    if (owned.includes(store.activeViewId)) {
-      store.activeViewId = store.views[0]?.viewId || null;
-    }
+    await releasePlugin(plugin);
     setPluginState(plugin.manifest.id, 'inactive');
     if (!silent) toast(`${plugin.manifest.name} disabled`, 'info', 2000);
   }

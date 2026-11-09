@@ -192,8 +192,8 @@ test('startup: the hidden-window handshake is intact on all three sides', () => 
   // Three files have to agree or the app misbehaves in a way that is easy to
   // ship and hard to notice:
   //
-  //   tauri.conf.json  visible:false  — no unpainted frame is ever shown
-  //   src/main.js      show()         — the frontend reveals it after first paint
+  //   tauri.conf.json  visible:false  — hold the window until its shell is ready
+  //   src/main.js      show()         — the frontend reveals it after DOM mount
   //   src-tauri/lib.rs show()         — the backstop if the frontend never does
   //
   // Drop the config and the white flash returns (worst on a FIRST run, where
@@ -204,11 +204,7 @@ test('startup: the hidden-window handshake is intact on all three sides', () => 
   assert.ok(main, 'no main window in tauri.conf.json');
   assert.equal(main.visible, false, 'the main window must start hidden, or the white flash comes back');
 
-  const mainJs = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
-  assert.ok(
-    /getCurrentWindow\(\)[\s\S]{0,120}?\.show\(\)/.test(mainJs),
-    'src/main.js must reveal the window — nothing else does',
-  );
+  // The frontend handshake is exercised by tests/startup.test.mjs.
 
   const libRs = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
   assert.ok(libRs.includes('is_visible'), 'lib.rs must have the backstop that shows a window the frontend never revealed');
@@ -463,7 +459,8 @@ test('closing the main window hides it, and the tray is the only way out', () =>
   // boot reaps host sessions unless it is told to keep them. The flag travels
   // through sessionStorage because it has to survive the reload itself.
   assert.match(lib, /MenuItem::with_id\(app, "reload"/, 'the tray menu must offer a reload');
-  assert.match(lib, /toolbox\.keepSessions/, 'the reload must tell the next boot to keep sessions');
+  const heartbeat = readFileSync(new URL('../src-tauri/src/ui_heartbeat.rs', import.meta.url), 'utf8');
+  assert.match(heartbeat, /toolbox\.keepSessions/, 'the reload must tell the next boot to keep sessions');
   assert.match(
     lib,
     /if keep == Some\(true\)/,
@@ -535,8 +532,7 @@ test('the two windows are two pages, and the shell asserts it is the shell', () 
   const main = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
   const code = main.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
-  assert.match(code, /getCurrentWindow\(\)\.label/, 'main.js must read the window label');
-  assert.match(code, /=== 'main'/, 'and assert it IS the main window');
+  // tests/startup.test.mjs runs the misplaced-window guard against the real entry.
 
   // The old shape is the bug: a `mode === 'pluginwin'` selector whose `else`
   // boots the whole host. Anything that looks like it again must fail here.
@@ -550,4 +546,56 @@ test('the two windows are two pages, and the shell asserts it is the shell', () 
     /pluginwin-host/,
     'the shell entry must not know about the plugin-window host at all — that page is pluginwin.html',
   );
+});
+
+test('the HOST is the only window creator (one browser process, one command line)', () => {
+  // WebView2 keys a browser process to the user-data folder, and that process's
+  // command line is fixed by the first window. wry builds a fresh environment
+  // per webview, so a window created from JS — which carries no
+  // `additionalBrowserArgs` — asks for a different command line and is refused
+  // with 0x8007139F (`ERROR_INVALID_STATE`). Every plugin window died that way
+  // the moment the main window started passing browser args.
+  //
+  // Two halves, and both are needed: the JS must go through the command that
+  // copies the arguments, and the ACL must not offer the other path. A permission
+  // that comes back makes the first half pointless, silently.
+  const ctxSrc = readFileSync(new URL('../src/host/ctx.js', import.meta.url), 'utf8');
+  // Comments stripped first: this very change explains the old shape in prose,
+  // and matching the prose would make the assertion about the comment.
+  const ctxCode = ctxSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  assert.match(ctxCode, /invoke\('host_window_create'/, 'windows are created by the host command');
+  assert.doesNotMatch(
+    ctxCode,
+    /new WebviewWindow\(label,\s*clean\)/,
+    'and never by the JS constructor — that is the path without browser args',
+  );
+
+  const cap = JSON.parse(
+    readFileSync(new URL('../src-tauri/capabilities/default.json', import.meta.url), 'utf8'),
+  );
+  assert.equal(
+    cap.permissions.includes('core:webview:allow-create-webview-window'),
+    false,
+    'the ACL must not let JS create a window behind the host command',
+  );
+});
+
+test('the recovery ladder cannot quit the app by rebuilding its own window', () => {
+  // `ui_heartbeat` rebuilds the main webview by DESTROYING it, and destroying
+  // the last window makes the runtime emit `ExitRequested` — whose default
+  // outcome is "exit the loop", i.e. run the session drain and quit. A step
+  // meant to save the UI would then kill every running pty and sidecar, which
+  // is worse than the outage it was fixing. The guard is one `prevent_exit()`
+  // and one flag, and neither has a runtime test, so they are pinned here.
+  const lib = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
+
+  assert.match(
+    lib,
+    /ExitRequested \{ api, code: None, \.\. \}/,
+    'the implicit exit request must be recognised — the explicit one (tray quit) must not be swallowed',
+  );
+  assert.match(lib, /api\.prevent_exit\(\)/, 'and refused while the watchdog is rebuilding');
+  const heartbeat = readFileSync(new URL('../src-tauri/src/ui_heartbeat.rs', import.meta.url), 'utf8');
+  assert.match(heartbeat, /RECREATING\.store\(true/, 'the flag goes up before the destroy');
+  assert.match(heartbeat, /RECREATING\.store\(false/, 'and comes down whether the rebuild worked or not');
 });

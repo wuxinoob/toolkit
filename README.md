@@ -38,7 +38,7 @@ id through `src/protocol/registry.js`.
 
 ```bash
 npm install
-npm run test          # 310 node tests: scheme conformance, host kernel, real boot, plugin + doc audits
+npm run test          # protocol, SDK, lifecycle and documentation checks
 npm run bench         # codec experiment: what each codec costs per message
 npm run build         # build the frontend
 npm run tauri dev     # run the app
@@ -49,7 +49,7 @@ Rust side:
 ```bash
 cd src-tauri
 cargo check --all-targets
-cargo run --example host-checks   # 29 pure-logic assertions, no test harness
+cargo run --example host-checks   # pure-logic assertions, no test harness
 ```
 
 `cargo test` does **not** work on Windows: `tauri-build` embeds the app manifest
@@ -62,8 +62,8 @@ report — plus the boot trace — to `{appData}/debug.log`, so a runtime proble
 readable from outside the webview. Re-run it any time with
 `await window.__toolbox.selftest()` in the webview console.
 
-Last verified end to end: `node --test` 310, `host-checks` 29/29, build clean,
-zero code warnings.
+Current architecture and verification commands: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Documentation index: [docs/README.md](docs/README.md).
 
 ### Closing the window puts it in the tray
 
@@ -136,6 +136,8 @@ src/
     transports/             one module per scheme
   host/                     plugin kernel
     boot.js  lifecycle.js  ctx.js  store.js  registry.js  external.js
+    plugin-sdk.js           shared SDK for both windows
+    disposer.js             resource ownership and teardown
     events.js               the window-local bus (the `in-process` scheme)
     pluginwin-host.js       secondary plugin windows
   plugins/                  first-party plugins
@@ -155,7 +157,9 @@ tests/fixtures/          plugins the TESTS drive — not shipped, not deployed
   plugins/probe/            drives every interface in one pass (living check)
   plugins/senses/           clipboard / screen / drag-drop, on real hardware
 docs/
-  MESSAGE-FRAMEWORK.md      the analysis + design that led here
+  README.md                 documentation index
+  ARCHITECTURE.md           current boundaries and improvement priorities
+  archive/                  historical designs and reviews
   PROTOCOL.md               the protocol reference
   INTERFACES.md             interface inventory + unification audit + roadmap
   INTERFACE-REVIEW-2026-09-27.md   interface classification + what is and is not verified
@@ -200,9 +204,12 @@ Locally installed plugins are trusted code (the same model as Raycast / Quicker)
 Two gates apply, and both must pass:
 
 1. **JS gate** (`ctx`) — fails fast with a readable message.
-2. **Native gate** (`host/registry.rs`) — authoritative and fail-closed. A plugin
-   registers its declared permissions at load time; an unregistered id can reach
-   nothing, so bypassing `ctx` and calling `invoke` directly still gets denied.
+2. **Native gate** (`host/registry.rs`) — checks the registered plugin's declared
+   permissions and resource paths; an unregistered id is denied.
+
+Plugin ids are supplied by the caller, and plugins share the host's JavaScript
+context. These checks enforce the trusted-plugin API contract; they do not
+authenticate callers or isolate malicious plugins. See `docs/ARCHITECTURE.md`.
 
 The Settings page shows each plugin's declared permissions and the live session
 registry.

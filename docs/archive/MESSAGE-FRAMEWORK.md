@@ -1,3 +1,5 @@
+> 历史快照，已归档；当前实现见 [架构说明](../ARCHITECTURE.md)。
+
 # 消息传递框架统一化 — 现状分析与重构设计
 
 > 来源项目：`D:\code\rust\eyecare\eyecare`（只读分析，未改动任何代码）
@@ -5,12 +7,12 @@
 > 说明：`eyecare/docs/ARCHITECTURE.md` 与真实代码已有明显偏差，本文以**实际代码**为准。
 > 采集时间：2026-09-14 20:00（分析过程中 `src-tauri/src/services/*` 正在被并发修改，见 §2）
 >
-> **状态：本设计已在 toolkit 中落地。** 应用名 **Toolkit**，identifier `com.tan18.toolkit`。协议参考见 [`PROTOCOL.md`](./PROTOCOL.md)，
+> **状态：本设计已在 toolkit 中落地。** 应用名 **Toolkit**，identifier `com.tan18.toolkit`。协议参考见 [`PROTOCOL.md`](../PROTOCOL.md)，
 > 实现位置见 §5 的目录结构。
 > **本文是设计来由（历史），不是现状。** 要了解当前接口，看
-> [`INTERFACES.md`](./INTERFACES.md)（清单）、[`PROTOCOL.md`](./PROTOCOL.md)（契约）、
-> [`plugin-dev/`](./plugin-dev/README.md)（插件作者手册）、
-> [`INTERFACE-REVIEW-2026-09-27.md`](./INTERFACE-REVIEW-2026-09-27.md)（接口分类与核查）。
+> [`INTERFACES.md`](../INTERFACES.md)（清单）、[`PROTOCOL.md`](../PROTOCOL.md)（契约）、
+> [`plugin-dev/`](../plugin-dev/README.md)（插件作者手册）、
+> [`INTERFACE-REVIEW-2026-09-27.md`](../INTERFACE-REVIEW-2026-09-27.md)（接口分类与核查）。
 >
 > 落地后的验证：**应用内自检 15/15 全绿**（含真实 sidecar 往返）、7 插件 / 7 视图全部 active、
 > `cargo test` 39、`node --test` 39、`cargo check --all-targets` 零代码警告、`npm run build` 通过。

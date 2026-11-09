@@ -17,109 +17,10 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
+import { ctxSurface, bridgeSurface } from './helpers/sdk-surfaces.mjs';
 
-const root = fileURLToPath(new URL('..', import.meta.url));
-
-/**
- * Top-level keys of the object literal that follows `anchor`.
- *
- * Brace counting over a comment- and string-stripped copy, so both files build
- * their SDK as one plain literal and this reads the REAL surface rather than a
- * hand-copied list that would drift.
- *
- * The key regex uses `[ \t]`, not `\s`: `\s` matches newlines, so `^\s*name\s*:`
- * happily matches a name on the NEXT line. That is not a theoretical worry — it
- * made this extractor report every key twice (once from the blank line above it,
- * once from its own line) on the first run.
- *
- * The separator is `[:,]`, not `:`. Shorthand properties (`id,`, `manifest,`,
- * `pluginId,`, `label,`) have no colon, and demanding one silently hid four
- * capabilities — including `label`, which is bridge-only. A guard that cannot
- * see a name cannot report it as an undecided asymmetry, which is the one job
- * this file has.
- */
-function topLevelKeys(source, anchor) {
-  const stripped = strip(source);
-  const at = stripped.indexOf(anchor);
-  assert.ok(at >= 0, `anchor not found: ${anchor}`);
-
-  const start = stripped.indexOf('{', at);
-  assert.ok(start > at, `no object literal after: ${anchor}`);
-
-  const keys = [];
-  let depth = 0;
-  let lineStart = true;
-  for (let i = start; i < stripped.length; i++) {
-    const c = stripped[i];
-    if (c === '{') {
-      depth += 1;
-    } else if (c === '}') {
-      depth -= 1;
-      if (depth === 0) break;
-    } else if (c === '\n') {
-      lineStart = true;
-      continue;
-    } else if (depth === 1 && lineStart) {
-      const m = /^[ \t]*([A-Za-z_$][\w$]*)[ \t]*[:,]/.exec(stripped.slice(i));
-      if (m) keys.push(m[1]);
-    }
-    lineStart = false;
-  }
-  return keys;
-}
-
-/**
- * `ctx.foo = …` assignments that follow the literal.
- *
- * `ctx.cleanup` is the one that exists, and reading only the literal made this
- * guard report `cleanup` as a BRIDGE-ONLY name while `tests/plugin-docs.test.mjs`
- * reported it as shared. Two guards disagreeing about the same fact is worse
- * than one guard, so the extractor reads the assignment too.
- */
-function assignedKeys(source) {
-  return [...strip(source).matchAll(/^[ \t]*ctx\.([A-Za-z_$][\w$]*)[ \t]*=/gm)].map((m) => m[1]);
-}
-
-/** Blank out comments and string bodies so braces/newlines inside them are inert. */
-function strip(src) {
-  let out = '';
-  let i = 0;
-  while (i < src.length) {
-    const c = src[i];
-    const d = src[i + 1];
-    if (c === '/' && d === '*') {
-      const end = src.indexOf('*/', i + 2);
-      i = end < 0 ? src.length : end + 2;
-      out += ' ';
-    } else if (c === '/' && d === '/') {
-      const end = src.indexOf('\n', i);
-      i = end < 0 ? src.length : end;
-      out += ' ';
-    } else if (c === '"' || c === "'" || c === '`') {
-      i += 1;
-      while (i < src.length && src[i] !== c) i += src[i] === '\\' ? 2 : 1;
-      i += 1;
-      out += '""';
-    } else {
-      out += c;
-      i += 1;
-    }
-  }
-  return out;
-}
-
-const ctxSource = readFileSync(path.join(root, 'src/host/ctx.js'), 'utf8');
-const ctxRaw = [...topLevelKeys(ctxSource, 'const ctx = {'), ...assignedKeys(ctxSource)];
-// `return {` — NOT `function makeBridge`. Anchoring on the function declaration
-// lands on the function's BODY brace, so every key is one level too deep and the
-// extractor returns nothing. (It did exactly that on the first run.)
-const bridgeRaw = topLevelKeys(
-  readFileSync(path.join(root, 'src/host/pluginwin-host.js'), 'utf8'),
-  'return {',
-);
+const ctxRaw = Object.keys(ctxSurface);
+const bridgeRaw = Object.keys(bridgeSurface);
 
 /**
  * One capability, two names. Not worth changing now (both are published API),
@@ -208,7 +109,7 @@ const CTX_ONLY = [...INTENTIONAL_CTX_ONLY, ...PENDING_CTX_ONLY];
  */
 const BRIDGE_ONLY = ['close', 'dispose', 'drag', 'label'];
 
-test('the two SDK surfaces were actually parsed', () => {
+test('the two SDK surfaces are constructed with their published capabilities', () => {
   // Guards the extractor: if the literal shape changes, every assertion below
   // would pass on empty sets and audit nothing.
   assert.ok(ctxRaw.length >= 20, `ctx keys look wrong (${ctxRaw.length}): ${ctxRaw.join(',')}`);

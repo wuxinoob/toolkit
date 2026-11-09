@@ -37,6 +37,8 @@ const ctx = buildCtx(
   { manifest: { id: 'test.files', permissions: ['rpc:dialog'] } },
   disposer,
 );
+let nativeCalls = 0;
+globalThis.window = { __TAURI_INTERNALS__: { invoke: async () => { nativeCalls += 1; return {}; } } };
 
 async function reason(promise) {
   try {
@@ -55,31 +57,17 @@ test('ctx.files: the surface exists and is async', () => {
 });
 
 test('ctx.files: pick resolves to an empty array on cancel, not an error', async () => {
-  // In Node there is no host, so the invoke rejects — but the CONTRACT under
-  // test is the normalisation: `pick` must never hand back null/undefined for
-  // "the user cancelled", because every caller would have to guard it.
-  const source = readFileSync(new URL('../src/host/ctx.js', import.meta.url), 'utf8');
-  assert.match(
-    source,
-    /\.then\(\(r\) => r\?\.paths \?\? \[\]\)/,
-    'pick must normalise a missing paths array to []',
-  );
-  assert.match(
-    source,
-    /\.then\(\(r\) => r\?\.path \?\? null\)/,
-    'save must normalise to null',
-  );
+  assert.deepEqual(await ctx.files.pick(), []);
+  assert.equal(await ctx.files.save(), null);
 });
 
 test('ctx.files: every dialog call is gated by rpc:dialog', async () => {
-  const source = readFileSync(new URL('../src/host/ctx.js', import.meta.url), 'utf8');
-  const dialogCalls = source.match(/invoke\('plugin_dialog'/g) ?? [];
-  assert.equal(dialogCalls.length, 3, 'expected three dialog entry points');
-  const gates = source.match(/'rpc:dialog'/g) ?? [];
-  assert.ok(
-    gates.length >= 3,
-    `each dialog call needs the gate — found ${gates.length} for ${dialogCalls.length} calls`,
-  );
+  const bare = buildCtx({ manifest: { id: 'no.dialog', permissions: [] } }, disposer);
+  const before = nativeCalls;
+  await assert.rejects(bare.files.pick(), /missing permission/);
+  await assert.rejects(bare.files.save(), /missing permission/);
+  await assert.rejects(bare.files.message('test'), /missing permission/);
+  assert.equal(nativeCalls, before);
 });
 
 test('ctx.onDrop: a plugin without the permission can still subscribe', () => {
@@ -177,7 +165,7 @@ test('the host listens for drops once, in boot, on the shared topic', () => {
   // arrived, which is none. Now there is one constant, and neither file may
   // spell it out.
   const ctx = readFileSync(new URL('../src/host/ctx.js', import.meta.url), 'utf8');
-  assert.match(ctx, /subscribeWith\('in-process', DROP_TOPIC/, 'the subscriber uses the same constant');
+  assert.match(ctx, /sdk\.events\.on\(DROP_TOPIC/, 'the subscriber uses the same constant');
   for (const [name, src] of [['boot.js', boot], ['ctx.js', ctx]]) {
     assert.doesNotMatch(src, /'host:drop'/, `${name} must not spell the topic out`);
   }

@@ -24,6 +24,19 @@ fn lock() -> std::sync::MutexGuard<'static, HashMap<String, HashSet<String>>> {
     registry().lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Is the permission lock free right now?
+///
+/// A `try_lock` from the recorder's plain thread. This lock is taken by
+/// `is_allowed`, which every gateway call and every stream open hits BEFORE its
+/// first await — so if it is ever held for long, every runtime worker parks on
+/// it and the whole async runtime stops: no futures resume, `beat` and `tbeat`
+/// freeze together, while the main thread and the plain threads keep running.
+/// That is exactly the 2026-11-02 signature, and this probe names the lock
+/// instead of guessing at it.
+pub fn lock_is_free() -> bool {
+    registry().try_lock().is_ok()
+}
+
 /// Register (or replace) a plugin's declared permissions.
 pub fn register(plugin_id: &str, permissions: &[String]) {
     let mut map = lock();

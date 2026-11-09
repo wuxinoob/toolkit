@@ -91,8 +91,14 @@ jobs:
       # 写在源码树里、被 gitignore）。所以先强制构建脚本跑一遍 —— 不清这个包的话，
       # 缓存命中时它是 no-op，那个文件就永远不出现。清它只影响本包，依赖仍走缓存。
       - run: cargo clean --manifest-path src-tauri/Cargo.toml -p toolkit
-      - name: Generate the ACL schemas the tests read
-        run: cargo check --manifest-path src-tauri/Cargo.toml
+      - name: Host checks (also generate the ACL schemas the tests read)
+        run: cargo run --locked --manifest-path src-tauri/Cargo.toml --example host-checks
+
+      - name: PTY lifecycle regression
+        run: cargo run --locked --manifest-path src-tauri/Cargo.toml --example pty-lifecycle-checks
+
+      - name: Storage concurrency and atomic replacement
+        run: cargo run --locked --manifest-path src-tauri/Cargo.toml --example storage-checks
 
       - run: npm test
 
