@@ -9,14 +9,14 @@
 
 | 问题 | 结论 |
 |---|---|
-| **1. 协议是否统一了？** | **插件侧完全统一**；19 个命令里 2 个是网关（`plugin_rpc` / `plugin_rpc_raw`，同一个服务表），另外 4 个是**插件可调但必须裸命令**的（3 个流 + 原生对话框，各自设闸），其余 10 个是宿主自己的管理操作；窗口控制不在协议内（热键已收敛进 `hotkey` 服务）。 |
+| **1. 协议是否统一了？** | 插件使用公共 SDK。JSON 与 raw RPC 共用服务表，流、对话框和内存字节会话各有原生入口。 |
 | **2. 新插件能否直接调用已有接口？** | **能，且已验证**。`tests/fixtures/plugins/probe` 不 import 任何模块、不碰 Tauri API，一次调用覆盖 11 项接口全部通过。 |
-| **3. 接口有哪些？** | 19 个原生命令 · 9 个服务 / 35 个动作（+ 1 个字节动作） · 9 个方案 · 3 个流提供者。见 §1–§4。 |
+| **3. 接口有哪些？** | 25 个原生命令 · 9 个服务 / 36 个动作（+ 2 个字节动作） · 9 个方案 · 3 个流提供者。见 §1–§4。 |
 | **4. 有改进空间吗？** | 有。**P1、P2 与 P0 两项均已完成**（见 §8）。剩余的是结构性例外与后续增强，不再是缺口。 |
 
 ---
 
-## 1. 原生入口：19 个命令
+## 1. 原生入口：25 个命令
 
 此计数只覆盖 `src-tauri/src/lib.rs`。PTY 的七个兼容命令来自项目内
 `src-tauri/plugins/tauri-plugin-pty`，直接走该插件，不经过网关；其执行和回收边界见
@@ -29,7 +29,7 @@
 | 3 | `plugin_stream_open` | 开一条 json-envelope 推送流 | `channel-json` 方案 | ✗ 需携带 `Channel` 句柄 | `rpc:stream` + 提供者自己的 |
 | 4 | `plugin_stream_open_raw` | 开一条 raw-binary 推送流 | `channel-raw` 方案 | ✗ 同上 | 同上 |
 | 5 | `plugin_stream_close` | 取消一条流 | 两个 channel 方案的 `close()` | ✗ 同上 | `rpc:stream` |
-| 6 | `plugin_dialog` | 原生对话框（`ctx.files.pick/save/message`） | `ctx.js` | ✗ 不是网关动作 | `rpc:dialog`（**自设**） |
+| 6 | `plugin_dialog` | 原生对话框和选定文件的 SHA-256（`ctx.files.pick/save/message/sha256`） | 公共插件 SDK | ✗ 专用命令 | `rpc:dialog` |
 | 7 | `plugin_register` | 上报插件声明的权限 | `lifecycle.loadPlugin` | ✗ 加载期引导 | — |
 | 8 | `plugin_reap_orphans` | 杀掉上一次前端上下文遗留的宿主侧会话 | `boot()` | ✗ 宿主内部操作 | 仅主窗口 |
 | 9 | `plugin_scan` | 扫描磁盘插件目录（读 manifest **+ 每个入口文件**算 digest） | `host/external.js` | ✗ 同上 | — |
@@ -43,8 +43,14 @@
 | 17 | `host_diag` | **诊断**：主线程还在泵消息吗、各窗口渲染器还活着吗（读窗口标题，**不经过 IPC**）、网关里有几个调用在途、最老的那个是什么（含发起窗口 `svc/act@label`）、会话表能不能拿到锁 | `boot.js` 看门狗、宿主恢复阶梯 | ✗ 不走网关（网关可能正是坏的那层） | — |
 | 18 | `host_note` | 往 `debug.log` 写一行，**不经过网关**：网关坏掉时，唯一还写得进去的证据通道 | `boot.js` 的 `report()` | ✗ 只碰文件 | 仅主窗口 |
 | 19 | `host_window_create` | **运行时建窗口的唯一入口**：把主窗口的 `additionalBrowserArgs` 抄进新窗口再建（否则 WebView2 报 `0x8007139F`） | `ctx.windows.create` | ✗ 宿主内部操作 | 仅主窗口 |
+| 20 | `plugin_binary_control` | 预留容量或关闭内存会话 | `binary.open` / `close` | 窗口与插件归属 | `rpc:binary` |
+| 21 | `plugin_binary_write` | 原始请求体按偏移写块 | `transfer.write` | 同上 | `rpc:binary` |
+| 22 | `plugin_binary_read` | 读取有界字节块 | `transfer.read` | 同上 | `rpc:binary` |
+| 23 | `plugin_fs_control` | 原生选择、文件状态、提交和关闭 | `fs.open` / `createWriter` / `stat` / `commit` / `close` | 窗口与插件归属 | `rpc:fs` |
+| 24 | `plugin_fs_read` | 从文件读取指定区间 | `file.readAt` | 同上 | `rpc:fs` |
+| 25 | `plugin_fs_write` | 原始请求体写入暂存文件 | `writer.write` | 同上 | `rpc:fs` |
 
-**1–6 是数据面**（要携带 IPC `Channel`，或必须在同步网关上做异步的事），**7–19 是宿主自身的管理操作**，不是插件能力 —— 插件也调用不到它们。
+插件 SDK 使用 1–6 和 20–25。7–19 负责加载、窗口及宿主运行管理。字节会话的完整契约见 [BINARY-IPC.md](BINARY-IPC.md)。
 
 **两类用的不是同一种闸口，这是刻意的**：数据面的闸口是**权威**的（Rust `host/registry.rs`，fail-closed），因为插件能绕过 `ctx` 直接 `invoke`；管理操作只由宿主自己的代码调用，用的是 `require_main`（窗口 label 检查）—— 防的不是恶意插件，而是**第二个前端上下文**（窗口分发的规则见 `src/main.js`）。
 
@@ -136,7 +142,7 @@
 **这三条都不是"优化"，是"别做无关的事"** —— 把不属于插件窗口的模块/样式/文件排除出它的路径。
 **判断标准是「这个窗口真的需要它吗」**，不是「快一点」。
 
-## 2. 网关背后的服务：9 个服务 / 35 个动作
+## 2. 网关背后的服务：9 个服务 / 36 个动作
 
 | 服务 | 动作 | 说明 |
 |---|---|---|
@@ -147,7 +153,7 @@
 | `bus` | `publish` | 跨窗口广播（宿主 `app.emit` 扇出到所有窗口） |
 | `hotkey` | `register` `unregister` `unregister_all` `list` | 全局热键，**由宿主代插件注册**（`contributes.hotkeys`） |
 | `notify` | `send` | **操作系统**通知（动作中心/通知中心）。与 `ctx.ui.notify` 的站内 toast 是两回事：toast 只在用户看着这个窗口时有用 |
-| `clipboard` | `read` `write` | 系统剪贴板文本。**变化监听不是动作** —— 它是流（见 §3 的 `clipboard` 提供者） |
+| `clipboard` | `read` `write` `formats` | 系统剪贴板文本和格式快照。图片通过 `readImage` 字节动作读取，变化通过 `clipboard` 流监听 |
 | `screen` | `monitors` | 枚举显示器（JSON）。**`capture` 不在这一列** —— 它的答复是 PNG 字节，走 `rpc-raw`（见 §3） |
 
 分发是**查表**的：`services::route` 按 `name()` 找 `Service` 实现，并用该服务自己声明的
@@ -187,8 +193,8 @@
 **`rpc-raw` 是 `rpc` 的字节答复版**：同一个服务表、同一道 `rpc:<svc>` 闸口、同一次往返，
 只是答复从信封换成字节。**一个动作只有一种答复**：`Service::actions()`（JSON）与
 `Service::binary_actions()`（字节）**互不相交**，各自被对应的网关校验 ——
-所以「这个动作用哪种编码」只有一个答案，不取决于调用方怎么问。今天唯一的字节动作是
-`screen/capture`（PNG），名单同时出现在 `host/schema` 的 `binaryActions` 里，
+所以「这个动作用哪种编码」只有一个答案。当前的字节动作是
+`screen/capture` 和 `clipboard/readImage`（PNG），名单同时出现在 `host/schema` 的 `binaryActions` 里，
 插件不用靠失败来发现。用错方法会得到一条指名道姓的 `unsupported`（"用 `ctx.bytes`"）。
 
 ### 提供者可以要求自己的权限
@@ -250,7 +256,7 @@
 以 `ui_heartbeat::action_for` 为准；有效调用恢复后重置阶梯。机器睡过（线程醒来发现间隔 >60 秒）不算本次失联。
 恢复动作成功发出后，还需检查调用计数是否增长，不能把重载命令返回成功当作恢复成功。
 
-`inFlight=0` 只表示此刻没有被 JSON 网关统计的请求；raw RPC、流命令与 PTY 命令不在这份统计内。
+`inFlight` 统计 JSON RPC、raw RPC 和内存字节会话。流命令与 PTY 使用独立入口。
 主线程活跃、网关空闲或某个本地定时器仍在运行，都不足以单独认定 IPC 断裂。判断应结合 beat/tbeat、
 各调用路径、PTY 原生资源和现场日志，见 [冻结根因与证据边界](FREEZE-ROOT-CAUSE.md)。
 

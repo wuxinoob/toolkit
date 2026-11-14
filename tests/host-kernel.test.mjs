@@ -208,6 +208,45 @@ test('ctx: screen.capture goes to the BYTE gateway, not the JSON one', async () 
   );
 });
 
+test('clipboard format notifications carry metadata and image bytes are read on demand', async () => {
+  invokeCalls.length = 0;
+  const scope = new Disposer();
+  const ctx = buildCtx({ manifest: { id: 't.clip-image', permissions: ['rpc:stream', 'rpc:clipboard'] } }, scope);
+  const snapshots = [
+    { revision: 41, formats: ['text'] },
+    { revision: 41, formats: ['image'] },
+    { revision: 42, formats: ['image'] },
+  ];
+  const png = Uint8Array.from([137, 80, 78, 71]);
+  let channel;
+  invokeImpl = async (cmd, args) => {
+    if (cmd === 'plugin_stream_open') {
+      assert.equal(args.provider, 'clipboard');
+      assert.deepEqual(args.params, { intervalMs: 200, mode: 'formats' });
+      channel = args.onFrame;
+      return;
+    }
+    if (cmd === 'plugin_stream_close') return { stopped: true };
+    if (cmd === 'plugin_rpc') {
+      assert.equal(args.msg.act, 'formats');
+      return { kind: 'res', p: snapshots.at(-1) };
+    }
+    assert.equal(cmd, 'plugin_rpc_raw');
+    assert.equal(args.msg.act, 'readImage');
+    assert.deepEqual(args.msg.p, { revision: 42 });
+    return png.buffer;
+  };
+  const seen = [];
+  await ctx.clipboard.watchFormats('clipboard-images', { params: { intervalMs: 200 }, onFrame: (env) => seen.push(env.p) });
+  for (const p of snapshots) channel.onmessage({ v: 1, kind: 'data', ch: 'clipboard-images', p });
+  assert.deepEqual(seen, snapshots);
+  assert.equal(invokeCalls.length, 1, 'the format stream does not fetch a bitmap');
+  const { revision } = await ctx.clipboard.formats();
+  assert.deepEqual(await ctx.clipboard.readImage({ revision }), png);
+  await scope.run();
+  assert.equal(invokeCalls.at(-1).cmd, 'plugin_stream_close');
+});
+
 test('ctx: broadcast goes through the bus service', async () => {
   invokeCalls.length = 0;
   invokeImpl = async (cmd, { msg }) => ({ v: 1, kind: 'res', id: msg.id, p: { delivered: true } });

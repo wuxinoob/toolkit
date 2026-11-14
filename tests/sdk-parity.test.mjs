@@ -39,6 +39,8 @@ const SHARED = [
   'protocol',
   'request',
   'bytes',
+  'binary',
+  'fs',
   'log',
   'storage',
   'clipboard',

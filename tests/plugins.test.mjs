@@ -100,6 +100,8 @@ const KNOWN_PERMISSIONS = new Set([
   // so `plugin_dialog` is `async` and gates itself with the same
   // `host::registry::is_allowed` call. See `plugin_dialog` in lib.rs.
   'rpc:dialog',
+  'rpc:binary',
+  'rpc:fs',
 
   // Window control is its own capability rather than a service.
   'win:manage',

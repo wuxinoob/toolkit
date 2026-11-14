@@ -359,8 +359,7 @@ ctx.onHotkey('open', async () => {
 
 ## 我要让用户给我一个文件
 
-**两个入口，都只给你路径，都需要用户做一个动作。** 没有 `ctx.fs` —— 见
-[FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md)（fs 读写仍在待裁定）。
+`ctx.files` 和 `ctx.onDrop` 提供路径。前端需要文件内容时可通过 `ctx.fs` 取得宿主管理的读写句柄。Sidecar 可以直接用路径调用操作系统文件 API。
 
 ### 原生选择器 —— `ctx.files`（权限 `rpc:dialog`）
 
@@ -377,8 +376,46 @@ await ctx.files.message('完成了', { title: '提示' });
 | `pick` | `{ title?, multiple?, folder?, directory?, filters? }` | `string[]`（取消 = `[]`） |
 | `save` | `{ title?, defaultPath? }` | `string \| null` |
 | `message` | `(message, { title? })` | — |
+| `sha256` | `{ title?, directory?, filters? }` | `{ path, size, sha256 } \| null` |
+
+### 文件读写 `ctx.fs` / `bridge.fs`
+
+在清单声明 `rpc:fs`。`open({ title?, directory?, timeoutMs? })` 打开原生选择器，取得只读文件引用。`createWriter({ title?, directory?, defaultPath?, timeoutMs? })` 通过保存对话框选目标，取得暂存写入引用。用户取消时两者均返回 `null`。选中的 `path` 可用于显示和交给 Sidecar。
+
+```js
+const input = await ctx.fs.open({ title: '选择输入文件' });
+if (!input) return;
+try {
+  const output = await ctx.fs.createWriter({ defaultPath: 'copy.bin' });
+  if (!output) return;
+  try {
+    const length = Math.min(input.maxChunkBytes, output.maxChunkBytes);
+    for (let offset = 0; ; ) {
+      const chunk = await input.readAt(offset, length);
+      if (!chunk.length) break;
+      offset = await output.write(offset, chunk);
+    }
+    await output.commit();
+  } finally {
+    await output.close();
+  }
+} finally {
+  await input.close();
+}
+```
+
+- 读引用的 `size` 是打开时的字节数。`stat()` 返回当前 `{ size }`。`readAt(offset, length?)` 返回 `Uint8Array`，默认长度为 `maxChunkBytes`，到达文件末尾时可短读或返回空块。
+- `write(offset, bytes)` 从 0 开始连续写入，返回累计确认的偏移。已确认区间的相同字节可重发。写入同目录临时文件，`commit()` 成功才生成或替换目标。提交前按大小和修改时间检查目标是否已改变，发现变化时返回 `conflict`。原生替换失败返回 `io`，可以重试提交或关闭引用。已成功的 `commit()` 可重复确认。
+- `close()` 可重复调用，未提交的输出会被丢弃。宿主停止接受新操作，已开始的操作可以结束，已进入替换阶段的提交可能完成。插件停用、激活失败、页面重载、窗口销毁和正常退出均回收引用。主窗口隐藏至托盘后仍可使用其引用。进程异常终止可能留下暂存文件。
+- 每块最多 256 KiB，每个引用只允许一个未完成的操作。等待超时后，操作槽保持占用直至实际返回。原生选择器由用户结束。`host/schema.fileAccess` 公布限额。文件总大小独立于 `binary.open()` 的容量。
+
+`ctx.onDrop` 目前仍传路径，拖放授权接入需由原生事件发放引用。Sidecar 可继续使用 `files.pick` / `files.save` 返回的路径并自行读写。
+
+### 选择器参数
 
 `filters` 形如 `[{ name: '文本', extensions: ['txt', 'md'] }]`。
+
+`sha256()` 重新打开单文件选择器，用户取消时返回 `null`。Rust 使用 1 MiB 缓冲区读取选中的文件，`size` 为字节数，`sha256` 为小写十六进制摘要。ISO 和安装包的内容留在宿主侧，结果不占用 `binary.open()` 的会话容量。主窗口与插件窗口使用相同接口。选择完成后的计算以一次调用返回结果。
 
 **为什么 `pick` 取消返回 `[]` 而不是 `null`**：每个调用方都要为 `null` 加一层判断，
 而「没有文件」本来就该是空数组。
@@ -482,7 +519,7 @@ await ctx.clipboard.write('hello');
 
 // 监听变化 —— 宿主主动推，所以是 stream 提供者
 const handle = await ctx.clipboard.watch('clip', {
-  intervalMs: 400,                             // 默认 500，夹在 100–10000
+  params: { intervalMs: 400 },                // 默认 500，夹在 100–10000
   onFrame: (env) => console.log(env.p.text),   // 只在真的变了才推
   onEnd: () => {},
 });
@@ -501,7 +538,7 @@ ctx.onDrop((paths, info) => console.log(paths, info.viewId));
 
 **要点**：
 
-- **`read()` 返回 `text: null` 不是错误。** 剪贴板为空、或装着图片/别的格式时就是 `null`；
+- **`read()` 在没有可读文本时返回 `text: null`。** 纯图片剪贴板也会返回 `null`；
   宿主只在**打不开剪贴板**（别的程序占着它）时才报错。这两种情况要分开处理。
 - **`write()` 是破坏性的** —— 它替换用户剪贴板里的东西。**不要为了自检随手写一次**：
   先读、写、再写回去（`senses` 就是这么做的，而且只在用户按按钮时才做）。
@@ -512,13 +549,28 @@ ctx.onDrop((paths, info) => console.log(paths, info.viewId));
   一次性可以，**别放进循环**。
 - **一个动作只有一种编码。** `capture` 只走 `rpc-raw`；用 `ctx.rpc('screen','capture')`
   会得到 `unsupported`，错误里直接写「用 `ctx.bytes`」。哪个动作有字节答复看
-  `host/schema` 的 `binaryActions`（目前只有 `screen/capture`）。
+  `host/schema` 的 `binaryActions`，包括 `screen/capture` 与 `clipboard/readImage`。
 - **拖放只到活动视图（主窗口侧）。** 这是刻意的：否则一个插件能静默捡走本该给别人的路径。
   也正因为如此 `onDrop` **不需要权限** —— 你只会看到用户**对着你的界面**丢下的东西
   （视图是你的，窗口也是你的）。丢在别的视图上时，`debug.log` 会写
   `no listener for view …`，而不是保持沉默。
 
 ---
+
+### 剪贴板图片与工具推荐
+
+Windows 上，`formats()` 返回 `{ revision, formats }`。`formats` 包含系统报告可用的 `text`、`image`，两种可以同时存在。`watchFormats(ch, { onFrame, onEnd, params })` 在订阅时推送一次快照，之后在序号或可用格式变化时推送。插件可用快照更新工具推荐，在用户粘贴时调用 `readImage()`。
+
+```js
+const snapshot = await ctx.clipboard.formats();
+if (snapshot.formats.includes('image')) {
+  const png = await ctx.clipboard.readImage({ revision: snapshot.revision });
+  const image = new Blob([png], { type: 'image/png' });
+  // 将 image 交给当前工具。
+}
+```
+
+`readImage()` 返回 PNG 的 `Uint8Array`。无图片返回 `not_found`，剪贴板占用或指定序号变化返回 `conflict`，像素解码失败返回 `codec`。Windows 的延迟渲染也可能在读取时更新序号。用户直接粘贴当前图片时，可省略 `revision`。宿主在解码后检查像素数，PNG 输出上限为 8 MiB。格式监听需要 `rpc:clipboard` 和 `rpc:stream`，帧只携带格式与序号。
 
 ## 我要通知用户（而且他不一定在看窗口）
 
@@ -776,7 +828,7 @@ async function closeMe() {
 |---|---|---|
 | 能力 | `ui` · `windows` · `registerView` · `focusView` | `label` · `close` · `drag` · `dispose` |
 
-**其余 28 个能力两边都有**，包括 `storage` / `bus` / `events` / `onHotkey` / `onDrop` /
+**其余 30 个能力两边都有**，包括 `fs` / `binary` / `storage` / `bus` / `events` / `onHotkey` / `onDrop` /
 `stream` / `streamRaw` / `uplink` / `sidecar` / `pty` / `clipboard` / `screen` /
 `files` / `log` / `closeStream` / `sessions` / `schemes` / `schema` / `paths` / `protocol` /
 `cleanup`。

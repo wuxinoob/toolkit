@@ -15,7 +15,7 @@
   "id": "my.plugin",
   "name": "My Plugin",
   "version": "0.1.0",
-  "api": 5,
+  "api": 7,
   "entry": "main.js",
   "description": "一句话说明这个插件干什么",
   "contributes": { },
@@ -28,7 +28,7 @@
 | `id` | ✅ | 全局唯一。**同时是数据目录名**（`{appData}/plugin-data/<id>/`），也是 `ctx` 报错前缀 `[plugin:<id>]` |
 | `name` | ✅ | 侧栏与错误信息里显示的名字 |
 | `version` | | 仅展示 |
-| `api` | **强烈建议** | 你按哪个 **HOST API** 版本写的。当前是 **3**。填错或漏填 → 宿主在你的插件行上写一条说明，而不是让你在运行期撞上 `off is not a function` |
+| `api` | **强烈建议** | 插件使用的 **HOST API** 版本。当前为 **7**，声明其他版本时宿主显示版本提示 |
 | `entry` | ✅ | 入口文件，相对插件目录 |
 | `description` | | 仅展示 |
 | `contributes` | | 声明式贡献点，见下 |
@@ -136,10 +136,12 @@
 | `rpc:bus` | **发布**广播 | 跨窗口同步状态 |
 | `rpc:hotkey` | 注册**非声明式**的热键 | 动态热键 |
 | `win:manage` | 开 / 控制窗口 | 独立窗口、悬浮窗 |
-| `rpc:dialog` | 开原生选择器 / 保存框 / 消息框 | `ctx.files.pick` |
+| `rpc:dialog` | 原生选择器 / 保存框 / 消息框 / 选定文件 SHA-256 | `ctx.files.*` |
 | `rpc:notify` | 发**系统级**通知（Windows 操作中心） | `ctx.ui.notifyOS` |
-| `rpc:clipboard` | 读 / 写剪贴板，以及**监听它的变化** | `ctx.clipboard.*`（监听还要 `rpc:stream`） |
+| `rpc:clipboard` | 剪贴板文本读写、PNG 读取、格式查询与监听 | `ctx.clipboard.*`（监听还要 `rpc:stream`） |
 | `rpc:screen` | 枚举显示器 + 截屏 | `ctx.screen.*` |
+| `rpc:binary` | 打开、读写和关闭当前窗口的内存字节会话 | `ctx.binary.open` / `bridge.binary.open` |
+| `rpc:fs` | 通过原生对话框打开文件或选择保存目标，管理当前窗口持有的文件引用 | `ctx.fs` / `bridge.fs` |
 
 **不需要权限的**（「观察」侧）：
 
@@ -165,7 +167,7 @@ Rust 侧 `host/registry.rs`（权威，fail-closed，未注册即拒绝）。
   "id": "my.plugin",
   "name": "My Plugin",
   "version": "0.1.0",
-  "api": 5,
+  "api": 7,
   "entry": "main.js",
   "description": "示例",
   "contributes": {

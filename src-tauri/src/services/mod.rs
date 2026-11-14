@@ -16,6 +16,7 @@
 //! `host/schema`, which is how a plugin discovers what the host supports.
 
 pub mod bus;
+pub mod checksum;
 pub mod clipboard;
 pub mod external;
 pub mod hotkey;
@@ -191,6 +192,8 @@ pub fn schema() -> Value {
         .collect();
     json!({
         "protocol": crate::protocol::envelope::PROTOCOL_VERSION,
+        "binaryTransfer": crate::binary_ipc::capabilities(),
+        "fileAccess": crate::file_ipc::capabilities(),
         "services": services,
         // Which actions can answer with BYTES (`plugin_rpc_raw` / `ctx.bytes`),
         // so a plugin asks instead of finding out by getting `unsupported`.

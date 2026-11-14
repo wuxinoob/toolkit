@@ -41,6 +41,8 @@ const { hub } = await import('../src/protocol/hub.js');
 const { transport, transportIds } = await import('../src/protocol/transports/index.js');
 const { descriptor, assertSupports, Capability } = await import('../src/protocol/registry.js');
 const { Code } = await import('../src/protocol/codes.js');
+const { createPluginSdk } = await import('../src/host/plugin-sdk.js');
+const { Disposer } = await import('../src/host/disposer.js');
 
 const bytesOf = (...n) => Uint8Array.from(n);
 
@@ -78,6 +80,7 @@ test('the reply is normalised to a Uint8Array, whatever the carrier handed us', 
     ['ArrayBuffer', new Uint8Array([1, 2, 3]).buffer],
     ['Uint8Array', bytesOf(1, 2, 3)],
     ['DataView', new DataView(new Uint8Array([0, 1, 2, 3]).buffer, 1, 3)],
+    ['postMessage byte array', [1, 2, 3]],
   ];
   for (const [label, reply] of cases) {
     impl = async () => reply;
@@ -85,6 +88,119 @@ test('the reply is normalised to a Uint8Array, whatever the carrier handed us', 
     assert.ok(got instanceof Uint8Array, `${label}: expected a Uint8Array`);
     assert.deepEqual([...got], [1, 2, 3], `${label}: wrong bytes`);
   }
+});
+
+test('raw replies reject invalid values in a postMessage array', async () => {
+  impl = async () => [137, 256, -1, '80'];
+  await assert.rejects(() => hub.requestBytes('p', 'screen', 'capture'), { code: Code.PROTOCOL });
+});
+
+test('binary SDK sends raw request bodies and reads a payload larger than 1 MiB in chunks', async () => {
+  const maxChunkBytes = 256 * 1024;
+  const input = Uint8Array.from({ length: 2 * 1024 * 1024 + 17 }, (_, i) => i % 251);
+  const output = new Uint8Array(input.length);
+  const scope = new Disposer();
+  const sdk = createPluginSdk('p.binary', { permissions: ['rpc:binary'] }, scope);
+  let buffer;
+  let id;
+  let writes = 0;
+  impl = async (cmd, args, options) => {
+    if (cmd === 'plugin_binary_control') {
+      assert.equal(args.pluginId, 'p.binary');
+      if (args.action.kind === 'open') {
+        assert.equal(args.action.size, input.length);
+        id = args.id;
+        buffer = new Uint8Array(args.action.size);
+        return { maxChunkBytes };
+      }
+      assert.equal(args.action.kind, 'close');
+      assert.equal(args.id, id);
+      buffer = undefined;
+      return true;
+    }
+    if (cmd === 'plugin_binary_write') {
+      assert.ok(args instanceof Uint8Array, 'the whole invoke payload is a byte view');
+      const headers = options.headers;
+      assert.equal(headers['x-toolkit-plugin'], 'p.binary');
+      assert.equal(headers['x-toolkit-transfer'], id);
+      const offset = Number(headers['x-toolkit-offset']);
+      assert.ok(args.byteLength <= maxChunkBytes);
+      buffer.set(args, offset);
+      writes++;
+      return offset + args.byteLength;
+    }
+    assert.equal(cmd, 'plugin_binary_read');
+    assert.equal(args.id, id);
+    assert.equal(args.maxBytes, maxChunkBytes);
+    const chunk = buffer.slice(args.offset, args.offset + args.maxBytes);
+    return chunk.byteLength < maxChunkBytes ? [...chunk] : chunk.buffer;
+  };
+
+  const transfer = await sdk.binary.open(input.length);
+  for (let offset = 0; offset < input.length; offset += transfer.maxChunkBytes) {
+    const chunk = input.subarray(offset, offset + transfer.maxChunkBytes);
+    assert.equal(await transfer.write(offset, chunk), offset + chunk.length);
+  }
+  for (let offset = 0; offset < output.length; offset += transfer.maxChunkBytes) {
+    output.set(await transfer.read(offset), offset);
+  }
+  assert.ok(writes > 1);
+  assert.deepEqual(output, input);
+  await scope.run();
+  assert.equal(buffer, undefined);
+  await assert.rejects(() => transfer.read(0), { code: Code.NOT_FOUND });
+});
+
+test('disposing while a binary open is pending closes the eventual native session', async () => {
+  const scope = new Disposer();
+  const sdk = createPluginSdk('p.pending', { permissions: ['rpc:binary'] }, scope);
+  let finishOpen;
+  let closeCount = 0;
+  impl = async (cmd, args) => {
+    assert.equal(cmd, 'plugin_binary_control');
+    if (args.action.kind === 'open') return new Promise((resolve) => { finishOpen = resolve; });
+    closeCount++;
+    return true;
+  };
+  const opening = sdk.binary.open(1024);
+  const rejected = assert.rejects(opening, { code: Code.NOT_FOUND });
+  const disposing = scope.run({ parallel: true });
+  finishOpen({ maxChunkBytes: 256 * 1024 });
+  await Promise.all([rejected, disposing]);
+  assert.equal(closeCount, 1);
+});
+
+test('a binary open timeout releases a late native allocation', async () => {
+  let finishOpen;
+  let allocated = false;
+  impl = async (_cmd, args) => {
+    if (args.action.kind === 'open') return new Promise((resolve) => { finishOpen = resolve; });
+    allocated = false;
+    return true;
+  };
+  const sdk = createPluginSdk('p.timeout', { permissions: ['rpc:binary'] }, new Disposer());
+  await assert.rejects(() => sdk.binary.open(1024, { timeoutMs: 10 }), { code: Code.TIMEOUT });
+  allocated = true;
+  finishOpen({ maxChunkBytes: 256 * 1024 });
+  await new Promise(setImmediate);
+  assert.equal(allocated, false);
+});
+
+test('a chunk timeout holds the IPC slot until the actual reply settles', async () => {
+  let finishWrite;
+  impl = async (cmd, args) => {
+    if (cmd === 'plugin_binary_write') return new Promise((resolve) => { finishWrite = resolve; });
+    if (cmd === 'plugin_binary_read') return [42];
+    return args.action.kind === 'open' ? { maxChunkBytes: 256 * 1024 } : true;
+  };
+  const sdk = createPluginSdk('p.slots', { permissions: ['rpc:binary'] }, new Disposer());
+  const transfer = await sdk.binary.open(1, { timeoutMs: 10 });
+  await assert.rejects(() => transfer.write(0, Uint8Array.of(42)), { code: Code.TIMEOUT });
+  await assert.rejects(() => transfer.read(0), { code: Code.CONFLICT });
+  finishWrite(1);
+  await new Promise(setImmediate);
+  assert.deepEqual(await transfer.read(0), Uint8Array.of(42));
+  await transfer.close();
 });
 
 test('a host rejection keeps its code and message', async () => {

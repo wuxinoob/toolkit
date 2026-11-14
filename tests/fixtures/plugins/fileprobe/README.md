@@ -73,7 +73,7 @@ rpc -> fileprobe.demo proc/spawn 1ms err: plugin `fileprobe.demo` lacks permissi
 
 ## 这个插件刻意不做的事
 
-**它不读文件内容。** 宿主没有 `ctx.fs`（fs 读写仍在待裁定，
+**这个示例只验证路径交接。** 文件内容读写可使用 `ctx.fs`（见
 见 [FILE-ACCESS-PLAN.md](../../../docs/plugin-dev/FILE-ACCESS-PLAN.md)），
 所以拿到路径之后，读内容是插件自己起 sidecar 的事。
 

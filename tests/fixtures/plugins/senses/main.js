@@ -4,14 +4,15 @@
  * Three capabilities, all of which need a real machine and a real user, so none
  * of them can be covered by the in-app selftest:
  *
- *   ctx.clipboard.read / write     request/response
+ *   ctx.clipboard.read / write     text request/response
+ *   ctx.clipboard.readImage         raw PNG request/response
  *   ctx.clipboard.watch            a STREAM — the host pushes on change
- *   ctx.screen.monitors / capture  request/response (capture returns base64 PNG)
+ *   ctx.screen.monitors / capture  request/response (capture returns PNG bytes)
  *   ctx.onDrop                     OS drag-and-drop, routed to the active view
  *
  * ## Why it throws at activation
  *
- * Everything except the write probe runs inside `activate()` and a failure
+ * The initial checks run inside `activate()` and a failure
  * throws, so a broken interface shows up as a red plugin in the boot log rather
  * than as a view that quietly renders nothing. That is the pattern in
  * `docs/plugin-dev/recipes.md` ("让插件出问题时启动日志直接变红"), and it is why
@@ -34,7 +35,7 @@ export const manifest = {
   id: 'senses.demo',
   name: 'Senses',
   version: '0.1.0',
-  api: 5,
+  api: 7,
   description: 'Live check of clipboard, screen capture and OS file drops.',
   contributes: {
     views: [{ slot: 'tool', id: 'senses', title: 'Senses', icon: 'lucide:eye' }],
@@ -65,6 +66,7 @@ const state = {
   watch: null,
   drops: [],
   shot: null,
+  imageNote: '',
   writeNote: '',
   draw: null,
 };
@@ -164,6 +166,18 @@ export async function deactivate() {
   state.draw = null;
 }
 
+async function readImageProbe() {
+  try {
+    const png = await state.ctx.clipboard.readImage();
+    const bitmap = await globalThis.createImageBitmap(new Blob([png], { type: 'image/png' }));
+    state.imageNote = `${bitmap.width}×${bitmap.height}, ${png.byteLength} bytes`;
+    bitmap.close();
+  } catch (error) {
+    state.imageNote = error.code === 'not_found' ? 'Copy an image and try again.' : error.message;
+  }
+  state.draw?.();
+}
+
 /* ------------------------------ the write probe ----------------------------- */
 
 /**
@@ -260,7 +274,13 @@ function render(root) {
           el(
             'div',
             { class: 'tb-mono', style: 'white-space:pre-wrap;word-break:break-word;max-height:120px;overflow:auto;' },
-            state.clip === '' ? '(nothing on the clipboard)' : state.clip,
+            state.clip === '' ? '(no clipboard text)' : state.clip,
+          ),
+          el(
+            'div',
+            { style: 'display:flex;flex-wrap:wrap;gap:6px;' },
+            el('button', { class: 'tb-btn tb-btn-sm', onClick: readImageProbe }, 'Read image'),
+            state.imageNote ? el('span', { class: 'tb-hint', role: 'status' }, state.imageNote) : null,
           ),
           el(
             'div',

@@ -62,7 +62,7 @@ function rustFiles(dir = SRC) {
  */
 function commandsIn(src) {
   const out = [];
-  const re = /#\[tauri::command(?:\(([^)]*)\))?\]\s*(?:pub\s+)?(async\s+)?fn\s+([a-z0-9_]+)/g;
+  const re = /#\[tauri::command(?:\(([^)]*)\))?\]\s*(?:pub(?:\([^)]*\))?\s+)?(async\s+)?fn\s+([a-z0-9_]+)/g;
   let m;
   while ((m = re.exec(src))) {
     out.push({ name: m[3], async: Boolean(m[2]) || /\basync\b/.test(m[1] ?? '') });
@@ -98,20 +98,21 @@ test('the gateway keeps its blocking work off the async workers too', () => {
   // pool is the right home, and it is the difference between "queues" and
   // "starves everything else".
   const lib = readFileSync(join(SRC, 'lib.rs'), 'utf8');
-  const start = lib.indexOf('async fn plugin_rpc');
-  assert.ok(start > 0, 'plugin_rpc should be an async fn');
-
-  const body = lib.slice(start, lib.indexOf('\n}\n', start));
-  assert.match(
-    body,
-    /spawn_blocking/,
-    'the service table does blocking I/O; it must not run on an async worker',
-  );
-  // And the permission gate must still be OUTSIDE the closure, so a denied call
-  // is rejected without ever reaching the blocking pool.
-  const gate = body.indexOf('is_allowed');
-  const spawn = body.indexOf('spawn_blocking');
-  assert.ok(gate > 0 && gate < spawn, 'the permission gate runs before the blocking hop');
+  const body = (name) => {
+    const start = lib.indexOf(`async fn ${name}`);
+    assert.ok(start > 0, `${name} should be an async fn`);
+    return lib.slice(start, lib.indexOf('\n}\n', start));
+  };
+  assert.match(body('run_service<'), /spawn_blocking\(move \|\|[\s\S]*work\(\)/,
+    'the shared runner must dispatch the service on the blocking pool');
+  for (const [gateway, route] of [['plugin_rpc(', 'route'], ['plugin_rpc_raw(', 'route_bytes']]) {
+    const source = body(gateway);
+    const dispatch = source.indexOf('run_service(');
+    const gate = source.indexOf('is_allowed');
+    assert.ok(gate > 0 && gate < dispatch, `${gateway} checks permission before dispatch`);
+    assert.match(source.slice(dispatch), new RegExp(`move \\|\\|[\\s\\S]*services::${route}\\(`),
+      `${gateway} runs the service inside the blocking closure`);
+  }
 });
 
 test('the scan, lookup and entry-read commands go through the blocking pool', () => {

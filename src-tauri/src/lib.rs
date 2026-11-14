@@ -1,11 +1,12 @@
 //! Toolbox host entry point.
 //!
-//! Everything a plugin can reach the native side with goes through FOUR
-//! entry points, and all four are table-driven:
+//! Plugin traffic uses the service gateways and scoped stream or binary sessions:
 //!
 //! ```text
 //!   plugin_rpc            uplink req -> res | err        (services::table)
 //!   plugin_rpc_raw        uplink req -> BYTES            (same table, raw answer)
+//!   plugin_binary_*       bounded byte buffers          (window and plugin scoped)
+//!   plugin_fs_*           picked files and bounded I/O  (window and plugin scoped)
 //!   plugin_stream_open*   downlink data|end|exit|err     (services::stream providers)
 //!   plugin_register       declares a plugin's permissions
 //! ```
@@ -14,6 +15,8 @@
 //! branching: it validates the envelope, checks the permission registry, and
 //! looks the service up. Adding a capability means adding a table entry.
 
+pub mod binary_ipc;
+pub mod file_ipc;
 pub mod forensics;
 pub mod gateway_stats;
 pub mod host;
@@ -51,7 +54,29 @@ async fn plugin_register(plugin_id: String, permissions: Vec<String>) -> Result<
 pub static KEEP_SESSIONS: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// The single request/response gateway.
+fn observe_rpc(window: &str, service: &str, action: &str) -> gateway_stats::Ticket {
+    ui_heartbeat::touch();
+    gateway_stats::enter(format!("{service}/{action}@{window}"))
+}
+
+async fn run_service<T: Send + 'static>(
+    ticket: std::sync::Arc<gateway_stats::Ticket>,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> tauri::Result<T> {
+    ticket.mark("queued");
+    let in_task = ticket.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        in_task.mark("running");
+        let out = work();
+        in_task.mark("returned");
+        out
+    })
+    .await;
+    drop(ticket);
+    result
+}
+
+/// The JSON request/response gateway.
 ///
 /// Returns `Ok(Envelope)` for every service-level outcome (a `res` or an
 /// `err` envelope), so the caller always has one shape to switch on. The
@@ -106,11 +131,7 @@ async fn plugin_rpc(
     // `svc/act@window` — the label is the one piece of attribution a plugin
     // cannot fake, and without it "oldest=proc/recv" does not say WHICH window
     // stopped answering.
-    let what = format!("{svc}/{act}@{}", window.label());
-    // From here to the end of the call, this counts as "in flight" — including
-    // the permission gate, which is the other place a call can park.
-    let in_flight = std::sync::Arc::new(gateway_stats::enter(what));
-    ui_heartbeat::touch();
+    let in_flight = std::sync::Arc::new(observe_rpc(window.label(), &svc, &act));
 
     // The authoritative permission gate. The JS `ctx` gate is a convenience
     // check; this one cannot be bypassed by reaching invoke() directly.
@@ -118,26 +139,12 @@ async fn plugin_rpc(
         return Ok(Envelope::err(Some(id), "denied", e));
     }
 
-    in_flight.mark("queued");
-    // Keep the ticket alive if the invoke is cancelled while native work runs.
-    let in_task = in_flight.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        in_task.mark("running");
-        let out = match services::route(&app, &plugin_id, &svc, &act, params) {
-            Ok(v) => Ok(Envelope::res(id, v)),
-            // The service classified it; the caller gets that code, not a
-            // synthesized `svc/act` string it cannot branch on.
-            Err(e) => Ok(Envelope::err(Some(id), e.code, e.msg)),
-        };
-        // Last act of the BLOCKING thread. If an entry stays `[returned]` for
-        // hours, the work finished and the future was never polled again —
-        // that is runtime-worker starvation, not a slow service, and it is the
-        // one explanation the old four numbers could not reach.
-        in_task.mark("returned");
-        out
+    run_service(in_flight, move || match services::route(&app, &plugin_id, &svc, &act, params) {
+        Ok(v) => Envelope::res(id, v),
+        Err(e) => Envelope::err(Some(id), e.code, e.msg),
     })
     .await
-    .map_err(|e| format!("rpc task failed: {e}"))?
+    .map_err(|e| format!("rpc task failed: {e}"))
 }
 
 /// The raw request/response gateway: one `req` envelope in, BYTES out.
@@ -160,6 +167,7 @@ async fn plugin_rpc(
 #[tauri::command]
 async fn plugin_rpc_raw(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     plugin_id: String,
     msg: Envelope,
 ) -> Result<tauri::ipc::Response, RpcRejection> {
@@ -180,6 +188,7 @@ async fn plugin_rpc_raw(
     let svc = msg.svc.clone().unwrap_or_default();
     let act = msg.act.clone().unwrap_or_default();
     let params = msg.p;
+    let in_flight = std::sync::Arc::new(observe_rpc(window.label(), &svc, &act));
 
     // The authoritative gate, identical to `plugin_rpc`'s: reaching the raw
     // gateway must not be a way to call a service the plugin may not call.
@@ -190,7 +199,7 @@ async fn plugin_rpc_raw(
         });
     }
 
-    tauri::async_runtime::spawn_blocking(move || {
+    run_service(in_flight, move || {
         services::route_bytes(&app, &plugin_id, &svc, &act, params)
     })
     .await
@@ -207,7 +216,7 @@ async fn plugin_rpc_raw(
 /// Mirrors the fields of an `err` envelope (`code` from the closed set, plus a
 /// message) so the JS side can build the same error type either way.
 #[derive(Debug, serde::Serialize)]
-struct RpcRejection {
+pub(crate) struct RpcRejection {
     code: &'static str,
     msg: String,
 }
@@ -469,6 +478,10 @@ async fn host_window_create(
 #[tauri::command]
 async fn plugin_reap_orphans(window: tauri::WebviewWindow, keep: Option<bool>) -> Result<usize, String> {
     require_main(&window)?;
+    // A rebuilt renderer cannot resume the previous page's byte handles.
+    window
+        .state::<binary_ipc::Transfers>()
+        .close_window(window.label());
     // `keep` is the UI-reload path: the frontend was rebuilt, not replaced, so
     // the sessions it was watching are still ITS sessions. Reaping them would
     // turn "reload the window" into "kill my terminals", which is exactly what
@@ -485,19 +498,9 @@ async fn plugin_reap_orphans(window: tauri::WebviewWindow, keep: Option<bool>) -
 
 /// Native file picker / save dialog / message box, on a plugin's behalf.
 ///
-/// **Why this is NOT a gateway action.** `plugin_rpc` is a *synchronous*
-/// command, so it runs on the main thread — and `blocking_pick_file()` there
-/// would deadlock: the dialog needs the main thread's message loop to pump
-/// while we sit on it waiting. The plugin's own commands are `async fn` for
-/// exactly this reason (they run on the runtime's thread pool).
-///
-/// So this is a raw command, like `plugin_stream_open`, and it gates itself
-/// with the same registry check the gateway would have used.
-///
-/// Nothing is granted to the plugin for free: the paths returned are the ones
-/// the USER picked in a dialog they could see and cancel. That is why there is
-/// no `ctx.fs` here — the user's action is the grant, and the plugin gets back
-/// only what was handed over.
+/// The picker runs on behalf of the plugin after checking `rpc:dialog`.
+/// SHA-256 opens the selected file on the blocking pool and returns metadata
+/// and the digest. The file contents remain on the native side.
 #[tauri::command]
 async fn plugin_dialog(
     app: tauri::AppHandle,
@@ -516,7 +519,7 @@ async fn plugin_dialog(
     };
 
     match action.as_str() {
-        "open" => {
+        "open" | "sha256" => {
             let multiple = params.get("multiple").and_then(|v| v.as_bool()).unwrap_or(false);
             let folder = params.get("folder").and_then(|v| v.as_bool()).unwrap_or(false);
 
@@ -535,9 +538,21 @@ async fn plugin_dialog(
                         .and_then(|v| v.as_array())
                         .map(|a| a.iter().filter_map(|e| e.as_str()).collect())
                         .unwrap_or_default();
-                    let exts: Vec<&str> = exts;
                     builder = builder.add_filter(name, &exts);
                 }
+            }
+
+            if action == "sha256" {
+                return tauri::async_runtime::spawn_blocking(move || {
+                    let Some(picked) = builder.blocking_pick_file() else {
+                        return Ok(Value::Null);
+                    };
+                    let path = picked.into_path().map_err(|e| e.to_string())?;
+                    let checksum = services::checksum::sha256(&path).map_err(|e| e.to_string())?;
+                    Ok(json!({ "path": path.to_string_lossy(), "size": checksum.size, "sha256": checksum.sha256 }))
+                })
+                .await
+                .map_err(|e| format!("file checksum task failed: {e}"))?;
             }
 
             // `blocking_*` is safe HERE and only here: this is an async command,
@@ -816,6 +831,13 @@ pub fn run() {
     console_exit::install();
 
     tauri::Builder::default()
+        .manage(binary_ipc::Transfers::default())
+        .manage(file_ipc::FileHandles::default())
+        .on_page_load(|webview, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Started {
+                webview.state::<file_ipc::FileHandles>().close_window(webview.label());
+            }
+        })
         .plugin(tauri_plugin_opener::init())
         // Registered for its RUST API only. The plugin's own JS commands are
         // deliberately left un-permissioned in the capability files: a plugin
@@ -847,6 +869,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             plugin_rpc,
             plugin_rpc_raw,
+            binary_ipc::plugin_binary_control,
+            binary_ipc::plugin_binary_write,
+            binary_ipc::plugin_binary_read,
+            file_ipc::plugin_fs_control,
+            file_ipc::plugin_fs_read,
+            file_ipc::plugin_fs_write,
             plugin_register,
             plugin_stream_open,
             plugin_stream_open_raw,
@@ -994,6 +1022,12 @@ pub fn run() {
         // The host can decide this without the frontend: ✕ = hide, and quitting
         // goes through the tray (or `app.exit`), which is the documented UX.
         .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                window.state::<file_ipc::FileHandles>().close_window(window.label());
+                window
+                    .state::<binary_ipc::Transfers>()
+                    .close_window(window.label());
+            }
             if window.label() != "main" {
                 return;
             }
@@ -1035,7 +1069,7 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_app, event| match event {
+        .run(|app, event| match event {
             // The watchdog rebuilds the main webview by destroying it, and
             // destroying the LAST window asks the app to exit — which would
             // drain every session and quit, the opposite of "rebuild the UI".
@@ -1051,6 +1085,7 @@ pub fn run() {
             // PTY sessions alike. Previously only sidecars were stopped, so PTY
             // children were orphaned.
             tauri::RunEvent::Exit => {
+                app.state::<file_ipc::FileHandles>().close_all();
                 let n = services::session::kill_all();
                 if n > 0 {
                     eprintln!("[host] stopped {n} live session(s) on exit");

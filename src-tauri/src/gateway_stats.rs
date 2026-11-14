@@ -6,13 +6,13 @@
 //! be queued behind a blocked task, or a service may be stuck. So the gateway
 //! keeps two numbers that separate those cases:
 //!
-//!   `inFlight` — tracked `plugin_rpc` calls currently inside the JSON gateway.
+//!   `inFlight` — tracked JSON RPC, raw RPC, and binary session calls.
 //!   `oldest`   — how long the oldest one has been running, and what it is.
 //!   Hours-old `proc/recv` is a different bug from hours-old `host/info`.
 //!
 //! Each live call owns a ticket. Count, oldest call and phase come from the
 //! same registry, so overlapping calls cannot leave a completed request behind.
-//! Raw RPC, stream commands and the PTY plugin have separate entry points and
+//! Stream commands and the PTY plugin have separate entry points and
 //! do not contribute to these numbers. Zero alone does not diagnose an IPC fault.
 
 use std::collections::BTreeMap;

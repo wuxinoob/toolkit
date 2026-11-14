@@ -20,7 +20,7 @@ import { Code, ALL_CODES } from './codes.js';
  *   - `Envelope.PROTOCOL_VERSION` — the envelope shape on the wire.
  *   - `HOST_API` — the JavaScript surface a plugin codes against.
  *
- * Bump this whenever a plugin-visible shape changes incompatibly. A plugin
+ * Bump this whenever the plugin-visible surface changes. A plugin
  * declares the version it was built for in its manifest (`"api": 3`), and the
  * host records a mismatch on the plugin row so the boot trace says why a plugin
  * misbehaves instead of leaving a cryptic runtime error.
@@ -48,8 +48,14 @@ import { Code, ALL_CODES } from './codes.js';
  *       answer is binary (same `rpc:<svc>` permission). A plugin built for 4
  *       that reads `shot.png` gets `undefined` — silently, because a
  *       `Uint8Array` has no such property. That is why this is a bump.
+ *   6 — `ctx.binary.open()` / `bridge.binary.open()` expose bounded, in-memory
+ *       byte transfers. The clipboard gains format snapshots and PNG reads,
+ *       and the native file picker can compute SHA-256. Existing calls retain
+ *       their signatures.
+ *   7 — `ctx.fs` / `bridge.fs` manage native file references, bounded reads,
+ *       and staged writes with explicit commit.
  */
-export const HOST_API = 5;
+export const HOST_API = 7;
 
 export function protocolContract() {
   return Object.freeze({

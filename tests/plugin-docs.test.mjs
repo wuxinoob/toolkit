@@ -298,6 +298,8 @@ test('the plugin manual documents exactly the permissions the code can gate', ()
   );
   const expected = new Set([...serviceTable().keys()].map((s) => `rpc:${s}`));
   expected.add('rpc:dialog'); // a raw command, deliberately not a gateway service
+  expected.add('rpc:binary'); // window-scoped binary transfer commands
+  expected.add('rpc:fs'); // native picker and file reference commands
   expected.add('win:manage'); // window control, likewise outside the envelope
 
   const gated = jsGatedPermissions();
@@ -436,7 +438,7 @@ test('bridge.md is the single list, and it matches the code exactly', () => {
   // from the code too — a "25 capabilities on both sides" that silently became
   // 26 is exactly the class of drift this file exists to stop.
   const shared = [...ctx].filter((k) => bridge.has(k)).length;
-  assert.equal(shared, 28, `the surfaces now share ${shared} capabilities, not 28`);
+  assert.equal(shared, 30, `the surfaces now share ${shared} capabilities, not 30`);
   assert.match(
     read('docs', 'plugin-dev', 'bridge.md'),
     new RegExp(`\\*\\*${shared} 个能力两边都有\\*\\*`),

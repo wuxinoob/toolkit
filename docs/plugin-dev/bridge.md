@@ -14,7 +14,7 @@
 
 ## 一分钟结论
 
-**28 个能力两边都有**，差异只有 8 个（4 + 4）：
+**30 个能力两边都有**，差异只有 8 个（4 + 4）：
 
 | | 只有主窗口 `ctx` | 只有插件窗口 `bridge` |
 |---|---|---|
@@ -45,6 +45,8 @@
 | `storage` | ✅ | ✅ | 同一份 per-plugin `data.json` |
 | `request`（主窗口叫 `rpc`） | ✅ | ✅ | 同一个网关；名字不同，语义与权限规则完全相同 |
 | `bytes`（主窗口同样叫 bytes） | ✅ | ✅ | 同一个网关的**字节**答复（截图/位图/文件块）；权限仍是 `rpc:<svc>` |
+| `binary` | ✅ | ✅ | 有界的内存字节会话，`open` / `write` / `read` / `close`，需要 `rpc:binary` |
+| `fs` | ✅ | ✅ | 用户选定文件的区间读取、分块保存与句柄释放，需要 `rpc:fs` |
 | `subscribe` / `once` / `publish` | ✅ | ✅ | 顶层快捷方式，默认 `event-bus`；两边都是异步形状 |
 | `events` | ✅ | ✅ | 窗口内 `in-process`，零 IPC |
 | `bus` | ✅ | ✅ | 跨窗口广播 |
@@ -53,8 +55,8 @@
 | `stream` / `streamRaw` / `uplink` / `sidecar` / `pty` | ✅ | ✅ | 数据面全套都在 |
 | `closeStream` | ✅ | ✅ | 关自己开的流，不要权限 |
 | `sessions` / `schemes` / `schema` / `paths` | ✅ | ✅ | 自省与协商面：活会话表、方案表、能力词表、常用目录 |
-| `clipboard` / `screen` | ✅ | ✅ | 读剪贴板 / 枚举显示器与截屏 |
-| `files` | ✅ | ✅ | 原生选择器 / 保存框 / 消息框 |
+| `clipboard` / `screen` | ✅ | ✅ | 剪贴板文本、图片和格式监听 / 枚举显示器与截屏 |
+| `files` | ✅ | ✅ | 原生选择器 / 保存框 / 消息框 / 选定文件 SHA-256 |
 | `cleanup` | ✅ | ✅ | 登记退场时要跑的清理 |
 | `close` / `drag` | ❌ | ✅ | 关自己 / 拖自己 —— 只有窗口有「自己」 |
 | `dispose` | ❌ | ✅ | 释放本窗口开的一切（`beforeunload` 里自动调用） |

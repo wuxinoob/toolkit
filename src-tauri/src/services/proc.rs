@@ -47,6 +47,7 @@ const MAX_LINE_BYTES: usize = 1 << 20;
 /// caused it. Kept below `MAX_LINE_BYTES` * 4 so a handful of maximal lines
 /// still fit; the drop-oldest policy below never has to discard the only line.
 const MAX_QUEUED_BYTES: usize = 4 << 20;
+const MAX_QUEUED_LINES: usize = 4096;
 const RECV_TIMEOUT_CAP_MS: u64 = 30_000;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -63,6 +64,7 @@ struct ProcState {
     /// Lines discarded to stay under the cap, reported to the consumer.
     dropped: u64,
     exited: Option<i32>,
+    read_error: Option<String>,
     /// Why WE stopped it, when the exit came from our own kill.
     ///
     /// `None` means the process ended on its own. The distinction matters to
@@ -168,7 +170,7 @@ fn enqueue_line(shared: &ProcShared, line: String) {
     let mut st = shared.state.lock().unwrap_or_else(|e| e.into_inner());
     st.lines.push_back(line);
     st.queued_bytes += len;
-    while st.queued_bytes > MAX_QUEUED_BYTES {
+    while st.queued_bytes > MAX_QUEUED_BYTES || st.lines.len() > MAX_QUEUED_LINES {
         match st.lines.pop_front() {
             Some(old) => {
                 st.queued_bytes = st.queued_bytes.saturating_sub(old.len());
@@ -184,21 +186,25 @@ fn enqueue_line(shared: &ProcShared, line: String) {
 /// child so the exit code is exact, then publish `exited` and wake recv()ers.
 fn reader_thread(stdout: std::process::ChildStdout, child: Arc<Mutex<Child>>, shared: Arc<ProcShared>) {
     let mut r = std::io::BufReader::new(stdout);
-    loop {
+    let read_error = loop {
         match read_line_bounded(&mut r, MAX_LINE_BYTES) {
             Ok(Some(line)) => enqueue_line(&shared, line),
-            Ok(None) => break, // EOF: stdout closed
-            Err(_) => break,   // oversized line or read error: recv reports exit
+            Ok(None) => break None,
+            Err(error) => break Some(error.to_string()),
         }
-    }
-    let code = child
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .wait()
-        .ok()
-        .and_then(|s| s.code())
-        .unwrap_or(-1);
+    };
+    // A producer can still be writing when its line is rejected. Close the
+    // reader and stop it before waiting, otherwise the pipe can keep it alive.
+    drop(r);
+    let code = {
+        let mut child = child.lock().unwrap_or_else(|e| e.into_inner());
+        if read_error.is_some() {
+            let _ = child.kill();
+        }
+        child.wait().ok().and_then(|status| status.code()).unwrap_or(-1)
+    };
     let mut st = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+    st.read_error = read_error;
     st.exited = Some(code);
     shared.cv.notify_all();
 }
@@ -333,6 +339,9 @@ fn recv_from(shared: &Arc<ProcShared>, timeout: Duration) -> Value {
         if let Some(code) = st.exited {
             let killed = st.killed;
             let mut out = json!({ "exited": true, "code": code });
+            if let Some(error) = &st.read_error {
+                out["readError"] = json!(error);
+            }
             if let Some(why) = killed {
                 out["killed"] = json!(why);
             }
@@ -531,7 +540,18 @@ fn action_recv(plugin_id: &str, params: &Value) -> Result<Value, ServiceError> {
         }
         return Err(ServiceError::not_found("sidecar not running — spawn first"));
     };
-    Ok(recv_from(&h.shared, Duration::from_millis(ms)))
+    let reply = recv_from(&h.shared, Duration::from_millis(ms));
+    if let Some(error) = reply["readError"].as_str() {
+        let mut map = registry().lock().unwrap_or_else(|e| e.into_inner());
+        // Retire only the reader that failed. A concurrent stop and restart
+        // can already have installed another process for this key.
+        if map.get(&pkey).is_some_and(|current| Arc::ptr_eq(&current.shared, &h.shared)) {
+            map.remove(&pkey);
+            session::close(plugin_id, &pkey.key);
+        }
+        return Err(ServiceError::io(format!("sidecar stdout: {error}")));
+    }
+    Ok(reply)
 }
 
 /// `proc` service: poll-mode sidecar pipes (request/response driven by the

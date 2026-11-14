@@ -67,7 +67,23 @@ test('ctx.files: every dialog call is gated by rpc:dialog', async () => {
   await assert.rejects(bare.files.pick(), /missing permission/);
   await assert.rejects(bare.files.save(), /missing permission/);
   await assert.rejects(bare.files.message('test'), /missing permission/);
+  await assert.rejects(bare.files.sha256(), /missing permission/);
   assert.equal(nativeCalls, before);
+});
+
+test('ctx.files.sha256 returns the native digest and handles a cancelled selection', async (t) => {
+  const result = { path: 'D:/image.iso', size: 20 * 1024 * 1024, sha256: 'ab'.repeat(32) };
+  let picks = 0;
+  t.mock.method(window.__TAURI_INTERNALS__, 'invoke', async (cmd, args) => {
+    assert.equal(cmd, 'plugin_dialog');
+    assert.equal(args.pluginId, 'test.files');
+    assert.equal(args.action, 'sha256');
+    assert.equal(args.params.title, 'Compute checksum');
+    assert.equal(args.params.path, undefined, 'the file is selected by the native dialog');
+    return ++picks === 1 ? result : null;
+  });
+  assert.deepEqual(await ctx.files.sha256({ title: 'Compute checksum' }), result);
+  assert.equal(await ctx.files.sha256({ title: 'Compute checksum' }), null);
 });
 
 test('ctx.onDrop: a plugin without the permission can still subscribe', () => {

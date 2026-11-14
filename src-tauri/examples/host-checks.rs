@@ -1,4 +1,4 @@
-//! Headless checks for the host's pure logic.
+//! Headless checks for native protocol and service behavior.
 //!
 //! Why this is an EXAMPLE and not `#[cfg(test)]` unit tests: on Windows,
 //! tauri-build embeds the app manifest into **bin** targets only, so this
@@ -38,8 +38,250 @@ fn check(name: &str, ok: bool, detail: &str) {
     }
 }
 
+fn binary_checks() {
+    use toolkit_lib::binary_ipc::{decode_fallback, TransferKey, Transfers, MAX_CHUNK_BYTES, MAX_TRANSFER_BYTES};
+
+    let store = Transfers::default();
+    let key = TransferKey { window: "main".into(), plugin: "test.bytes".into(), id: "transfer".into() };
+    let payload: Vec<u8> = (0..2 * 1024 * 1024 + 17).map(|i| (i % 251) as u8).collect();
+    store.open(key.clone(), payload.len()).unwrap();
+    for (index, chunk) in payload.chunks(MAX_CHUNK_BYTES).enumerate() {
+        let offset = index * MAX_CHUNK_BYTES;
+        assert_eq!(store.write(&key, offset, chunk).unwrap(), offset + chunk.len());
+    }
+    let mut read = Vec::new();
+    while read.len() < payload.len() {
+        let chunk = store.read(&key, read.len(), MAX_CHUNK_BYTES).unwrap();
+        assert!(!chunk.is_empty());
+        read.extend(chunk);
+    }
+    check("binary-roundtrip", read == payload, "2 MiB and a partial final chunk arrive intact");
+    check(
+        "binary-offset-and-replay",
+        store.open(key.clone(), payload.len()).is_ok()
+            && store.write(&key, 0, &payload[..MAX_CHUNK_BYTES]).ok() == Some(payload.len())
+            && store.write(&key, 0, &[255]).unwrap_err().code == "conflict"
+            && store.read(&key, payload.len(), MAX_CHUNK_BYTES).unwrap().is_empty(),
+        "reopening preserves bytes and replay does not append or overwrite",
+    );
+    let other_window = TransferKey { window: "plugin-other".into(), ..key.clone() };
+    let other_plugin = TransferKey { plugin: "test.other".into(), ..key.clone() };
+    store.open(other_window.clone(), 10).unwrap();
+    check(
+        "binary-owner-and-close",
+        store.write(&other_window, 2, &[1]).unwrap_err().code == "conflict"
+            && store.read(&other_plugin, 0, 1).unwrap_err().code == "not_found"
+            && store.read(&other_window, 0, MAX_CHUNK_BYTES + 1).unwrap_err().code == "bad_params"
+            && store.write(&other_window, 9, &[1, 2]).unwrap_err().code == "bad_params"
+            && !store.close(&other_plugin),
+        "owner, offset and size checks prevent cross-talk and out-of-range access",
+    );
+    store.close_window("main");
+    check(
+        "binary-window-cleanup",
+        store.read(&key, 0, 1).unwrap_err().code == "not_found"
+            && store.read(&other_window, 0, 1).is_ok()
+            && store.close(&other_window) && !store.close(&other_window),
+        "a destroyed window releases its own buffers and close is idempotent",
+    );
+    for i in 0..4 {
+        store.open(TransferKey { id: i.to_string(), ..key.clone() }, MAX_TRANSFER_BYTES).unwrap();
+    }
+    check(
+        "binary-reservation-budget",
+        store.open(key.clone(), 1).unwrap_err().code == "conflict"
+            && store.open(key.clone(), MAX_TRANSFER_BYTES + 1).unwrap_err().code == "bad_params",
+        "global budget accounts for declared size before data arrives",
+    );
+    store.close_window("main");
+    check("binary-budget-released", store.open(key, MAX_TRANSFER_BYTES).is_ok(), "cleanup releases reserved capacity");
+    check(
+        "binary-fallback-validation",
+        decode_fallback(&json!([0, 128, 255])).unwrap() == [0, 128, 255]
+            && decode_fallback(&json!([256])).is_err()
+            && decode_fallback(&json!(["7"])).is_err()
+            && decode_fallback(&json!([7.5])).is_err()
+            && decode_fallback(&json!(vec![0; MAX_CHUNK_BYTES + 1])).is_err(),
+        "postMessage payloads accept only bounded integer byte arrays",
+    );
+    check("schema-binary-transfer", schema()["binaryTransfer"]["maxChunkBytes"] == MAX_CHUNK_BYTES,
+        "schema publishes the native block limit");
+}
+
+#[cfg(windows)]
+fn sidecar_output_check() {
+    use std::{fs, path::PathBuf, time::{Duration, Instant}};
+    use toolkit_lib::services::proc::dispatch_at;
+
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("fixture");
+    fs::create_dir(&dir).unwrap();
+    fs::write(dir.join("plugin.json"), r#"{"id":"test.stdout","entry":"main.js"}"#).unwrap();
+    fs::write(dir.join("main.js"), "export default {};").unwrap();
+    let cmd = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/cmd.exe");
+    fs::copy(cmd, dir.join("cmd.exe")).unwrap();
+    fs::write(dir.join("lines.txt"), "\r\n".repeat(20_000)).unwrap();
+    fs::write(dir.join("oversize.txt"), vec![b'x'; (1 << 20) + 1]).unwrap();
+    let call = |action, params| dispatch_at(root.path(), "test.stdout", action, params);
+    call("spawn", json!({"key":"test", "exe":"cmd.exe", "args":["/d", "/q", "/c",
+        "type lines.txt & echo ready>ready.txt & type oversize.txt & pause >nul"]})).unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !dir.join("ready.txt").exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let first = call("recv", json!({"key":"test", "timeoutMs":100}));
+    let bounded = first.as_ref().is_ok_and(|reply| reply["dropped"].as_u64().unwrap_or(0) > 0);
+    let mut terminal = first.err();
+    while terminal.is_none() && Instant::now() < deadline {
+        terminal = call("recv", json!({"key":"test", "timeoutMs":100})).err();
+    }
+    let retired = session::list(Some("test.stdout")).is_empty();
+    let _ = call("kill_all", json!({}));
+    check("sidecar-empty-lines-are-bounded", bounded, "a burst of blank lines hits the queue limit");
+    check(
+        "sidecar-oversize-is-terminal",
+        terminal.is_some_and(|error| error.code == "io" && error.msg.contains("line too long")) && retired,
+        "oversized stdout reports an error and reaps the failed process",
+    );
+}
+
+fn clipboard_and_checksum_checks() {
+    use std::io::Write;
+    use toolkit_lib::services::{checksum, clipboard};
+
+    let rgba = [255, 0, 0, 255, 0, 255, 0, 128];
+    let input = arboard::ImageData { width: 2, height: 1, bytes: rgba.as_slice().into() };
+    let png = clipboard::encode_image(&input).unwrap();
+    let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png).unwrap().to_rgba8();
+    check("clipboard-image-png", decoded.dimensions() == (2, 1) && decoded.as_raw() == &rgba,
+        "PNG bytes preserve color and alpha");
+
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    let mut block = vec![0; 1024 * 1024];
+    for byte in 0..17 {
+        block.fill(byte);
+        file.write_all(&block).unwrap();
+    }
+    file.write_all(&[42, 128, 255]).unwrap();
+    file.flush().unwrap();
+    let checksum = checksum::sha256(file.path()).unwrap();
+    check(
+        "checksum-over-memory-session-limit",
+        checksum.size == 17 * 1024 * 1024 + 3
+            && checksum.sha256 == "de7dd9d102dd7ce7b9e52ea7a6c840d89287b0699315e65b56ef98d808936bbb",
+        "native streaming SHA-256 includes the partial final block of a 17 MiB file",
+    );
+}
+
+fn file_checks() {
+    use std::{fs, io::{Seek, SeekFrom, Write}};
+    use toolkit_lib::{binary_ipc::{TransferKey, MAX_CHUNK_BYTES}, file_ipc::FileHandles};
+
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("result.bin");
+    let handles = FileHandles::default();
+    let key = |window: &str, id: &str| TransferKey { window: window.into(), plugin: "test.files".into(), id: id.into() };
+    let output = key("main", "writer");
+    let input = key("main", "reader");
+    let source = root.path().join("source.bin");
+    let tail = 17 * 1024 * 1024 + 9;
+    {
+        let mut file = fs::File::create(&source).unwrap();
+        file.write_all(b"begin").unwrap();
+        file.seek(SeekFrom::Start(tail)).unwrap();
+        file.write_all(b"tail").unwrap();
+    }
+    handles.reserve(input.clone()).unwrap().reader(&source).unwrap();
+    check("fs-large-random-read",
+        handles.read_at(&input, tail, 8).unwrap() == b"tail"
+            && handles.read_at(&input, 0, 5).unwrap() == b"begin"
+            && handles.read_at(&input, tail + 4, 8).unwrap().is_empty()
+            && handles.read_at(&input, 0, MAX_CHUNK_BYTES + 1).is_err()
+            && handles.read_at(&key("plugin-other", "reader"), 0, 8).unwrap_err().code == "not_found",
+        "bounded random reads and EOF over a file larger than 16 MiB, scoped to its window");
+
+    handles.reserve(output.clone()).unwrap().writer(&target).unwrap();
+    let mut offset = 0;
+    loop {
+        let chunk = handles.read_at(&input, offset, MAX_CHUNK_BYTES).unwrap();
+        if chunk.is_empty() {
+            break;
+        }
+        offset = handles.write(&output, offset, &chunk).unwrap();
+    }
+    handles.commit(&output).unwrap();
+    check(
+        "fs-large-copy",
+        offset == tail + 4
+            && toolkit_lib::services::checksum::sha256(&source).unwrap().sha256
+                == toolkit_lib::services::checksum::sha256(&target).unwrap().sha256,
+        "sequential reads and writes copy a file larger than 16 MiB without a byte session",
+    );
+    handles.close(&output);
+    assert!(handles.close(&input));
+    assert!(!handles.close(&input));
+
+    fs::write(&target, b"original").unwrap();
+    handles.reserve(output.clone()).unwrap().writer(&target).unwrap();
+    handles.write(&output, 0, b"discard").unwrap();
+    handles.close(&output);
+    check("fs-close-discards-staging", fs::read(&target).unwrap() == b"original"
+        && fs::read_dir(root.path()).unwrap().count() == 2, "closing leaves the original and removes the temporary file");
+
+    handles.reserve(output.clone()).unwrap().writer(&target).unwrap();
+    handles.write(&output, 0, b"edited").unwrap();
+    check("fs-write-replay",
+        handles.write(&output, 0, b"edited").unwrap() == 6
+            && handles.write(&output, 0, b"bad").unwrap_err().code == "conflict"
+            && fs::read(&target).unwrap() == b"original", "replay preserves offset and writes stay staged");
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let held = fs::OpenOptions::new().read(true).share_mode(1).open(&target).unwrap();
+        check("fs-blocked-replacement", handles.commit(&output).unwrap_err().code == "io"
+            && fs::read(&target).unwrap() == b"original", "Windows file sharing failure preserves target");
+        drop(held);
+    }
+    handles.commit(&output).unwrap();
+    handles.commit(&output).unwrap();
+    check("fs-commit-retry", fs::read(&target).unwrap() == b"edited", "commit can be retried and acknowledged again");
+    handles.close(&output);
+
+    let new = root.path().join("new.bin");
+    handles.reserve(output.clone()).unwrap().writer(&new).unwrap();
+    handles.write(&output, 0, b"staged").unwrap();
+    fs::write(&new, b"external").unwrap();
+    check("fs-target-conflict", handles.commit(&output).unwrap_err().code == "conflict"
+        && fs::read(&new).unwrap() == b"external", "a file created after selection is not overwritten");
+    handles.close(&output);
+
+    let pending = handles.reserve(input.clone()).unwrap();
+    handles.close(&input);
+    handles.reserve(input.clone()).unwrap().reader(&source).unwrap();
+    check("fs-late-selection", pending.reader(&source).unwrap_err().code == "not_found"
+        && handles.read_at(&input, tail, 4).unwrap() == b"tail", "a closed reservation cannot publish or remove a later reference");
+    handles.close(&input);
+
+    let max = schema()["fileAccess"]["maxHandles"].as_u64().unwrap();
+    let reservations: Vec<_> = (0..max).map(|i| {
+        let key = key("main", &format!("pending-{i}"));
+        let pending = handles.reserve(key.clone()).unwrap();
+        handles.close(&key);
+        pending
+    }).collect();
+    check("fs-handle-budget", handles.reserve(input.clone()).is_err(), "cancelled but pending dialogs still count against the budget");
+    drop(reservations);
+    check("fs-budget-released", handles.reserve(input).is_ok(), "completed dialog cleanup releases the budget");
+}
+
 fn main() {
     println!("--- host-checks ---");
+    binary_checks();
+    clipboard_and_checksum_checks();
+    file_checks();
+    #[cfg(windows)]
+    sidecar_output_check();
 
     // ---- protocol: envelope rules ----
     check(
@@ -144,7 +386,7 @@ fn main() {
     );
     check(
         "schema-publishes-byte-actions",
-        sch["binaryActions"] == json!({ "screen": ["capture"] })
+        sch["binaryActions"] == json!({ "screen": ["capture"], "clipboard": ["readImage"] })
             && !sch["services"]["screen"]
                 .as_array()
                 .map(|a| a.contains(&json!("capture")))

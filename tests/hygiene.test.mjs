@@ -168,7 +168,7 @@ test('INTERFACES.md counts the native commands correctly', () => {
   for (const f of rustSources()) {
     const text = readFileSync(f, 'utf8');
     commands += (text.match(/#\[tauri::command\]/g) ?? []).length;
-    for (const m of text.matchAll(/#\[tauri::command\]\s*\n\s*(?:pub\s+)?async\s+fn\s+(\w+)/g)) {
+    for (const m of text.matchAll(/#\[tauri::command\]\s*\n\s*(?:pub(?:\([^)]*\))?\s+)?async\s+fn\s+(\w+)/g)) {
       names.push(m[1]);
     }
   }

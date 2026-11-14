@@ -232,6 +232,8 @@ what they need and the hub resolves the scheme:
 ```js
 ctx.rpc(svc, act, params, { timeoutMs })  // rpc
 ctx.bytes(svc, act, params, { timeoutMs })// rpc-raw — the same call, answered with bytes
+ctx.binary.open(size, { timeoutMs })      // bounded byte transfer; see BINARY-IPC.md
+ctx.fs.open / createWriter                // scoped, file-backed byte access
 ctx.storage.get / set / remove / keys     // rpc
 ctx.subscribe / once / publish            // event-bus by default
 ctx.events.on / once / emit               // in-process
@@ -246,8 +248,10 @@ ctx.schemes()                             // the scheme table (local, no IPC)
 ctx.schema()                              // what this host supports
 ctx.onHotkey(action, fn)                  // a declared global hotkey
 ctx.protocol                              // the envelope constructors + constants
-ctx.files.pick / save / message           // native dialogs (raw command, gated)
-ctx.clipboard.read / write / watch        // rpc + channel-json (watch is a stream)
+ctx.files.pick / save / message / sha256  // native dialogs and streaming file hash
+ctx.clipboard.read / write / watch        // text via rpc + channel-json
+ctx.clipboard.formats / watchFormats     // Windows format snapshots and revision
+ctx.clipboard.readImage                  // rpc-raw (PNG bytes)
 ctx.screen.monitors                     // rpc (metadata)
 ctx.screen.capture                       // rpc-raw (PNG bytes)
 ctx.ui.el / render / notify / notifyOS    // the component factory and toasts
@@ -290,7 +294,7 @@ They move independently, so they are tracked separately. A plugin declares the
 host API it was built for in its manifest:
 
 ```jsonc
-{ "id": "probe.demo", "version": "0.1.0", "api": 5, … }
+{ "id": "probe.demo", "version": "0.1.0", "api": 7, … }
 ```
 
 If the declaration does not match, the host records it on the plugin row and the
@@ -316,7 +320,7 @@ line: `URL.createObjectURL(new Blob([png], { type: 'image/png' }))`. Built-in pl
 why only external examples declare `api`.
 
 A secondary window gets **almost** the same surface through `bridge`
-(`src/host/pluginwin-host.js`): 28 capabilities on both sides, and exactly 8
+(`src/host/pluginwin-host.js`): 30 capabilities on both sides, and exactly 8
 one-sided — `ui` / `windows` / `registerView` / `focusView` exist only
 on `ctx`, while `label` / `close` / `drag` / `dispose` exist only on `bridge`.
 The differences are deliberate except for `ui.notifyOS`, which is collateral.

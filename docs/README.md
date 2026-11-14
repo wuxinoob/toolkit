@@ -6,6 +6,7 @@
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 模块边界、资源生命周期、当前重构和后续优先级 |
 | [PROTOCOL.md](PROTOCOL.md) | 信封、方案、调用与流的契约 |
+| [BINARY-IPC.md](BINARY-IPC.md) | 内存字节传输、分块、回退与生命周期 |
 | [INTERFACES.md](INTERFACES.md) | 原生命令、服务、权限及结构性例外 |
 | [UI.md](UI.md) | 外壳样式、插件 UI 和组件规则 |
 | [plugin-dev](plugin-dev/README.md) | 插件作者手册；维护者看其中的 MAINTENANCE |

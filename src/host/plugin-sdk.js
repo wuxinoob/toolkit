@@ -1,6 +1,10 @@
 import { invoke } from '@tauri-apps/api/core';
 import { hub } from '../protocol/hub.js';
 import { protocolContract } from '../protocol/contract.js';
+import { Code } from '../protocol/codes.js';
+import { ProtocolError } from '../protocol/errors.js';
+import { openBinaryTransfer } from '../protocol/transports/binaryTransfer.js';
+import { fileAccess } from './file-access.js';
 
 /** Shared capabilities; window UI, view routing and window ownership stay out. */
 export function createPluginSdk(id, manifest, disposer) {
@@ -45,6 +49,40 @@ export function createPluginSdk(id, manifest, disposer) {
   const stream = (scheme, provider, ch, handlers) =>
     open('stream', () => hub.stream(id, scheme, { provider, ch, ...handlers }));
 
+  const pickFile = (action, options) => gate('dialog', () => invoke('plugin_dialog', {
+    pluginId: id, action, params: {
+      title: options.title ?? null, multiple: !!options.multiple, folder: !!options.folder,
+      directory: options.directory ?? null, filters: options.filters ?? null,
+    },
+  }));
+
+  let binaryClosers;
+  const openBinary = (size, opts) => gate('binary', async () => {
+    if (disposer.closed) throw new ProtocolError(Code.NOT_FOUND, 'plugin scope is closed');
+    if (!binaryClosers) {
+      binaryClosers = new Set();
+      disposer.track(() => Promise.all([...binaryClosers].map((close) => close())));
+    }
+    const pending = openBinaryTransfer(id, size, opts);
+    const close = () => pending.then((transfer) => transfer.close(), () => false).then((result) => {
+      binaryClosers.delete(close);
+      return result;
+    });
+    binaryClosers.add(close);
+    const transfer = await pending.catch((error) => {
+      binaryClosers.delete(close);
+      throw error;
+    });
+    if (disposer.closed) {
+      await close();
+      throw new ProtocolError(Code.NOT_FOUND, 'plugin scope closed during binary open');
+    }
+    return Object.freeze({ ...transfer, close });
+  });
+
+  let openFile;
+  const selectFile = (write, options) => gate('fs', () => (openFile ??= fileAccess(id, disposer))(write, options));
+
   return {
     manifest,
     protocol: protocolContract(),
@@ -55,6 +93,11 @@ export function createPluginSdk(id, manifest, disposer) {
     },
     request,
     bytes,
+    binary: { open: openBinary },
+    fs: {
+      open: (options) => selectFile(false, options),
+      createWriter: (options) => selectFile(true, options),
+    },
     storage: {
       get: (key) => request('storage', 'get', { key }),
       set: (key, value) => request('storage', 'set', { key, value }),
@@ -65,6 +108,11 @@ export function createPluginSdk(id, manifest, disposer) {
       read: () => request('clipboard', 'read', {}),
       write: (text) => request('clipboard', 'write', { text }),
       watch: (ch, handlers = {}) => stream('channel-json', 'clipboard', ch, handlers),
+      formats: () => request('clipboard', 'formats', {}),
+      readImage: (params = {}, opts = {}) => bytes('clipboard', 'readImage', params, opts),
+      watchFormats: (ch, handlers = {}) => stream('channel-json', 'clipboard', ch, {
+        ...handlers, params: { ...handlers.params, mode: 'formats' },
+      }),
     },
     screen: {
       monitors: () => request('screen', 'monitors', {}),
@@ -87,12 +135,8 @@ export function createPluginSdk(id, manifest, disposer) {
       if (!env.svc || env.svc === id) fn(env);
     }),
     files: {
-      pick: (options = {}) => gate('dialog', () => invoke('plugin_dialog', {
-        pluginId: id, action: 'open', params: {
-          title: options.title ?? null, multiple: !!options.multiple, folder: !!options.folder,
-          directory: options.directory ?? null, filters: options.filters ?? null,
-        },
-      })).then((result) => result?.paths ?? []),
+      pick: (options = {}) => pickFile('open', options).then((result) => result?.paths ?? []),
+      sha256: (options = {}) => pickFile('sha256', options),
       save: (options = {}) => gate('dialog', () => invoke('plugin_dialog', {
         pluginId: id, action: 'save', params: {
           title: options.title ?? null, defaultPath: options.defaultPath ?? null,

@@ -33,17 +33,43 @@ import * as Envelope from '../envelope.js';
 import { toBytes } from '../codec.js';
 import { descriptor } from '../registry.js';
 import { ProtocolError } from '../errors.js';
-import { DEFAULT_TIMEOUT_MS } from './rpc.js';
+import { DEFAULT_TIMEOUT_MS, withTimeout } from './rpc.js';
 
-function withTimeout(promise, ms, what) {
-  if (!ms || ms <= 0) return promise;
-  let timer = null;
-  return Promise.race([
-    promise.finally(() => clearTimeout(timer)),
-    new Promise((_, reject) => {
-      timer = setTimeout(() => reject(ProtocolError.timeout(what, ms)), ms);
-    }),
-  ]);
+export async function invokeBinary(command, args, { what = command, timeoutMs = DEFAULT_TIMEOUT_MS, headers } = {}) {
+  try {
+    return await withTimeout(invoke(command, args, headers ? { headers } : undefined), timeoutMs, what);
+  } catch (e) {
+    if (e instanceof ProtocolError) throw e;
+    if (e && typeof e === 'object' && typeof e.code === 'string') {
+      throw new ProtocolError(e.code, e.msg ?? e.code);
+    }
+    throw ProtocolError.transport(`${what} failed: ${e?.message ?? e}`, e);
+  }
+}
+
+export function writeChunk(command, pluginId, id, offset, bytes) {
+  return invokeBinary(command, bytes, {
+    timeoutMs: 0,
+    headers: { 'x-toolkit-plugin': pluginId, 'x-toolkit-transfer': id, 'x-toolkit-offset': String(offset) },
+  });
+}
+
+const MAX_FALLBACK_REPLY_BYTES = 8 * 1024 * 1024;
+
+export function binaryReply(raw, what, maxBytes = Infinity) {
+  if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) {
+    if (raw.byteLength <= maxBytes) return toBytes(raw);
+  } else if (Array.isArray(raw) && raw.length <= Math.min(maxBytes, MAX_FALLBACK_REPLY_BYTES)) {
+    // Tauri may deliver a raw response via a number array on postMessage.
+    // Check each element before Uint8Array can silently coerce it.
+    for (const value of raw) {
+      if (!Number.isInteger(value) || value < 0 || value > 255) {
+        throw ProtocolError.protocol(`${what}: invalid byte in IPC fallback array`);
+      }
+    }
+    return Uint8Array.from(raw);
+  }
+  throw ProtocolError.protocol(`${what}: expected binary from the raw gateway within the reply limit`);
 }
 
 export const rpcRawTransport = {
@@ -56,31 +82,7 @@ export const rpcRawTransport = {
   async request({ pluginId, svc, act, params = null, timeoutMs = DEFAULT_TIMEOUT_MS }) {
     const env = Envelope.req(Envelope.nextId(), svc, act, params);
     const what = `${svc}/${act}`;
-    let raw;
-    try {
-      raw = await withTimeout(
-        invoke('plugin_rpc_raw', { pluginId, msg: env }),
-        timeoutMs,
-        what,
-      );
-    } catch (e) {
-      if (e instanceof ProtocolError) throw e;
-      // A host rejection carries the same `{code, msg}` pair an `err` envelope
-      // would, so the caller sees one error type regardless of the gateway.
-      if (e && typeof e === 'object' && typeof e.code === 'string') {
-        throw new ProtocolError(e.code, e.msg ?? e.code);
-      }
-      throw ProtocolError.transport(`${what} failed: ${e?.message ?? e}`, e);
-    }
-    if (!(raw instanceof ArrayBuffer) && !ArrayBuffer.isView(raw)) {
-      // A string here means the host answered JSON — which is what a build
-      // without `plugin_rpc_raw` would do (an unknown command rejects, but a
-      // mis-wired gateway could resolve with an envelope). Say so precisely
-      // instead of handing the caller `NaN` bytes.
-      throw ProtocolError.protocol(
-        `${what}: expected binary from the raw gateway, got ${typeof raw}`,
-      );
-    }
-    return toBytes(raw);
+    const raw = await invokeBinary('plugin_rpc_raw', { pluginId, msg: env }, { timeoutMs, what });
+    return binaryReply(raw, what);
   },
 };
