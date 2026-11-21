@@ -83,6 +83,10 @@ jobs:
       - name: PTY lifecycle regression
         run: cargo run --locked --manifest-path src-tauri/Cargo.toml --example pty-lifecycle-checks
 
+      # Exceed the old 15s combined deadline without delaying native cleanup.
+      - name: PTY slow producer regression
+        run: cargo run --locked --manifest-path src-tauri/Cargo.toml --example pty-lifecycle-checks -- --overflow-only 16000
+
       - name: Storage concurrency and atomic replacement
         run: cargo run --locked --manifest-path src-tauri/Cargo.toml --example storage-checks
 

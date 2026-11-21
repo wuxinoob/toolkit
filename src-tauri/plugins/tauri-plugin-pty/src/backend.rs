@@ -28,6 +28,16 @@ pub struct Diagnostics {
     pub consoles: usize,
 }
 
+/// Per-session state for native lifecycle checks; not a plugin IPC command.
+#[derive(Debug)]
+pub struct SessionDiagnostics {
+    pub queued_bytes: usize,
+    pub overflowed: bool,
+    pub output_closed: bool,
+    pub process_exited: bool,
+    pub termination_error: Option<String>,
+}
+
 pub fn diagnostics() -> Diagnostics {
     Diagnostics {
         readers: READERS.load(Ordering::SeqCst),
@@ -69,6 +79,7 @@ struct Killer {
     #[cfg(windows)]
     process: OwnedHandle,
     exited: AtomicBool,
+    termination_error: Mutex<Option<String>>,
 }
 impl Killer {
     fn new(child: &dyn Child) -> Result<Self, String> {
@@ -89,6 +100,7 @@ impl Killer {
                 // SAFETY: OpenProcess returned a new, valid owned handle.
                 process: unsafe { OwnedHandle::from_raw_handle(handle) },
                 exited: AtomicBool::new(false),
+                termination_error: Mutex::new(None),
             })
         }
         #[cfg(not(windows))]
@@ -96,11 +108,20 @@ impl Killer {
             Ok(Self {
                 child: Mutex::new(child.clone_killer()),
                 exited: AtomicBool::new(false),
+                termination_error: Mutex::new(None),
             })
         }
     }
 
     fn kill(&self) -> Result<(), String> {
+        let result = self.try_kill();
+        if let Err(error) = &result {
+            *lock(&self.termination_error) = Some(error.clone());
+        }
+        result
+    }
+
+    fn try_kill(&self) -> Result<(), String> {
         if self.exited.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -150,6 +171,7 @@ struct OutputState {
     error: Option<String>,
     closed: bool,
     discard: bool,
+    overflowed: bool,
 }
 
 struct OutputBuffer {
@@ -176,6 +198,7 @@ impl OutputBuffer {
             state.error =
                 Some("PTY output exceeded the 8 MiB unread buffer; process stopped".into());
             state.discard = true;
+            state.overflowed = true;
             self.ready.notify_one();
             return Err(());
         }
@@ -254,6 +277,17 @@ impl Drop for Session {
 }
 
 impl Session {
+    pub fn diagnostics(&self) -> SessionDiagnostics {
+        let state = lock(&self.output.state);
+        SessionDiagnostics {
+            queued_bytes: state.bytes,
+            overflowed: state.overflowed,
+            output_closed: state.closed,
+            process_exited: self.killer.exited.load(Ordering::SeqCst),
+            termination_error: lock(&self.killer.termination_error).clone(),
+        }
+    }
+
     /// Blocking: called by the spawn command's blocking task.
     pub fn spawn(options: SpawnOptions) -> Result<Self, String> {
         if options.file.is_empty() || options.cols == 0 || options.rows == 0 {
