@@ -22,7 +22,7 @@ export const manifest = {
   id: 'gallery.demo',
   name: 'Component Gallery',
   version: '0.1.0',
-  api: 7,
+  api: 8,
   description: 'Every component ctx.ui offers, rendered in the main window.',
   contributes: {
     views: [{ slot: 'tool', id: 'gallery', title: 'Gallery', icon: '🧩' }],

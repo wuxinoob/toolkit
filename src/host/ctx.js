@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi';
+import { LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize } from '@tauri-apps/api/dpi';
 
 import { Capability, assertSupports } from '../protocol/registry.js';
 import { createPluginSdk } from './plugin-sdk.js';
@@ -106,6 +106,33 @@ export function currentWindowLabel() {
   }
 }
 
+function windowPosition({ x, y, unit = 'logical' } = {}) {
+  if (!['logical', 'physical'].includes(unit) || !Number.isFinite(x) || !Number.isFinite(y)) {
+    throw new Error('window position needs finite x/y and a logical or physical unit');
+  }
+  if (unit === 'physical') {
+    if (![x, y].every((n) => Number.isInteger(n) && n >= -2147483648 && n <= 2147483647)) {
+      throw new Error('physical window position needs signed 32-bit integer coordinates');
+    }
+    return new PhysicalPosition(x, y);
+  }
+  return new LogicalPosition(x, y);
+}
+
+function windowSize({ width, height, unit = 'logical' } = {}) {
+  if (!['logical', 'physical'].includes(unit) || !Number.isFinite(width) || !Number.isFinite(height)
+    || width <= 0 || height <= 0) {
+    throw new Error('window size needs positive finite width/height and a logical or physical unit');
+  }
+  if (unit === 'physical') {
+    if (![width, height].every((n) => Number.isInteger(n) && n <= 4294967295)) {
+      throw new Error('physical window size needs unsigned 32-bit integer dimensions');
+    }
+    return new PhysicalSize(width, height);
+  }
+  return new LogicalSize(width, height);
+}
+
 export function buildCtx(plugin, disposer) {
   const { manifest } = plugin;
   const id = manifest.id;
@@ -146,6 +173,7 @@ export function buildCtx(plugin, disposer) {
     'minimizable',
     'closable',
     'focus',
+    'focusable',
     'visible',
   ]);
 
@@ -186,6 +214,7 @@ export function buildCtx(plugin, disposer) {
       throw new Error(`${prefix} window option(s) not allowed: ${unknown.join(', ')}`);
     }
     const clean = { ...options };
+    if (clean.focusable === false) clean.focus = false;
     if (clean.url !== undefined) {
       // Normalized, not merely checked: a caller may still be passing the legacy
       // shape, and the window must be CREATED with the canonical one — that is
@@ -323,8 +352,14 @@ export function buildCtx(plugin, disposer) {
           const clean = sanitizeWindowOptions(options);
           const existing = await WebviewWindow.getByLabel(label);
           if (existing) {
-            await existing.show();
-            await existing.setFocus();
+            if (clean.visible === false) await existing.hide();
+            if (clean.focus === false || clean.visible === false) {
+              await invoke('host_window_present', { label, show: clean.visible !== false, focusable: clean.focusable });
+            } else {
+              if (clean.focusable !== undefined) await existing.setFocusable(clean.focusable);
+              await existing.show();
+              await existing.setFocus();
+            }
             return 'exists';
           }
           // Created by the HOST, not by `new WebviewWindow(label, clean)`.
@@ -409,12 +444,14 @@ export function buildCtx(plugin, disposer) {
           const win = await WebviewWindow.getByLabel(label);
           if (!win) throw new Error(`window "${label}" not found`);
           switch (op) {
-            case 'size': return win.setSize(new LogicalSize(value.width, value.height));
-            case 'position': return win.setPosition(new LogicalPosition(value.x, value.y));
+            case 'size': return win.setSize(windowSize(value));
+            case 'position': return win.setPosition(windowPosition(value));
             case 'clickThrough': return win.setIgnoreCursorEvents(!!value);
             case 'alwaysOnTop': return win.setAlwaysOnTop(!!value);
             case 'skipTaskbar': return win.setSkipTaskbar(!!value);
-            case 'show': return win.show();
+            case 'show': return value?.focus === false
+              ? invoke('host_window_present', { label, show: true }) : win.show();
+            case 'focusable': return invoke('host_window_present', { label, show: false, focusable: !!value });
             case 'hide': return win.hide();
             case 'focus': return win.setFocus();
             case 'unminimize': return win.unminimize();

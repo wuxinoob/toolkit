@@ -11,12 +11,12 @@
 |---|---|
 | **1. 协议是否统一了？** | 插件使用公共 SDK。JSON 与 raw RPC 共用服务表，流、对话框和内存字节会话各有原生入口。 |
 | **2. 新插件能否直接调用已有接口？** | **能，且已验证**。`tests/fixtures/plugins/probe` 不 import 任何模块、不碰 Tauri API，一次调用覆盖 11 项接口全部通过。 |
-| **3. 接口有哪些？** | 25 个原生命令 · 9 个服务 / 36 个动作（+ 2 个字节动作） · 9 个方案 · 3 个流提供者。见 §1–§4。 |
+| **3. 接口有哪些？** | 26 个原生命令 · 9 个服务 / 36 个动作（+ 2 个字节动作） · 9 个方案 · 3 个流提供者。见 §1–§4。 |
 | **4. 有改进空间吗？** | 有。**P1、P2 与 P0 两项均已完成**（见 §8）。剩余的是结构性例外与后续增强，不再是缺口。 |
 
 ---
 
-## 1. 原生入口：25 个命令
+## 1. 原生入口：26 个命令
 
 此计数只覆盖 `src-tauri/src/lib.rs`。PTY 的七个兼容命令来自项目内
 `src-tauri/plugins/tauri-plugin-pty`，直接走该插件，不经过网关；其执行和回收边界见
@@ -49,8 +49,9 @@
 | 23 | `plugin_fs_control` | 原生选择、文件状态、提交和关闭 | `fs.open` / `createWriter` / `stat` / `commit` / `close` | 窗口与插件归属 | `rpc:fs` |
 | 24 | `plugin_fs_read` | 从文件读取指定区间 | `file.readAt` | 同上 | `rpc:fs` |
 | 25 | `plugin_fs_write` | 原始请求体写入暂存文件 | `writer.write` | 同上 | `rpc:fs` |
+| 26 | `host_window_present` | 在事件线程设置可聚焦状态或无激活显示窗口 | `ctx.windows.create` / `control` | 宿主窗口管理 | 仅主窗口 |
 
-插件 SDK 使用 1–6 和 20–25。7–19 负责加载、窗口及宿主运行管理。字节会话的完整契约见 [BINARY-IPC.md](BINARY-IPC.md)。
+插件 SDK 使用 1–6 和 20–26。7–19 负责加载、窗口及宿主运行管理。字节会话的完整契约见 [BINARY-IPC.md](BINARY-IPC.md)。
 
 **两类用的不是同一种闸口，这是刻意的**：数据面的闸口是**权威**的（Rust `host/registry.rs`，fail-closed），因为插件能绕过 `ctx` 直接 `invoke`；管理操作只由宿主自己的代码调用，用的是 `require_main`（窗口 label 检查）—— 防的不是恶意插件，而是**第二个前端上下文**（窗口分发的规则见 `src/main.js`）。
 

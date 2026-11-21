@@ -48,6 +48,12 @@ Rust：命令入口 → 服务表 / provider 表 → 原生资源
 
 ## 生命周期和资源归属
 
+### 窗口与显示器坐标
+
+窗口的激活与可聚焦状态分别控制。`focus: false` 以及 `windows.control(label, 'show', { focus: false })` 用于在保留前台应用焦点时展示，`focusable` 控制后续交互能否获得焦点。窗口复用时应用显式的显示与焦点选项。窗口控制的 `position` 与 `size` 接受 `unit: 'logical' | 'physical'`，默认逻辑像素。
+
+`screen.monitors()` 返回物理像素原点、尺寸、工作区与缩放系数，工作区按实际位置和尺寸关联。Sidecar 可按物理屏幕坐标报告选区，窗口定位直接消费该坐标，图片裁剪使用选定显示器内的相对像素。选区监听、UIA、OCR 和浏览器适配在插件内组合这些原语。接口示例见 [浮窗焦点与屏幕坐标](plugin-dev/api.md#浮窗焦点与屏幕坐标)。
+
 `plugins.js` 管加载目录与来源，`lifecycle.js` 管激活/停用，`disposer.js` 管插件取得的资源。外壳 `store.js` 是展示状态，不负责关闭原生资源。
 
 资源有三层不同的记录：

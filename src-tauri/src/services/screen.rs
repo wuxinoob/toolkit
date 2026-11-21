@@ -44,6 +44,8 @@ const MAX_PIXELS: u64 = 64_000_000; // ~8K x 8K
 struct MonitorInfo {
     index: usize,
     name: String,
+    x: i32,
+    y: i32,
     width: u32,
     height: u32,
     scale_factor: f32,
@@ -55,6 +57,8 @@ impl MonitorInfo {
         Some(Self {
             index,
             name: m.name().ok()?,
+            x: m.x().ok()?,
+            y: m.y().ok()?,
             width: m.width().ok()?,
             height: m.height().ok()?,
             scale_factor: m.scale_factor().ok()?,
@@ -62,10 +66,26 @@ impl MonitorInfo {
         })
     }
 
-    fn to_json(&self) -> Value {
+    fn to_json(&self, monitors: &[tauri::Monitor]) -> Value {
+        // Match native geometry, never enumeration order. Screenshot and
+        // window APIs can enumerate displays in a different order.
+        let monitor = monitors.iter().find(|monitor| {
+            monitor.position().x == self.x
+                && monitor.position().y == self.y
+                && monitor.size().width == self.width
+                && monitor.size().height == self.height
+        });
+        let work_area = monitor.map(|monitor| {
+            let area = monitor.work_area();
+            json!({ "x": area.position.x, "y": area.position.y,
+                "width": area.size.width, "height": area.size.height })
+        });
         json!({
             "index": self.index,
             "name": self.name,
+            "position": { "x": self.x, "y": self.y },
+            "workArea": work_area,
+            "unit": "physical",
             "width": self.width,
             "height": self.height,
             "scaleFactor": self.scale_factor,
@@ -105,7 +125,7 @@ impl Service for ScreenService {
 
     fn dispatch(
         &self,
-        _app: &tauri::AppHandle,
+        app: &tauri::AppHandle,
         _plugin_id: &str,
         action: &str,
         _params: Value,
@@ -113,9 +133,17 @@ impl Service for ScreenService {
         match action {
             // Enumerating is separate from capturing so a plugin can offer a
             // monitor picker without paying for a screenshot of each one.
-            "monitors" => Ok(Value::Array(
-                Self::monitors()?.iter().map(|(i, _)| i.to_json()).collect(),
-            )),
+            "monitors" => {
+                let displays = app
+                    .available_monitors()
+                    .map_err(|e| ServiceError::io(format!("enumerate work areas: {e}")))?;
+                Ok(Value::Array(
+                    Self::monitors()?
+                        .iter()
+                        .map(|(i, _)| i.to_json(&displays))
+                        .collect(),
+                ))
+            }
 
             _ => Err(ServiceError::new(
                 code::UNKNOWN_ACTION,
@@ -147,7 +175,10 @@ impl Service for ScreenService {
 fn capture_png(params: &Value) -> Result<Vec<u8>, ServiceError> {
     let monitors = ScreenService::monitors()?;
     if monitors.is_empty() {
-        return Err(ServiceError::new(code::INTERNAL, "no usable monitors found"));
+        return Err(ServiceError::new(
+            code::INTERNAL,
+            "no usable monitors found",
+        ));
     }
 
     // Default to the PRIMARY monitor rather than index 0: the order of
@@ -156,7 +187,10 @@ fn capture_png(params: &Value) -> Result<Vec<u8>, ServiceError> {
     let requested = params.get("monitor").and_then(|v| v.as_u64());
     let picked = match requested {
         Some(i) => monitors.iter().find(|(info, _)| info.index as u64 == i),
-        None => monitors.iter().find(|(info, _)| info.primary).or_else(|| monitors.first()),
+        None => monitors
+            .iter()
+            .find(|(info, _)| info.primary)
+            .or_else(|| monitors.first()),
     }
     .ok_or_else(|| {
         ServiceError::bad_params(format!(

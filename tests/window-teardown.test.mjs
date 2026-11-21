@@ -132,3 +132,57 @@ test('an existing window is NOT tracked — it may belong to another plugin', as
     existingWindows = [];
   }
 });
+
+test('reusing an inactive popup preserves its focus and visibility options', async () => {
+  const { ctx } = makeCtx('t.popup');
+  existingWindows = ['plugin-popup'];
+  try {
+    invokes.length = 0;
+    await ctx.windows.create('plugin-popup', { focus: false, focusable: false });
+    assert.deepEqual(invokes.filter((c) => c.cmd !== 'plugin:window|get_all_windows'), [
+      { cmd: 'host_window_present', args: { label: 'plugin-popup', show: true, focusable: false } },
+    ]);
+
+    invokes.length = 0;
+    await ctx.windows.create('plugin-popup', { visible: false, focusable: true });
+    assert.deepEqual(invokes.filter((c) => c.cmd !== 'plugin:window|get_all_windows'), [
+      { cmd: 'plugin:window|hide', args: { label: 'plugin-popup' } },
+      { cmd: 'host_window_present', args: { label: 'plugin-popup', show: false, focusable: true } },
+    ]);
+
+    invokes.length = 0;
+    await ctx.windows.create('plugin-popup');
+    assert.deepEqual(invokes.filter((c) => c.cmd !== 'plugin:window|get_all_windows').map((c) => c.cmd), [
+      'plugin:window|show', 'plugin:window|set_focus',
+    ]);
+  } finally {
+    existingWindows = [];
+  }
+});
+
+test('popup controls preserve physical coordinates and logical defaults', async () => {
+  const { ctx } = makeCtx('t.geometry');
+  existingWindows = ['plugin-popup'];
+  try {
+    invokes.length = 0;
+    await ctx.windows.control('plugin-popup', 'position', { x: -1920, y: -120, unit: 'physical' });
+    await ctx.windows.control('plugin-popup', 'size', { width: 320, height: 160, unit: 'physical' });
+    await ctx.windows.control('plugin-popup', 'position', { x: 12.5, y: 25 });
+    await ctx.windows.control('plugin-popup', 'show', { focus: false });
+    await ctx.windows.control('plugin-popup', 'focusable', true);
+    const position = invokes.filter((c) => c.cmd === 'plugin:window|set_position');
+    assert.deepEqual(position[0].args.value.toJSON(), { Physical: { x: -1920, y: -120 } });
+    assert.deepEqual(position[1].args.value.toJSON(), { Logical: { x: 12.5, y: 25 } });
+    assert.deepEqual(invokes.find((c) => c.cmd === 'plugin:window|set_size').args.value.toJSON(),
+      { Physical: { width: 320, height: 160 } });
+    assert.deepEqual(invokes.filter((c) => c.cmd === 'host_window_present').map((c) => c.args), [
+      { label: 'plugin-popup', show: true },
+      { label: 'plugin-popup', show: false, focusable: true },
+    ]);
+    await assert.rejects(ctx.windows.control('plugin-popup', 'position', { x: 0, y: 0, unit: 'pixels' }));
+    await assert.rejects(ctx.windows.control('plugin-popup', 'position', { x: 0.5, y: 0, unit: 'physical' }));
+    await assert.rejects(ctx.windows.control('plugin-popup', 'size', { width: 0, height: 1 }));
+  } finally {
+    existingWindows = [];
+  }
+});

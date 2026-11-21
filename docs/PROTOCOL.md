@@ -294,7 +294,7 @@ They move independently, so they are tracked separately. A plugin declares the
 host API it was built for in its manifest:
 
 ```jsonc
-{ "id": "probe.demo", "version": "0.1.0", "api": 7, … }
+{ "id": "probe.demo", "version": "0.1.0", "api": 8, … }
 ```
 
 If the declaration does not match, the host records it on the plugin row and the

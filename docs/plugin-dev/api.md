@@ -343,7 +343,7 @@ ctx.onHotkey('open', () => ctx.focusView('settings'));
 
 // ✅ 窗口要自己叫出来
 ctx.onHotkey('open', async () => {
-  await ctx.windows.create(label, opts);   // 已存在时是 no-op（会 show + focus）
+  await ctx.windows.create(label, opts);   // 已存在时按 focus / visible 选项展示
   await ctx.windows.control(label, 'raise', true);
 });
 ```
@@ -526,7 +526,7 @@ const handle = await ctx.clipboard.watch('clip', {
 // handle.close()，或者停用插件 —— 宿主 disposer 会关掉它
 
 // 截屏 —— 一次问答，但答复是**字节**（`rpc-raw`），不是 base64
-const monitors = await ctx.screen.monitors();  // [{index,name,width,height,scaleFactor,primary}]
+const monitors = await ctx.screen.monitors();  // 物理像素尺寸、position、workArea、scaleFactor
 const png = await ctx.screen.capture();        // Uint8Array；不传参数 = 主显示器
 img.src = URL.createObjectURL(new Blob([png], { type: 'image/png' }));
 // 等价写法：ctx.bytes('screen', 'capture') —— capture 是「只有字节答复」的动作
@@ -671,7 +671,7 @@ ctx.windows.onCloseRequested(async () => { /* 清理 */ });
 
 ### 能操纵哪些属性 —— 两张表
 
-**创建时能设的（18 个，白名单，传别的会被拒绝并报名字）：**
+**创建时能设的（19 个，白名单，传别的会被拒绝并报名字）：**
 
 | | | |
 |---|---|---|
@@ -680,18 +680,20 @@ ctx.windows.onCloseRequested(async () => { /* 清理 */ });
 | `decorations` | `shadow` | `alwaysOnTop` |
 | `skipTaskbar` | `resizable` | `maximizable` |
 | `minimizable` | `closable` | `focus` |
-| `visible` | | |
+| `visible` | `focusable` | |
 
-**创建后能改的（`control(label, op, value)`，12 个）：**
+**创建后能改的（`control(label, op, value)`，13 个）：**
 
 | op | value | 说明 |
 |---|---|---|
-| `size` | `{width, height}` | |
-| `position` | `{x, y}` | |
+| `size` | `{width, height, unit?}` | 默认 `logical`，可传 `physical` |
+| `position` | `{x, y, unit?}` | 默认 `logical`，可传 `physical`，支持负坐标 |
+| `focusable` | `bool` | 控制是否可获得焦点，切换本身保留前台应用 |
 | `clickThrough` | `bool` | 鼠标穿透 |
 | `alwaysOnTop` | `bool` | |
 | `skipTaskbar` | `bool` | |
-| `show` / `hide` | — | |
+| `show` | `{focus: false}` 可选 | Windows 下通过无激活展示保留前台应用 |
+| `hide` | — | 隐藏窗口 |
 | `focus` | — | **只聚焦，不还原最小化** |
 | `unminimize` | — | |
 | `isMinimized` | — | 返回 bool |
@@ -704,6 +706,30 @@ ctx.windows.onCloseRequested(async () => { /* 清理 */ });
 **改不了的**（只在创建时有效）：`title`、`decorations`、`transparent`、`shadow`、
 `resizable`、`maximizable`、`minimizable`、`closable`、`center`、`url`。
 **改标题请重开窗口**，或者把标题画在自绘标题栏里（`decorations: false` 时本来就得自己画）。
+
+### 浮窗焦点与屏幕坐标
+
+`focus: false` 控制展示时的激活行为，`focusable: false` 控制窗口能否获得焦点，并在创建或复用时隐含 `focus: false`。可交互的浮窗可以使用 `focus: false, focusable: true`，用户点击后再获得焦点。两者同时为 `false` 适合展示提示或鼠标操作图标。`create()` 复用窗口时应用 `visible` 和 `focusable`，按 `focus` 决定是否激活。省略这些选项时会展示并聚焦已有窗口。
+
+创建参数中的 `x/y/width/height` 使用逻辑像素。Sidecar 提供物理屏幕坐标时，可先隐藏创建窗口，按物理像素定位后无激活展示。
+
+```js
+const label = `plugin-${ctx.id.replace(/[^a-zA-Z0-9_-]/g, '-')}-popup`;
+await ctx.windows.create(label, {
+  url: `pluginwin.html?plugin=${encodeURIComponent(ctx.id)}&label=${label}`,
+  width: 320, height: 160, visible: false,
+  focus: false, focusable: true,
+  decorations: false, alwaysOnTop: true, skipTaskbar: true,
+});
+await ctx.windows.control(label, 'position', { x: -1200, y: 180, unit: 'physical' });
+await ctx.windows.control(label, 'show', { focus: false });
+```
+
+`screen.monitors()` 的每项包含 `{ index, name, width, height, scaleFactor, primary, position, workArea, unit: 'physical' }`。`position` 为显示器原点 `{x,y}`，`workArea` 为扣除任务栏后的 `{x,y,width,height}`。显示器布局变化导致原生信息暂时无法匹配时，`workArea` 为 `null`，可重新枚举。`index` 供本次枚举后的 `screen.capture({monitor: index})` 使用。缩放变化或热插拔后重新获取快照。
+
+物理单位要求整数，位置支持有符号 32 位坐标，尺寸要求大于零。用目标显示器的 `scaleFactor` 换算浮窗尺寸，直接把物理屏幕位置交给 `position`。截图像素相对所选显示器，裁剪区域需减去该显示器的物理原点。跨屏区域分别按各屏幕边界裁剪。
+
+桌面验收可运行 `cargo run --locked --manifest-path src-tauri/Cargo.toml --example window-checks`，覆盖真实窗口的重复展示、隐藏、焦点切换和显示器信息。混合缩放、WebView2 内容就绪和不同应用的选区仍需在实际使用环境验证。
 
 ### 插件窗口**不能操纵自己**
 

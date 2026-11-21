@@ -54,8 +54,11 @@ import { Code, ALL_CODES } from './codes.js';
  *       their signatures.
  *   7 — `ctx.fs` / `bridge.fs` manage native file references, bounded reads,
  *       and staged writes with explicit commit.
+ *   8 — windows support inactive presentation, focusability, and explicit
+ *       physical position/size units. Monitor snapshots include their physical
+ *       origin and work area. Reusing a window respects focus and visibility.
  */
-export const HOST_API = 7;
+export const HOST_API = 8;
 
 export function protocolContract() {
   return Object.freeze({

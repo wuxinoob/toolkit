@@ -35,7 +35,7 @@ export const manifest = {
   id: 'senses.demo',
   name: 'Senses',
   version: '0.1.0',
-  api: 7,
+  api: 8,
   description: 'Live check of clipboard, screen capture and OS file drops.',
   contributes: {
     views: [{ slot: 'tool', id: 'senses', title: 'Senses', icon: 'lucide:eye' }],

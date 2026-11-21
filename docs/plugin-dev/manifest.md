@@ -15,7 +15,7 @@
   "id": "my.plugin",
   "name": "My Plugin",
   "version": "0.1.0",
-  "api": 7,
+  "api": 8,
   "entry": "main.js",
   "description": "一句话说明这个插件干什么",
   "contributes": { },
@@ -28,7 +28,7 @@
 | `id` | ✅ | 全局唯一。**同时是数据目录名**（`{appData}/plugin-data/<id>/`），也是 `ctx` 报错前缀 `[plugin:<id>]` |
 | `name` | ✅ | 侧栏与错误信息里显示的名字 |
 | `version` | | 仅展示 |
-| `api` | **强烈建议** | 插件使用的 **HOST API** 版本。当前为 **7**，声明其他版本时宿主显示版本提示 |
+| `api` | **强烈建议** | 插件使用的 **HOST API** 版本。当前为 **8**，声明其他版本时宿主显示版本提示 |
 | `entry` | ✅ | 入口文件，相对插件目录 |
 | `description` | | 仅展示 |
 | `contributes` | | 声明式贡献点，见下 |
@@ -167,7 +167,7 @@ Rust 侧 `host/registry.rs`（权威，fail-closed，未注册即拒绝）。
   "id": "my.plugin",
   "name": "My Plugin",
   "version": "0.1.0",
-  "api": 7,
+  "api": 8,
   "entry": "main.js",
   "description": "示例",
   "contributes": {

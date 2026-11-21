@@ -103,6 +103,7 @@ const NEEDS = {
   show: 'core:window:allow-show',
   hide: 'core:window:allow-hide',
   setFocus: 'core:window:allow-set-focus',
+  setFocusable: 'core:window:allow-set-focusable',
   // Tauri implements onCloseRequested as `handler(); if (!prevented) destroy()`
   // — so listening for the close event is what makes `destroy` mandatory.
   onCloseRequested: 'core:window:allow-destroy',

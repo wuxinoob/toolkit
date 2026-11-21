@@ -148,6 +148,7 @@ test('windows.create: the allow-list covers every option the built-ins pass', ()
   const WINDOW_OPTIONS = new Set([
     'url', 'title', 'width', 'height', 'x', 'y', 'center', 'transparent',
     'decorations', 'shadow', 'alwaysOnTop', 'skipTaskbar', 'resizable',
+    'focusable',
     'maximizable', 'minimizable', 'closable', 'focus', 'visible',
   ]);
 

@@ -85,7 +85,7 @@ export default {
   "id": "my.plugin",
   "name": "My Plugin",
   "version": "0.1.0",
-  "api": 7,
+  "api": 8,
   "entry": "main.js",
   "contributes": { "views": [{ "slot": "tool", "id": "main", "title": "My Plugin", "icon": "lucide:puzzle" }] }
 }

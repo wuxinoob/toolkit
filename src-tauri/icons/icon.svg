@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 64 64" fill="none">
+  <title>Toolkit</title>
+  <desc>A flat blue toolbox with a violet plugin module and a transparent background.</desc>
+  <path d="M23 23V17a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v6" stroke="#4F7DF3" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M14 23h25v14a3 3 0 0 0 3 3h14v10a6 6 0 0 1-6 6H14a6 6 0 0 1-6-6V29a6 6 0 0 1 6-6Z" fill="#4F7DF3"/>
+  <rect x="43" y="23" width="13" height="13" rx="3" fill="#8B5CF6"/>
+</svg>

@@ -9,3 +9,4 @@
 //! what they declared.
 
 pub mod registry;
+pub mod windows;

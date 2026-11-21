@@ -476,6 +476,33 @@ async fn host_window_create(
 }
 
 #[tauri::command]
+async fn host_window_present(
+    window: tauri::WebviewWindow,
+    label: String,
+    show: bool,
+    focusable: Option<bool>,
+) -> Result<(), String> {
+    require_main(&window)?;
+    let app = window.app_handle().clone();
+    let (send, mut receive) = tauri::async_runtime::channel(1);
+    app.clone()
+        .run_on_main_thread(move || {
+            let result = app
+                .get_webview_window(&label)
+                .ok_or_else(|| format!("window \"{label}\" not found"))
+                .and_then(|target| {
+                    host::windows::present_inactive(&target.as_ref().window(), show, focusable)
+                });
+            let _ = send.try_send(result);
+        })
+        .map_err(|e| e.to_string())?;
+    receive
+        .recv()
+        .await
+        .ok_or_else(|| "window presentation was interrupted".to_string())?
+}
+
+#[tauri::command]
 async fn plugin_reap_orphans(window: tauri::WebviewWindow, keep: Option<bool>) -> Result<usize, String> {
     require_main(&window)?;
     // A rebuilt renderer cannot resume the previous page's byte handles.
@@ -883,6 +910,7 @@ pub fn run() {
             host_diag,
             host_note,
             host_window_create,
+            host_window_present,
             host_autostart_get,
             host_autostart_set,
             host_update_check,
