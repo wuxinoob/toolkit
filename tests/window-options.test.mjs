@@ -418,11 +418,10 @@ test('closing the main window hides it, and the tray is the only way out', () =>
   // in effect: the window did not close, so a plugin that tore its windows down
   // would have no signal on the way back to rebuild them.
   const ctx = readFileSync(new URL('../src/host/ctx.js', import.meta.url), 'utf8');
-  assert.match(
-    ctx,
-    /if \(closeToTray\(\) && currentWindowLabel\(\) === 'main'\) return;/,
-    'ctx.js must skip a plugin close handler while the main window only hides',
-  );
+  const trayHandler=ctx.match(/if \(closeToTray\(\) && currentWindowLabel\(\) === 'main'\) \{([\s\S]*?)\n\s*\}/);
+  assert.ok(trayHandler, 'ctx.js must intercept plugin close handlers while the main window only hides');
+  assert.match(trayHandler[1], /event\.preventDefault\(\);/, 'each listener must prevent its own Tauri event');
+  assert.match(trayHandler[1], /return;/, 'hiding must not run plugin teardown');
 
   // Rust: a tray, a quit item, and a GRACEFUL exit. `app.exit(0)` runs
   // `RunEvent::Exit` → `kill_all()`, so sidecars and ptys are drained; a process

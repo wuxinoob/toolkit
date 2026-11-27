@@ -1,6 +1,6 @@
 # Toolkit 架构与改进方向
 
-更新时间：2026-11-13。接口细节见 [PROTOCOL.md](PROTOCOL.md)、[INTERFACES.md](INTERFACES.md) 和[插件手册](plugin-dev/README.md)。旧评审放在 [archive](archive/README.md)。
+更新时间：2026-11-27。接口细节见 [PROTOCOL.md](PROTOCOL.md)、[INTERFACES.md](INTERFACES.md) 和[插件手册](plugin-dev/README.md)。旧评审放在 [archive](archive/README.md)。
 
 ## 模块边界
 
@@ -32,9 +32,9 @@ Rust：命令入口 → 服务表 / provider 表 → 原生资源
 | 现有路径 | 字节的存留与释放 |
 |---|---|
 | `rpc-raw` | 返回一次完整字节答复，适合大小可控的结果 |
-| `binary.open` | 每次最多 256 KiB，单会话预留最多 16 MiB。写入追加到 Rust 缓冲区，`read` 复制区间供重复读取，关闭才释放会话 |
+| `binary.open` | 每次最多 256 KiB，单会话预留最多 16 MiB。写入追加到 Rust 缓冲区，`read` 复制区间供重复读取，关闭且所有原生借用结束才释放会话 |
 | `channel-raw` | 宿主可推送独立字节帧。消费方可以释放自己的引用，`send` 返回仅表示交给传输层，缺少消费确认和端到端流量控制 |
-| Sidecar `stdio-line`、PTY | 已有专用的出队读取。Sidecar 按文本行传递，溢出可丢旧行。PTY 面向终端输出，两者的生命周期和错误语义由各自的传输定义 |
+| Sidecar `stdio-line`、PTY | 专用出队读取。Sidecar 控制行可靠交付，溢出终止，异步消费顺序等待；stdin 使用有界 writer 与原生 deadline。PTY 面向终端输出，不能代替可靠文件传输 |
 
 `ctx.fs` / `bridge.fs` 持有由原生选择器发放的文件引用，提供区间读取和分块保存。Rust 持有文件句柄，单块完成后释放缓冲。`ctx.files.pick/save` 与 `onDrop` 提供路径，Sidecar 以操作系统权限自行读写文件，宿主负责进程和消息生命周期。`ctx.files.sha256()` 保留原生增量计算入口。内存会话详情见 [BINARY-IPC.md](BINARY-IPC.md)。
 
@@ -45,6 +45,20 @@ Rust：命令入口 → 服务表 / provider 表 → 原生资源
 - **媒体访问。** 复用获授权的文件资源，按需为播放器提供字节区间和正确的媒体类型。HTTP Range 可以支持跳转到文件的其他区间，播放仍需 WebView2 支持对应容器和编码。用大于内存会话上限的视频验证连续播放和跳转。[HTTP Range](https://www.rfc-editor.org/rfc/rfc9110.html#section-14)
 
 文件读取可以通过逐块拉取实现顺序消费。消费确认的推送流和媒体入口是后续演进方向。
+
+### LLM 服务与 Sidecar 直接调用宿主
+
+HOST_API 10 支持文本和图片输入的宿主模型服务。连接、模型配置和原生凭据分离；用户设置 API key、输出上限、超时和插件授权，插件只拿到可用配置及调用能力。凭据管理在独立的宿主设置 WebView 中，通过原生窗口身份检查；插件无需持有 key。
+
+`ctx.llm` / `bridge.llm` 经 Tauri IPC，原生 Sidecar 经每实例独立 Windows 命名管道，二者共用 `Caller`、权限检查与 Rust LLM 运行时。管道只允许本机、设置 owner-only DACL 并校验实际子进程 PID；客户端不能指定身份。`Service::sidecar_handler` 显式注册可用服务，开放 LLM、binary 和 screen，保持现有 stdin/stdout 业务协议。
+
+流采用 `start / next / cancel` 拉取契约。队列满时暂停生产，消费者处理完一块再拉取下一块；队列按事件数量及单事件字节限制，生成总时长有原生 deadline。读写循环独立推进，同连接能一边等待输出一边取消。运行时不依赖 Tauri Channel，也不增加另一套 Channel ACK 机制。图片通过通用封存资源借用；Sidecar 的原始字节使用独立数据通道，大文件继续采用文件区间读取或本地处理。
+
+请求绑定窗口或 Sidecar 实例代次。取消会同时覆盖正在准备的请求；退出、断线、停用或宿主结束会释放 HTTP、队列和并发名额。不自动重放付费请求。`ctx.sidecars.start` 显式启动原生后台实例，页面刷新时保留，插件停用或进程退出时回收；普通 stdio Sidecar 保持窗口生命周期。公共 `generate` 有界聚合，`stream` 不隐式保留完整输出。
+
+真实 Sidecar 的无 WebView 回归覆盖双协议、同连接取消、慢消费者、原生超时、身份授权、窗口归属与断线回收。配置、限制和 SDK 示例见 [LLM 与 Sidecar](LLM.md)。这些检查沿用可信插件边界，不宣称是恶意插件沙箱。
+
+宿主设置可显式读取模型目录与服务声明的能力，再用独立生成测试验证文本调用；目录、声明和实测结果分别表述，缺少元数据时不按模型名称伪造能力。目录检查只接受固定宿主设置窗口，不扩大插件或 Sidecar 的凭据权限。HOST_API 12 的思考等级采用宿主默认值与允许范围、插件单次覆盖、Rust 校验及协议适配的职责划分：profiles 返回默认值和允许列表，未传参数时由原生层应用默认值，WebView 和 Sidecar 共用同一策略。等级字符串按模型声明，不固定枚举；Chat/Responses 分别映射参数，输出 token 字段由宿主适配配置选择。思考 token 预算暂未实现，已知忽略等级的 Claude 官方兼容接口禁止启用，不做无约束参数透传。
 
 ## 生命周期和资源归属
 
@@ -153,3 +167,15 @@ Rust 的进程级职责分为：
 测试应针对可见行为，例如“停用后没有遗留流”和“失败后没有视图”，而不是要求 SDK 必须写成某种对象字面量。服务/错误码等静态声明仍适合从源文件核对。
 
 验证记录：原生存储检查、61 项 `host-checks` 和 Rust 应用构建已通过；样式扫描修复后 Node 全量 373 项、前端生产构建与 Vite 首次 CSS 转换检查通过。真实 WebView 冷启动耗时仍待新日志对照，阶段详情见 [开发记录](DEVELOPMENT-LOG.md)。
+
+
+### 不可变内存资源的首个实现
+
+HOST_API 10 复用 binary 内存预算，实现调用者持有的封存资源。screen 是生产者，LLM 是借用者，两者通过通用资源 ID 连接；Sidecar 的独立 raw lane 也写入同一资源存储。HOST_API 13 通过限时、一次性、同插件且指定原生 owner 的票据交接只读引用；底层共享 Arc 分配，字节与分配预算不重复计费，引用数和待领取票据另有限额。票据过期清理由每个存储实例的一项任务处理，不为每张票据创建长期任务。模块不为翻译/OCR 等业务提供专用传输。16 MiB 仍是内存对象限制，文件区间读取由 fs 或 Sidecar 原生 IO 承担。
+
+截图和剪贴板读取有独立于驻留资源的临时工作准入预算，截图在分配目标像素前取得许可，PNG 输出在编码过程中限额；第三方库分配不等于可精确测量的进程总内存。能力发现和参数/结果定义分别通过共享 capabilities 与 sdk/contracts.json 生成，两端只展示其传输开放的动作。窗口 UI 与媒体消费仍按自身语义组合这些基础能力，不增加通用的大型会话框架。
+
+
+### 截图目标与坐标
+
+HOST_API 11 让 monitor、desktop 和 window 目标共用物理区域截图路径。应用名/PID 用于定位窗口，多个匹配要求窗口 id；使用窗口可见外框的桌面物理坐标，查询与截图不宣称原子性。窗口目标捕获当前桌面可见像素，遮挡也入图，最小化窗口明确失败。桌面矩形可以跨屏，空隙透明；所有交集均进行原生区域捕获，避免为小矩形返回整屏。Windows pointer 是物理坐标快照，不是鼠标监听业务。截图像素与物理坐标一一对应，逻辑尺寸换算由插件明确处理。

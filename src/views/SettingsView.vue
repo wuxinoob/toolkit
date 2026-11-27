@@ -26,6 +26,14 @@ import {
 } from '@/components/ui/table';
 
 const scanning = ref(false);
+const openingModels = ref(false);
+async function openModels() {
+  if (openingModels.value) return;
+  openingModels.value = true;
+  try { await invoke('host_llm_open'); }
+  catch (error) { toast(String(error), 'error'); }
+  finally { openingModels.value = false; }
+}
 /** id of the plugin whose reload is in flight, so its button can show it. */
 const reloading = ref(null);
 const liveSessions = ref([]);
@@ -272,6 +280,7 @@ const SUMMON = '__summon';
  * first.
  */
 function onCaptureKey(row, event) {
+  if (capturing.value !== row.composite || event.repeat) return;
   if (event.key === 'Escape') {
     capturing.value = '';
     captureHint.value = '';
@@ -282,11 +291,12 @@ function onCaptureKey(row, event) {
     event.preventDefault();
     capturing.value = '';
     captureHint.value = '';
+    event.target.blur();
     applyHotkey(row, { key: '' });
     return;
   }
 
-  const combo = comboFrom(event);
+  const combo = comboFromEvent(event);
   if (!combo) {
     // 「还在凑修饰键」与「这个键不能单独绑」都是 null，但只有后者需要解释 ——
     // 否则用户按下一个字母、界面毫无反应，会以为输入框坏了。
@@ -540,11 +550,21 @@ async function installUpdateNow() {
 
     <Card>
       <CardHeader>
+        <CardTitle>Language models</CardTitle>
+        <CardDescription>Configure model connections, API keys and plugin access in the host model settings window.</CardDescription>
+      </CardHeader>
+      <CardContent>
+          <Button variant="outline" :disabled="openingModels" @click="openModels">{{ openingModels ? 'Opening…' : 'Manage models' }}</Button>
+      </CardContent>
+    </Card>
+
+    <Card>
+      <CardHeader>
         <CardTitle>Hotkeys</CardTitle>
         <CardDescription>
           What each plugin has asked for. A declaration is only a request — nothing is bound to the
           system until you switch it on here, so a plugin cannot take a global shortcut just by being
-          installed. Edit a key and press Enter to rebind it.
+          installed. Click a key and press the new combination to rebind it immediately. Escape cancels; Backspace clears it.
         </CardDescription>
       </CardHeader>
       <CardContent class="flex flex-col gap-2">
@@ -582,7 +602,7 @@ async function installUpdateNow() {
             :placeholder="
               capturing === row.composite ? captureHint || 'press a combination…' : 'click to set'
             "
-            :readonly="capturing === row.composite"
+            readonly
             :disabled="hotkeyBusy === row.composite"
             spellcheck="false"
             autocomplete="off"
@@ -644,7 +664,7 @@ async function installUpdateNow() {
           :placeholder="
             capturing === SUMMON ? captureHint || 'press a combination…' : 'click to set'
           "
-          :readonly="capturing === SUMMON"
+          readonly
           spellcheck="false"
           autocomplete="off"
           aria-label="Summon shortcut"

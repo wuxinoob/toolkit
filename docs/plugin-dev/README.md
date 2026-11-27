@@ -16,7 +16,6 @@
 | [bridge.md](bridge.md) | **插件窗口 vs 主窗口**：`bridge` 与 `ctx` 差异的唯一权威清单 + 每处的替代写法 |
 | [ui.md](ui.md) | 界面怎么做：组件工厂 + 令牌 |
 | [storage.md](storage.md) | 本地读写：能写什么、落在哪、为什么不用 fs/sql/store |
-| [FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md) | **已评估（路线 D），fs 读写暂不实施**：文件访问的可行性与四条路线（§七）；插件窗口的 `onDrop` **已实施**、`focusView` 已实施（§八） |
 | [debugging.md](debugging.md) | 出问题时按什么顺序查（**归因手册**） |
 | [recipes.md](recipes.md) | 常见功能的完整最小实现 |
 | [MAINTENANCE.md](MAINTENANCE.md) | **给接口维护者**：改了宿主，怎么保证这份手册不是第二份真相 |
@@ -28,7 +27,7 @@
 
 ---
 
-## 文档状态（核对于 2026-09-27）
+## 文档状态（核对于 2026-11-27）
 
 「由什么盯着」那一列是**真的测试**，不是承诺：改错这些事实，`npm run test` 会红，
 而且报出的是具体哪一行该写什么。
@@ -38,12 +37,11 @@
 | [architecture.md](architecture.md) | 已更新 | 9 个方案 id、15 项自检、内置插件名单 |
 | [bridge.md](bridge.md) | **本手册的对等权威清单** | 检查两侧实际构造的 SDK 对象（含 `onDrop` 的 `info` 差异） |
 | [manifest.md](manifest.md) | 已更新 | 权限集合与代码**双向**比对（多写少写都失败） |
-| [api.md](api.md) | 已更新 | 摘要里的 28/4/4 与 `bridge.md` 一致；不得再长出第二张对等表 |
+| [api.md](api.md) | 已更新 | 能力摘要与 bridge 对等表同步；数据 API 类型示例需编译通过 |
 | [ui.md](ui.md) | 已更新 | 组件词汇表数量、`.tb-*` 类名必须在 CSS 里真的存在 |
 | [debugging.md](debugging.md) | 已更新 | 15 项自检；`ctx.log` 的落点说法 |
 | [recipes.md](recipes.md) | 已更新 | 引用的示例路径必须存在 |
 | [storage.md](storage.md) | 已核对 | 引用的路径与命令名（存在性由路径测试覆盖） |
-| [FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md) | 已标注状态 | §8.1 `onDrop` ✅ 已实施、§8.2 `focusView` ✅ 已实施、§9 fs 评估 ⏳ **未实施（讨论记录）**、路线 D 的示意代码已标注**不存在** |
 | [MAINTENANCE.md](MAINTENANCE.md) | 面向维护者 | 改宿主时的操作清单 |
 
 **自动盯住的事实**：服务与动作清单、权限集合、方案 id、内置插件名、自检项数、
@@ -85,7 +83,7 @@ export default {
   "id": "my.plugin",
   "name": "My Plugin",
   "version": "0.1.0",
-  "api": 8,
+  "api": 13,
   "entry": "main.js",
   "contributes": { "views": [{ "slot": "tool", "id": "main", "title": "My Plugin", "icon": "lucide:puzzle" }] }
 }

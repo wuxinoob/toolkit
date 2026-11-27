@@ -28,6 +28,7 @@ export default defineConfig(() => ({
       input: {
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
         pluginwin: fileURLToPath(new URL('./pluginwin.html', import.meta.url)),
+        llmsettings: fileURLToPath(new URL('./llmsettings.html', import.meta.url)),
       },
     },
   },

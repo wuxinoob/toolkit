@@ -1,0 +1,1060 @@
+{
+  "version": 1,
+  "$defs": {
+    "ResourceSource": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "resource"
+        },
+        "id": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "ResourceTicket": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "expiresInMs": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "token",
+        "to",
+        "expiresInMs"
+      ],
+      "additionalProperties": false
+    },
+    "ResourceIdentity": {
+      "type": "object",
+      "properties": {
+        "owner": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner"
+      ],
+      "additionalProperties": false
+    },
+    "ResourceId": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "ResourceExport": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "to"
+      ],
+      "additionalProperties": false
+    },
+    "ResourceToken": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "token"
+      ],
+      "additionalProperties": false
+    },
+    "ResourceOpen": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16777216
+        }
+      },
+      "required": [
+        "id",
+        "size"
+      ],
+      "additionalProperties": false
+    },
+    "ResourceStat": {
+      "type": "object",
+      "properties": {
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "written": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sealed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "size",
+        "written",
+        "sealed"
+      ],
+      "additionalProperties": false
+    },
+    "ResourceImport": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/ResourceSource"
+        },
+        "maxChunkBytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "source",
+        "maxChunkBytes"
+      ],
+      "additionalProperties": false
+    },
+    "Rectangle": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
+      "additionalProperties": false
+    },
+    "WindowSelector": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "appName": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "MonitorTarget": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "monitor"
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "DesktopTarget": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "desktop"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "WindowTarget": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "window"
+        },
+        "id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "appName": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "anyOf": [
+            {
+              "required": [
+                "id"
+              ]
+            },
+            {
+              "required": [
+                "pid"
+              ]
+            },
+            {
+              "required": [
+                "appName"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "CaptureRequest": {
+      "type": "object",
+      "properties": {
+        "monitor": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "target": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MonitorTarget"
+            },
+            {
+              "$ref": "#/$defs/DesktopTarget"
+            },
+            {
+              "$ref": "#/$defs/WindowTarget"
+            }
+          ]
+        },
+        "rect": {
+          "$ref": "#/$defs/Rectangle"
+        },
+        "unit": {
+          "const": "physical"
+        },
+        "includeInfo": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "monitor",
+              "target"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "target"
+            ],
+            "properties": {
+              "target": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "desktop"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "rect"
+            ]
+          }
+        }
+      ]
+    },
+    "Pointer": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        },
+        "unit": {
+          "const": "physical"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "unit"
+      ],
+      "additionalProperties": false
+    },
+    "WindowInfo": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "appName": {
+          "type": "string"
+        },
+        "exeName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "bounds": {
+          "$ref": "#/$defs/Rectangle"
+        },
+        "minimized": {
+          "type": "boolean"
+        },
+        "focused": {
+          "type": "boolean"
+        },
+        "unit": {
+          "const": "physical"
+        }
+      },
+      "required": [
+        "id",
+        "pid",
+        "appName",
+        "exeName",
+        "title",
+        "bounds",
+        "minimized",
+        "focused",
+        "unit"
+      ],
+      "additionalProperties": false
+    },
+    "FileOpenOptions": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "directory": {
+          "type": "string"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "FileWriterOptions": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "directory": {
+          "type": "string"
+        },
+        "defaultPath": {
+          "type": "string"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "TextPart": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "text"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "ImagePart": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "image"
+        },
+        "source": {
+          "$ref": "#/$defs/ResourceSource"
+        },
+        "detail": {
+          "enum": [
+            "auto",
+            "low",
+            "high"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "Message": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "enum": [
+            "system",
+            "user",
+            "assistant"
+          ]
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TextPart"
+              },
+              {
+                "$ref": "#/$defs/ImagePart"
+              }
+            ]
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "role",
+        "content"
+      ],
+      "additionalProperties": false
+    },
+    "ModelRequest": {
+      "type": "object",
+      "properties": {
+        "profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Message"
+          },
+          "minItems": 1,
+          "maxItems": 512
+        },
+        "maxOutputTokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 32768
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 2
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reasoningEffort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "messages"
+      ],
+      "additionalProperties": false
+    },
+    "ReasoningPolicy": {
+      "type": "object",
+      "properties": {
+        "defaultEffort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "allowedEfforts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "defaultEffort",
+        "allowedEfforts"
+      ],
+      "additionalProperties": false
+    },
+    "ModelProfile": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "default": {
+          "type": "boolean"
+        },
+        "capabilities": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reasoning": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReasoningPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "default",
+        "capabilities",
+        "maxOutputTokens",
+        "reasoning"
+      ],
+      "additionalProperties": false
+    },
+    "TextDelta": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "text-delta"
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "index",
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "Usage": {
+      "type": "object",
+      "properties": {
+        "inputTokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outputTokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "totalTokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "inputTokens",
+        "outputTokens",
+        "totalTokens"
+      ],
+      "additionalProperties": false
+    },
+    "Completion": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "completed"
+        },
+        "finishReason": {
+          "enum": [
+            "stop",
+            "length",
+            "content_filter",
+            "other"
+          ]
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
+        }
+      },
+      "required": [
+        "type",
+        "finishReason",
+        "usage"
+      ],
+      "additionalProperties": false
+    },
+    "ModelEvent": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TextDelta"
+        },
+        {
+          "$ref": "#/$defs/Completion"
+        }
+      ]
+    },
+    "ModelStart": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "reasoningEffort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxEventBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queueBytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "profile",
+        "reasoningEffort",
+        "maxEventBytes",
+        "queueBytes"
+      ],
+      "additionalProperties": false
+    },
+    "GenerationId": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "services": {
+    "binary": {
+      "identity": {
+        "params": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        },
+        "result": {
+          "$ref": "#/$defs/ResourceIdentity"
+        }
+      },
+      "open": {
+        "params": {
+          "$ref": "#/$defs/ResourceOpen"
+        },
+        "result": {
+          "type": "object",
+          "properties": {
+            "maxChunkBytes": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "maxChunkBytes"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "seal": {
+        "params": {
+          "$ref": "#/$defs/ResourceId"
+        },
+        "result": {
+          "$ref": "#/$defs/ResourceSource"
+        }
+      },
+      "stat": {
+        "params": {
+          "$ref": "#/$defs/ResourceId"
+        },
+        "result": {
+          "$ref": "#/$defs/ResourceStat"
+        }
+      },
+      "close": {
+        "params": {
+          "$ref": "#/$defs/ResourceId"
+        },
+        "result": {
+          "type": "boolean"
+        }
+      },
+      "close_all": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "scope": {
+              "enum": [
+                "caller",
+                "plugin"
+              ]
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "result": {
+          "type": "null"
+        }
+      },
+      "export": {
+        "params": {
+          "$ref": "#/$defs/ResourceExport"
+        },
+        "result": {
+          "$ref": "#/$defs/ResourceTicket"
+        }
+      },
+      "import": {
+        "params": {
+          "$ref": "#/$defs/ResourceToken"
+        },
+        "result": {
+          "$ref": "#/$defs/ResourceImport"
+        }
+      },
+      "revoke": {
+        "params": {
+          "$ref": "#/$defs/ResourceToken"
+        },
+        "result": {
+          "type": "boolean"
+        }
+      }
+    },
+    "screen": {
+      "windows": {
+        "params": {
+          "$ref": "#/$defs/WindowSelector"
+        },
+        "result": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WindowInfo"
+          }
+        }
+      },
+      "pointer": {
+        "params": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        },
+        "result": {
+          "$ref": "#/$defs/Pointer"
+        }
+      },
+      "capture": {
+        "params": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CaptureRequest"
+            },
+            {
+              "properties": {
+                "includeInfo": {
+                  "const": false
+                }
+              }
+            }
+          ]
+        },
+        "result": {
+          "type": "string",
+          "contentEncoding": "binary"
+        },
+        "transport": "rpc-raw"
+      },
+      "capture_resource": {
+        "params": {
+          "$ref": "#/$defs/CaptureRequest"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResourceSource"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "$ref": "#/$defs/ResourceSource"
+                },
+                "capture": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "source",
+                "capture"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      }
+    },
+    "llm": {
+      "profiles": {
+        "params": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        },
+        "result": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelProfile"
+          }
+        }
+      },
+      "start": {
+        "params": {
+          "$ref": "#/$defs/ModelRequest"
+        },
+        "result": {
+          "$ref": "#/$defs/ModelStart"
+        }
+      },
+      "next": {
+        "params": {
+          "$ref": "#/$defs/GenerationId"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelEvent"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "const": "waiting"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "cancel": {
+        "params": {
+          "$ref": "#/$defs/GenerationId"
+        },
+        "result": {
+          "type": "boolean"
+        }
+      },
+      "cancel_all": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "scope": {
+              "enum": [
+                "caller",
+                "plugin"
+              ]
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "result": {
+          "type": "integer"
+        }
+      }
+    }
+  },
+  "webview": {
+    "fs.open": {
+      "params": {
+        "$ref": "#/$defs/FileOpenOptions"
+      },
+      "permission": "rpc:fs"
+    },
+    "fs.createWriter": {
+      "params": {
+        "$ref": "#/$defs/FileWriterOptions"
+      },
+      "permission": "rpc:fs"
+    }
+  }
+}

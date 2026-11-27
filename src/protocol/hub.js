@@ -457,11 +457,11 @@ export class MessageHub {
   }
 
   /** Talk to a helper executable shipped inside the plugin folder. */
-  sidecar(pluginId, ch, { exe, args, pollMs, timeoutMs, onFrame, onEnd } = {}) {
+  sidecar(pluginId, ch, { exe, args, pollMs, timeoutMs, hostRpc, onFrame, onEnd } = {}) {
     return this.stream(pluginId, 'stdio-line', {
       provider: 'sidecar',
       ch,
-      params: { exe, args, pollMs, timeoutMs },
+      params: { exe, args, pollMs, timeoutMs, hostRpc },
       onFrame,
       onEnd,
     });

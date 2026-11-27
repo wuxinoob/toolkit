@@ -1,7 +1,7 @@
 # 本地读写：能写什么、写在哪、为什么
 
 宿主的持久键值 API 是 `ctx.storage`。`ctx.files` 提供原生路径选择器，不读写文件内容；
-插件可以通过 `sidecar` / `pty` 运行本地程序进行文件 IO。当前没有通用文件读写 API。
+`ctx.fs` / `bridge.fs` 提供用户选定文件的区间读取与分块保存，宿主持有并释放文件句柄。Sidecar 自行通过操作系统读写路径，不依赖宿主 fs。完整契约见 [文件读写](api.md#文件读写-ctxfs--bridgefs)。
 
 ---
 
@@ -11,6 +11,7 @@
 |---|---|---|---|
 | `ctx.storage.get/set/remove/keys` | `rpc:storage` | `{appData}/plugin-data/<你的id>/data.json` | 键值，**整文件读写** |
 | `ctx.files.pick/save` | `rpc:dialog` | 用户选取的路径 | 只返回路径，不读写内容 |
+| `ctx.fs.open/createWriter` | `rpc:fs` | 用户通过原生选择器授权的文件 | 有界读块、暂存写入与显式提交 |
 | `ctx.rpc('host','write_debug_log', {content})` | `rpc:host` | `{appData}/debug.log` | **只追加**，超 1MB 截断 |
 | `ctx.sidecar(ch, {exe})` | `rpc:proc` | 你自带的二进制 | **任意**本地读写 |
 | `ctx.pty(ch, {program})` | `rpc:stream` | 任何程序 | **任意**本地读写 |

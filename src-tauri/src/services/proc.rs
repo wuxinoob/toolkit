@@ -24,9 +24,9 @@
 
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
-use std::io::{ErrorKind, Read, Write};
+use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -61,8 +61,6 @@ struct ProcState {
     lines: VecDeque<String>,
     /// Bytes currently held across `lines`, so the queue can be bounded.
     queued_bytes: usize,
-    /// Lines discarded to stay under the cap, reported to the consumer.
-    dropped: u64,
     exited: Option<i32>,
     read_error: Option<String>,
     /// Why WE stopped it, when the exit came from our own kill.
@@ -82,14 +80,32 @@ struct ProcShared {
 #[derive(Clone)]
 struct ProcHandle {
     pid: u32,
-    stdin: Arc<Mutex<ChildStdin>>,
+    stdin: super::pipe_writer::Writer,
     child: Arc<Mutex<Child>>,
     shared: Arc<ProcShared>,
+    rpc: Option<Arc<crate::sidecar_rpc::Lease>>,
+    background: bool,
+    instance: String,
 }
 
 fn registry() -> &'static Mutex<HashMap<ProcKey, ProcHandle>> {
     static REG: OnceLock<Mutex<HashMap<ProcKey, ProcHandle>>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn pending_spawns(
+) -> &'static Mutex<HashMap<ProcKey, std::sync::Weak<std::sync::atomic::AtomicU64>>> {
+    static PENDING: OnceLock<
+        Mutex<HashMap<ProcKey, std::sync::Weak<std::sync::atomic::AtomicU64>>>,
+    > = OnceLock::new();
+    PENDING.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn cancel_pending_spawns() {
+    let pending = pending_spawns().lock().unwrap();
+    for epoch in pending.values().filter_map(|value| value.upgrade()) {
+        epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// Take a lock, but never wait for it longer than `budget`.
@@ -103,7 +119,10 @@ fn registry() -> &'static Mutex<HashMap<ProcKey, ProcHandle>> {
 /// Returning `None` is the honest answer: "this pipe is busy, try again" — the
 /// caller's own timeout applies, the worker is released, and one stuck pipe
 /// cannot take the whole proc service (and the plugins polling it) down with it.
-pub fn lock_within<'a, T>(m: &'a Mutex<T>, budget: std::time::Duration) -> Option<std::sync::MutexGuard<'a, T>> {
+pub fn lock_within<'a, T>(
+    m: &'a Mutex<T>,
+    budget: std::time::Duration,
+) -> Option<std::sync::MutexGuard<'a, T>> {
     let deadline = std::time::Instant::now() + budget;
     loop {
         match m.try_lock() {
@@ -162,33 +181,34 @@ fn read_line_bounded(r: &mut impl Read, max: usize) -> std::io::Result<Option<St
 
 /// Enqueue one stdout line, enforcing the total cap.
 ///
-/// Drop-OLDEST, not newest: for a live stream the recent output is the useful
-/// part. Drops are counted so a consumer can tell it missed something rather
-/// than silently receiving a gap.
-fn enqueue_line(shared: &ProcShared, line: String) {
+/// Stdout carries control replies: overflow is terminal, never a silent gap.
+fn enqueue_line(shared: &ProcShared, line: String) -> Result<(), String> {
     let len = line.len();
     let mut st = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+    if st.queued_bytes + len > MAX_QUEUED_BYTES || st.lines.len() >= MAX_QUEUED_LINES {
+        return Err("stdout queue overflow; reliable Sidecar stream terminated".into());
+    }
     st.lines.push_back(line);
     st.queued_bytes += len;
-    while st.queued_bytes > MAX_QUEUED_BYTES || st.lines.len() > MAX_QUEUED_LINES {
-        match st.lines.pop_front() {
-            Some(old) => {
-                st.queued_bytes = st.queued_bytes.saturating_sub(old.len());
-                st.dropped += 1;
-            }
-            None => break,
-        }
-    }
     shared.cv.notify_all();
+    Ok(())
 }
 
 /// Per-process reader thread: stdout lines -> shared queue; on EOF, wait() the
 /// child so the exit code is exact, then publish `exited` and wake recv()ers.
-fn reader_thread(stdout: std::process::ChildStdout, child: Arc<Mutex<Child>>, shared: Arc<ProcShared>) {
+fn reader_thread(
+    stdout: std::process::ChildStdout,
+    child: Arc<Mutex<Child>>,
+    shared: Arc<ProcShared>,
+) {
     let mut r = std::io::BufReader::new(stdout);
     let read_error = loop {
         match read_line_bounded(&mut r, MAX_LINE_BYTES) {
-            Ok(Some(line)) => enqueue_line(&shared, line),
+            Ok(Some(line)) => {
+                if let Err(error) = enqueue_line(&shared, line) {
+                    break Some(error);
+                }
+            }
             Ok(None) => break None,
             Err(error) => break Some(error.to_string()),
         }
@@ -201,7 +221,11 @@ fn reader_thread(stdout: std::process::ChildStdout, child: Arc<Mutex<Child>>, sh
         if read_error.is_some() {
             let _ = child.kill();
         }
-        child.wait().ok().and_then(|status| status.code()).unwrap_or(-1)
+        child
+            .wait()
+            .ok()
+            .and_then(|status| status.code())
+            .unwrap_or(-1)
     };
     let mut st = shared.state.lock().unwrap_or_else(|e| e.into_inner());
     st.read_error = read_error;
@@ -211,8 +235,26 @@ fn reader_thread(stdout: std::process::ChildStdout, child: Arc<Mutex<Child>>, sh
 
 /// Spawn the sidecar. No path validation here — callers validate; tests use
 /// this directly with system binaries.
+#[cfg(test)]
 fn spawn_handle(exe: &Path, args: &[String], cwd: &Path) -> Result<ProcHandle, ServiceError> {
+    spawn_handle_rpc(exe, args, cwd, None)
+}
+
+fn spawn_handle_rpc(
+    exe: &Path,
+    args: &[String],
+    cwd: &Path,
+    rpc: Option<crate::sidecar_rpc::Prepared>,
+) -> Result<ProcHandle, ServiceError> {
     let mut cmd = Command::new(exe);
+    cmd.env_remove("TOOLKIT_HOST_PIPE");
+    cmd.env_remove("TOOLKIT_RESOURCE_PIPE");
+    if let Some(endpoint) = &rpc {
+        cmd.env("TOOLKIT_HOST_PIPE", &endpoint.path);
+        if let Some(path) = endpoint.resource_path() {
+            cmd.env("TOOLKIT_RESOURCE_PIPE", path);
+        }
+    }
     cmd.args(args)
         .current_dir(cwd)
         .stdin(Stdio::piped())
@@ -251,22 +293,41 @@ fn spawn_handle(exe: &Path, args: &[String], cwd: &Path) -> Result<ProcHandle, S
         .take()
         .ok_or_else(|| ServiceError::spawn_failed("child stdout unavailable"))?;
     let pid = child.id();
+    let rpc = rpc.map(|endpoint| endpoint.start(pid));
     let shared = Arc::new(ProcShared {
         state: Mutex::new(ProcState::default()),
         cv: Condvar::new(),
     });
     let child = Arc::new(Mutex::new(child));
+    let stdin = super::pipe_writer::Writer::new(stdin, pid).map_err(|e| {
+        session::pid_stop(pid)();
+        let _ = child.lock().unwrap_or_else(|e| e.into_inner()).wait();
+        ServiceError::spawn_failed(format!("spawn stdin writer: {e}"))
+    })?;
     let reader_child = Arc::clone(&child);
     let reader_shared = Arc::clone(&shared);
+    let reader_rpc = rpc.clone();
     std::thread::Builder::new()
         .name(format!("proc-reader-{pid}"))
-        .spawn(move || reader_thread(stdout, reader_child, reader_shared))
-        .map_err(|e| ServiceError::spawn_failed(format!("spawn reader thread: {e}")))?;
+        .spawn(move || {
+            reader_thread(stdout, reader_child, reader_shared);
+            if let Some(rpc) = reader_rpc {
+                rpc.close();
+            }
+        })
+        .map_err(|e| {
+            session::pid_stop(pid)();
+            let _ = child.lock().unwrap_or_else(|e| e.into_inner()).wait();
+            ServiceError::spawn_failed(format!("spawn reader thread: {e}"))
+        })?;
     Ok(ProcHandle {
         pid,
-        stdin: Arc::new(Mutex::new(stdin)),
+        stdin,
         child,
         shared,
+        rpc,
+        background: false,
+        instance: crate::sidecar_rpc::instance_id(),
     })
 }
 
@@ -294,25 +355,15 @@ pub fn resolve_exe_at(plugin_dir: &Path, exe: &str) -> Result<PathBuf, ServiceEr
 }
 
 fn write_line(h: &ProcHandle, line: &str) -> Result<(), ServiceError> {
-    let mut sin = h.stdin.lock().unwrap_or_else(|e| e.into_inner());
-    match writeln!(sin, "{line}").and_then(|_| sin.flush()) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            // Broken pipe: attach the exit code for better diagnostics.
-            let code = h
-                .child
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .try_wait()
-                .ok()
-                .flatten()
-                .and_then(|s| s.code());
-            Err(ServiceError::io(match code {
-                Some(c) => format!("sidecar exited (code {c}): {e}"),
-                None => format!("write sidecar: {e}"),
-            }))
-        }
+    let result = h.stdin.send(line);
+    if result
+        .as_ref()
+        .is_err_and(|error| matches!(error.code, "timeout" | "io"))
+    {
+        // Terminating the child unblocks the native writer; a caller-side timer alone cannot.
+        kill_handle(h, "stdin failed or timed out");
     }
+    result
 }
 
 /// Drain-before-exit semantics: queued stdout lines are returned even after
@@ -325,16 +376,12 @@ fn recv_from(shared: &Arc<ProcShared>, timeout: Duration) -> Value {
         return json!({ "timeout": true, "busy": true });
     };
     loop {
+        if let Some(error) = &st.read_error {
+            return json!({"readError":error});
+        }
         if let Some(line) = st.lines.pop_front() {
             st.queued_bytes = st.queued_bytes.saturating_sub(line.len());
-            let dropped = std::mem::take(&mut st.dropped);
-            let mut out = json!({ "line": line });
-            // Only present when it happened, so the shape is unchanged in the
-            // normal case.
-            if dropped > 0 {
-                out["dropped"] = json!(dropped);
-            }
-            return out;
+            return json!({ "line": line });
         }
         if let Some(code) = st.exited {
             let killed = st.killed;
@@ -368,6 +415,9 @@ fn recv_from(shared: &Arc<ProcShared>, timeout: Duration) -> Value {
 /// session drain on app exit). Killing by pid lets the reader's `wait()` return,
 /// and the reader then reaps the child and publishes the exit code.
 fn kill_handle(h: &ProcHandle, why: &'static str) {
+    if let Some(rpc) = &h.rpc {
+        rpc.close();
+    }
     // Recorded BEFORE the kill: the reader thread sets `exited` the moment the
     // process is gone, and a consumer that reads it first must not see "it died"
     // for a stop we asked for.
@@ -380,7 +430,7 @@ fn kill_handle(h: &ProcHandle, why: &'static str) {
     // Best-effort reap; the reader thread normally does this. Never block on the
     // lock here — that is the deadlock this function exists to avoid.
     if let Ok(mut child) = h.child.try_lock() {
-        let _ = child.wait();
+        let _ = child.try_wait();
     }
 }
 
@@ -391,12 +441,23 @@ fn stop_closure(h: ProcHandle) -> Arc<dyn Fn() + Send + Sync> {
 }
 
 fn kill_one(plugin: &str, key: &str) -> bool {
-    let pkey = ProcKey { plugin: plugin.into(), key: key.into() };
-    let removed = registry().lock().unwrap_or_else(|e| e.into_inner()).remove(&pkey);
+    let pkey = ProcKey {
+        plugin: plugin.into(),
+        key: key.into(),
+    };
+    let pending = pending_spawns().lock().unwrap();
+    if let Some(epoch) = pending.get(&pkey).and_then(|value| value.upgrade()) {
+        epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    let removed = registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&pkey);
+    drop(pending);
     match removed {
         Some(h) => {
             kill_handle(&h, "proc/kill");
-            session::close(plugin, key);
+            session::close_process(plugin, key, &h.instance);
             true
         }
         None => false,
@@ -404,6 +465,12 @@ fn kill_one(plugin: &str, key: &str) -> bool {
 }
 
 fn kill_all_for(plugin: &str) -> usize {
+    let pending = pending_spawns().lock().unwrap();
+    for (_, epoch) in pending.iter().filter(|(key, _)| key.plugin == plugin) {
+        if let Some(epoch) = epoch.upgrade() {
+            epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
     let removed: Vec<(ProcKey, ProcHandle)> = {
         let mut map = registry().lock().unwrap_or_else(|e| e.into_inner());
         let keys: Vec<ProcKey> = map.keys().filter(|k| k.plugin == plugin).cloned().collect();
@@ -411,12 +478,13 @@ fn kill_all_for(plugin: &str) -> usize {
             .filter_map(|k| map.remove(&k).map(|h| (k, h)))
             .collect()
     };
+    drop(pending);
     for (k, h) in &removed {
         // The session registry owns the kill for a sidecar, so TAKE the closure
         // rather than closing first: `close()` would drop it and the processes
         // would outlive this call (the old behaviour returned `{"killed": N}`
         // with N processes still running).
-        match session::take_stop(&k.plugin, &k.key) {
+        match session::take_process_stop(&k.plugin, &k.key, &h.instance) {
             Some(stop) => stop(),
             // No session record (unexpected for a sidecar): kill it here so the
             // process cannot outlive the call.
@@ -428,17 +496,42 @@ fn kill_all_for(plugin: &str) -> usize {
 
 // ------------------------------- actions --------------------------------------
 
-fn action_spawn(root: &Path, plugin_id: &str, params: &Value) -> Result<Value, ServiceError> {
+pub fn spawn_at(
+    root: &Path,
+    plugin_id: &str,
+    params: &Value,
+    rpc: Option<crate::sidecar_rpc::Prepared>,
+) -> Result<Value, ServiceError> {
     let key = params_str(params, "key")?;
     let exe = params_str(params, "exe")?;
+    let pkey = ProcKey {
+        plugin: plugin_id.into(),
+        key: key.clone(),
+    };
+    let (epoch, revision) = {
+        let mut pending = pending_spawns().lock().unwrap();
+        pending.retain(|_, value| value.strong_count() > 0);
+        let epoch = pending
+            .get(&pkey)
+            .and_then(|value| value.upgrade())
+            .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicU64::new(0)));
+        pending.insert(pkey.clone(), Arc::downgrade(&epoch));
+        let revision = epoch.load(std::sync::atomic::Ordering::SeqCst);
+        (epoch, revision)
+    };
     let args: Vec<String> = params
         .get("args")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     // Locate the plugin's source dir by manifest id (scan is cheap: few dirs).
-    let dir = external::scan_at(root).map_err(ServiceError::io)?
+    let dir = external::scan_at(root)
+        .map_err(ServiceError::io)?
         .into_iter()
         .find(|p| p.id == plugin_id)
         .ok_or_else(|| {
@@ -449,7 +542,6 @@ fn action_spawn(root: &Path, plugin_id: &str, params: &Value) -> Result<Value, S
         .dir;
     let exe_path = resolve_exe_at(Path::new(&dir), &exe)?;
 
-    let pkey = ProcKey { plugin: plugin_id.into(), key: key.clone() };
     // The registry lock is NOT held across the spawn.
     //
     // `CreateProcess` can take seconds (a scanner, a slow disk, a suspended
@@ -460,6 +552,13 @@ fn action_spawn(root: &Path, plugin_id: &str, params: &Value) -> Result<Value, S
     {
         let map = registry().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(h) = map.get(&pkey) {
+            if h.rpc.is_some() != rpc.is_some()
+                || h.background != params["background"].as_bool().unwrap_or(false)
+            {
+                return Err(ServiceError::conflict(
+                    "existing Sidecar has a different host RPC or background mode",
+                ));
+            }
             return Ok(json!({ "reused": true, "pid": h.pid }));
         }
         if map.keys().filter(|k| k.plugin == plugin_id).count() >= MAX_PROCS_PER_PLUGIN {
@@ -469,27 +568,87 @@ fn action_spawn(root: &Path, plugin_id: &str, params: &Value) -> Result<Value, S
         }
     }
 
-    let handle = spawn_handle(&exe_path, &args, Path::new(&dir))?;
+    let mut handle = spawn_handle_rpc(&exe_path, &args, Path::new(&dir), rpc)?;
+    handle.background = params["background"].as_bool().unwrap_or(false);
     let pid = handle.pid;
+    let pending = pending_spawns().lock().unwrap();
+    if epoch.load(std::sync::atomic::Ordering::SeqCst) != revision {
+        drop(pending);
+        kill_handle(&handle, "spawn cancelled");
+        return Err(ServiceError::conflict(
+            "Sidecar was stopped while its process was starting",
+        ));
+    }
+    // Serialize publication with stop and competing spawns, without holding a
+    // registry lock across CreateProcess or OS termination.
+    {
+        let map = registry().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = map.get(&pkey) {
+            let winner = existing.pid;
+            let compatible = existing.rpc.is_some() == handle.rpc.is_some()
+                && existing.background == handle.background;
+            drop(map);
+            drop(pending);
+            kill_handle(&handle, "spawn lost a race");
+            return if compatible {
+                Ok(json!({"reused":true,"pid":winner}))
+            } else {
+                Err(ServiceError::conflict(
+                    "existing Sidecar has a different host RPC or background mode",
+                ))
+            };
+        }
+        if map.keys().filter(|key| key.plugin == plugin_id).count() >= MAX_PROCS_PER_PLUGIN {
+            drop(map);
+            drop(pending);
+            kill_handle(&handle, "spawn limit reached");
+            return Err(ServiceError::conflict("Sidecar process limit reached"));
+        }
+    }
     // Register with the unified session registry BEFORE publishing the handle,
     // so a failure can never leave an untracked child running.
-    if let Err(e) = session::open(plugin_id, &key, SessionKind::Sidecar, Some(pid), stop_closure(handle.clone())) {
+    if let Err(e) = session::open(
+        plugin_id,
+        &key,
+        SessionKind::Sidecar,
+        Some(pid),
+        stop_closure(handle.clone()),
+    ) {
+        drop(pending);
         kill_handle(&handle, "spawn rollback");
         return Err(e);
     }
-    // Re-check: another spawn for the same key may have won while this one was
-    // outside the lock. Keep the first process and stop ours — two sidecars for
-    // one channel is worse than a wasted spawn.
-    {
-        let mut map = registry().lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(existing) = map.get(&pkey) {
-            let winner = existing.pid;
+    session::process_owner(plugin_id, &key, &handle.instance, handle.background);
+    let watched = handle.clone();
+    let watched_key = pkey.clone();
+    registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(pkey, handle);
+    drop(pending);
+    if watched.background {
+        // No frontend recv loop exists for a native background instance.
+        tokio::spawn(async move {
+            loop {
+                let exited = watched.shared.state.lock().unwrap().exited.is_some();
+                if exited {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            if let Some(rpc) = &watched.rpc {
+                rpc.close();
+            }
+            let mut map = registry().lock().unwrap();
+            if map
+                .get(&watched_key)
+                .is_some_and(|current| current.instance == watched.instance)
+            {
+                map.remove(&watched_key);
+            }
             drop(map);
-            session::close(plugin_id, &key);
-            kill_handle(&handle, "spawn lost a race");
-            return Ok(json!({ "reused": true, "pid": winner }));
-        }
-        map.insert(pkey, handle);
+            session::close_process(&watched_key.plugin, &watched_key.key, &watched.instance);
+        });
     }
     Ok(json!({ "reused": false, "pid": pid }))
 }
@@ -502,10 +661,31 @@ pub fn send_line(plugin_id: &str, key: &str, line: &str) -> Result<(), ServiceEr
     let h = registry()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .get(&ProcKey { plugin: plugin_id.into(), key: key.to_string() })
+        .get(&ProcKey {
+            plugin: plugin_id.into(),
+            key: key.to_string(),
+        })
         .cloned()
         .ok_or_else(|| ServiceError::not_found("sidecar not running — spawn first"))?;
-    write_line(&h, line)
+    let result = write_line(&h, line);
+    if result
+        .as_ref()
+        .is_err_and(|error| matches!(error.code, "timeout" | "io"))
+    {
+        let mut map = registry().lock().unwrap_or_else(|e| e.into_inner());
+        let process_key = ProcKey {
+            plugin: plugin_id.into(),
+            key: key.into(),
+        };
+        if map
+            .get(&process_key)
+            .is_some_and(|current| current.instance == h.instance)
+        {
+            map.remove(&process_key);
+            session::close_process(plugin_id, key, &h.instance);
+        }
+    }
+    result
 }
 
 fn action_send(plugin_id: &str, params: &Value) -> Result<Value, ServiceError> {
@@ -522,7 +702,10 @@ fn action_recv(plugin_id: &str, params: &Value) -> Result<Value, ServiceError> {
         .and_then(|v| v.as_u64())
         .unwrap_or(5000)
         .min(RECV_TIMEOUT_CAP_MS);
-    let pkey = ProcKey { plugin: plugin_id.into(), key };
+    let pkey = ProcKey {
+        plugin: plugin_id.into(),
+        key,
+    };
     // A slice of the caller's budget, not all of it: the pipe itself still needs
     // time to answer after the lookup.
     let lookup = Duration::from_millis(ms.min(250));
@@ -545,7 +728,10 @@ fn action_recv(plugin_id: &str, params: &Value) -> Result<Value, ServiceError> {
         let mut map = registry().lock().unwrap_or_else(|e| e.into_inner());
         // Retire only the reader that failed. A concurrent stop and restart
         // can already have installed another process for this key.
-        if map.get(&pkey).is_some_and(|current| Arc::ptr_eq(&current.shared, &h.shared)) {
+        if map
+            .get(&pkey)
+            .is_some_and(|current| Arc::ptr_eq(&current.shared, &h.shared))
+        {
             map.remove(&pkey);
             session::close(plugin_id, &pkey.key);
         }
@@ -574,29 +760,58 @@ impl Service for ProcService {
     ) -> Result<Value, ServiceError> {
         validate_plugin_id(plugin_id)?;
         let root = external::plugins_root(app).map_err(ServiceError::io)?;
+        if action == "spawn" && params["hostRpc"].as_bool() == Some(true) {
+            let instance = crate::sidecar_rpc::instance_id();
+            let caller = super::caller::Caller::sidecar(plugin_id, &instance);
+            let services = super::sidecar_services(app, caller.clone())?;
+            let binary = services.contains_key("binary");
+            let mut endpoint = crate::sidecar_rpc::Prepared::new(&instance, caller, services)?;
+            if binary {
+                use tauri::Manager;
+                endpoint = endpoint.with_resources(
+                    &instance,
+                    app.state::<crate::binary_ipc::Transfers>().inner().clone(),
+                )?;
+            }
+            return spawn_at(&root, plugin_id, &params, Some(endpoint));
+        }
         dispatch_at(&root, plugin_id, action, params)
     }
 }
 
 /// Core dispatch (root-based; spawn performs a real process spawn, the rest is
 /// cheap bookkeeping — see the tests for which parts are exercised how).
-pub fn dispatch_at(root: &Path, plugin_id: &str, action: &str, params: Value) -> Result<Value, ServiceError> {
+pub fn dispatch_at(
+    root: &Path,
+    plugin_id: &str,
+    action: &str,
+    params: Value,
+) -> Result<Value, ServiceError> {
     match action {
-        "spawn" => action_spawn(root, plugin_id, &params),
+        "spawn" if params["hostRpc"].as_bool() == Some(true) => Err(ServiceError::unsupported(
+            "host RPC spawn requires native application context",
+        )),
+        "spawn" => spawn_at(root, plugin_id, &params, None),
         "send" => action_send(plugin_id, &params),
         "recv" => action_recv(plugin_id, &params),
-        "kill" => Ok(Value::Bool(kill_one(plugin_id, &params_str(&params, "key")?))),
+        "kill" => Ok(Value::Bool(kill_one(
+            plugin_id,
+            &params_str(&params, "key")?,
+        ))),
         "kill_all" => Ok(json!({ "killed": kill_all_for(plugin_id) })),
         "list" => {
             let map = registry().lock().unwrap_or_else(|e| e.into_inner());
             Ok(Value::Array(
                 map.iter()
                     .filter(|(k, _)| k.plugin == plugin_id)
-                    .map(|(k, h)| json!({ "key": k.key, "pid": h.pid }))
+                    .map(|(k, h)| json!({ "key": k.key, "pid": h.pid, "background":h.background, "hostRpc":h.rpc.is_some(), "owner":h.rpc.as_ref().map(|rpc|&rpc.owner) }))
                     .collect(),
             ))
         }
-        _ => Err(ServiceError::new(code::UNKNOWN_ACTION, format!("unknown action `proc/{action}`"))),
+        _ => Err(ServiceError::new(
+            code::UNKNOWN_ACTION,
+            format!("unknown action `proc/{action}`"),
+        )),
     }
 }
 
@@ -621,7 +836,10 @@ mod tests {
         let mut r = Cursor::new(b"one\r\ntwo\nthree".to_vec());
         assert_eq!(read_line_bounded(&mut r, 100).unwrap(), Some("one".into()));
         assert_eq!(read_line_bounded(&mut r, 100).unwrap(), Some("two".into()));
-        assert_eq!(read_line_bounded(&mut r, 100).unwrap(), Some("three".into()));
+        assert_eq!(
+            read_line_bounded(&mut r, 100).unwrap(),
+            Some("three".into())
+        );
         assert_eq!(read_line_bounded(&mut r, 100).unwrap(), None, "clean EOF");
     }
 
@@ -636,43 +854,39 @@ mod tests {
     // ---- the stdout queue cap ----
 
     fn shared_state() -> ProcShared {
-        ProcShared { state: Mutex::new(ProcState::default()), cv: Condvar::new() }
+        ProcShared {
+            state: Mutex::new(ProcState::default()),
+            cv: Condvar::new(),
+        }
     }
 
     #[test]
-    fn the_stdout_queue_is_bounded_and_counts_drops() {
+    fn the_stdout_queue_fails_before_losing_a_line() {
         let shared = shared_state();
         let line = "x".repeat(MAX_LINE_BYTES);
-        let pushes = (MAX_QUEUED_BYTES / MAX_LINE_BYTES) + 3;
-        for _ in 0..pushes {
-            enqueue_line(&shared, line.clone());
+        for _ in 0..(MAX_QUEUED_BYTES / MAX_LINE_BYTES) {
+            enqueue_line(&shared, line.clone()).unwrap();
         }
+        assert!(enqueue_line(&shared, line.clone())
+            .unwrap_err()
+            .contains("overflow"));
         let st = shared.state.lock().unwrap_or_else(|e| e.into_inner());
         assert!(
             st.queued_bytes <= MAX_QUEUED_BYTES,
             "queue must stay under the cap, held {}",
             st.queued_bytes
         );
-        assert!(st.dropped >= 3, "the overflow must be counted, got {}", st.dropped);
-        assert!(!st.lines.is_empty(), "the newest line is kept, not the oldest");
+        assert_eq!(st.lines.len(), MAX_QUEUED_BYTES / MAX_LINE_BYTES);
     }
 
     #[test]
-    fn recv_reports_dropped_lines_once() {
+    fn recv_reports_terminal_read_failure_before_buffered_lines() {
         let shared = Arc::new(shared_state());
-        let line = "y".repeat(MAX_LINE_BYTES);
-        for _ in 0..((MAX_QUEUED_BYTES / MAX_LINE_BYTES) + 2) {
-            enqueue_line(&shared, line.clone());
-        }
+        enqueue_line(&shared, "queued".into()).unwrap();
+        shared.state.lock().unwrap().read_error = Some("stdout queue overflow".into());
         let first = recv_from(&shared, Duration::from_millis(0));
-        assert!(first.get("line").is_some(), "a line still comes back");
-        assert!(
-            first["dropped"].as_u64().unwrap_or(0) > 0,
-            "the loss must be reported, got {first}"
-        );
-        // reported once, not on every subsequent frame
-        let second = recv_from(&shared, Duration::from_millis(0));
-        assert!(second.get("dropped").is_none(), "drops are reported once: {second}");
+        assert_eq!(first["readError"], "stdout queue overflow");
+        assert!(first.get("line").is_none());
     }
 
     // ---- kill_all must actually kill ----
@@ -687,15 +901,20 @@ mod tests {
         let root = temp_root("killall");
 
         #[cfg(windows)]
-        let (exe, args): (&str, Vec<String>) =
-            ("cmd.exe", vec!["/c".into(), "ping -n 30 127.0.0.1 > nul".into()]);
+        let (exe, args): (&str, Vec<String>) = (
+            "cmd.exe",
+            vec!["/c".into(), "ping -n 30 127.0.0.1 > nul".into()],
+        );
         #[cfg(unix)]
         let (exe, args): (&str, Vec<String>) = ("sleep", vec!["30".into()]);
 
         let h = spawn_handle(Path::new(exe), &args, &root).unwrap();
         let pid = h.pid;
         let child = h.child.clone();
-        let key = ProcKey { plugin: "k.plugin".into(), key: "s1".into() };
+        let key = ProcKey {
+            plugin: "k.plugin".into(),
+            key: "s1".into(),
+        };
         registry()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -712,7 +931,10 @@ mod tests {
         let reported = kill_all_for("k.plugin");
         assert_eq!(reported, 1, "one sidecar was registered");
         assert!(
-            registry().lock().unwrap_or_else(|e| e.into_inner()).is_empty(),
+            registry()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty(),
             "the proc record must be gone"
         );
         assert!(
@@ -737,7 +959,10 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        assert!(exited, "kill_all reported success but the process is still running");
+        assert!(
+            exited,
+            "kill_all reported success but the process is still running"
+        );
     }
 
     /// The other half of the trap: closing first loses the closure, which is why
@@ -776,9 +1001,18 @@ mod tests {
 
         let ok = resolve_exe_at(&plugin, "calc.exe").unwrap();
         assert!(ok.is_file());
-        assert!(resolve_exe_at(&plugin, "../evil.exe").is_err(), "traversal must be rejected");
-        assert!(resolve_exe_at(&plugin, "missing.exe").is_err(), "missing exe must be rejected");
-        assert!(resolve_exe_at(&plugin, "").is_err(), "empty exe must be rejected");
+        assert!(
+            resolve_exe_at(&plugin, "../evil.exe").is_err(),
+            "traversal must be rejected"
+        );
+        assert!(
+            resolve_exe_at(&plugin, "missing.exe").is_err(),
+            "missing exe must be rejected"
+        );
+        assert!(
+            resolve_exe_at(&plugin, "").is_err(),
+            "empty exe must be rejected"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -790,7 +1024,10 @@ mod tests {
             state: Mutex::new(ProcState::default()),
             cv: Condvar::new(),
         });
-        assert_eq!(recv_from(&shared, Duration::from_millis(30))["timeout"], json!(true));
+        assert_eq!(
+            recv_from(&shared, Duration::from_millis(30))["timeout"],
+            json!(true)
+        );
 
         {
             let mut st = shared.state.lock().unwrap();
@@ -799,8 +1036,15 @@ mod tests {
             st.exited = Some(3);
             shared.cv.notify_all();
         }
-        assert_eq!(recv_from(&shared, Duration::from_secs(1))["line"], json!("a"));
-        assert_eq!(recv_from(&shared, Duration::from_secs(1))["line"], json!("b"), "drain order");
+        assert_eq!(
+            recv_from(&shared, Duration::from_secs(1))["line"],
+            json!("a")
+        );
+        assert_eq!(
+            recv_from(&shared, Duration::from_secs(1))["line"],
+            json!("b"),
+            "drain order"
+        );
         let last = recv_from(&shared, Duration::from_secs(1));
         assert_eq!(last["exited"], json!(true));
         assert_eq!(last["code"], json!(3));
@@ -816,8 +1060,12 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn real_sidecar_stdout_and_exit_code() {
-        let h = spawn_handle(Path::new(&win_cmd()), &["/C".into(), "echo sidecar-ok".into()], Path::new("."))
-            .unwrap();
+        let h = spawn_handle(
+            Path::new(&win_cmd()),
+            &["/C".into(), "echo sidecar-ok".into()],
+            Path::new("."),
+        )
+        .unwrap();
         let line = recv_from(&h.shared, Duration::from_secs(10));
         assert_eq!(line["line"], json!("sidecar-ok"));
         let end = recv_from(&h.shared, Duration::from_secs(10));
@@ -839,7 +1087,11 @@ mod tests {
         let h = spawn_handle(Path::new("powershell"), &args, Path::new(".")).unwrap();
         write_line(&h, "abc").unwrap();
         let line = recv_from(&h.shared, Duration::from_secs(15));
-        assert_eq!(line["line"], json!("got:abc"), "stdin must reach sidecar stdout");
+        assert_eq!(
+            line["line"],
+            json!("got:abc"),
+            "stdin must reach sidecar stdout"
+        );
         kill_handle(&h, "test");
     }
 
@@ -851,7 +1103,11 @@ mod tests {
         let root = temp_root("dispatch");
         let plugin = root.join("calc-demo");
         std::fs::create_dir_all(&plugin).unwrap();
-        std::fs::write(plugin.join("plugin.json"), r#"{"id":"test.proc","entry":"main.js"}"#).unwrap();
+        std::fs::write(
+            plugin.join("plugin.json"),
+            r#"{"id":"test.proc","entry":"main.js"}"#,
+        )
+        .unwrap();
         std::fs::write(plugin.join("main.js"), "export default {};").unwrap();
         let exe_copy = plugin.join("cmdunder.exe");
         std::fs::copy(win_cmd(), &exe_copy).unwrap();
@@ -870,14 +1126,33 @@ mod tests {
         assert_eq!(live.len(), 1, "spawn must register a session");
         assert_eq!(live[0]["kind"], json!("sidecar"));
 
-        let line = dispatch_at(&root, "test.proc", "recv", json!({ "key": "k1", "timeoutMs": 10000 })).unwrap();
+        let line = dispatch_at(
+            &root,
+            "test.proc",
+            "recv",
+            json!({ "key": "k1", "timeoutMs": 10000 }),
+        )
+        .unwrap();
         assert_eq!(line["line"], json!("full-path-ok"));
 
-        let again = dispatch_at(&root, "test.proc", "spawn", json!({ "key": "k1", "exe": "cmdunder.exe" })).unwrap();
+        let again = dispatch_at(
+            &root,
+            "test.proc",
+            "spawn",
+            json!({ "key": "k1", "exe": "cmdunder.exe" }),
+        )
+        .unwrap();
         assert_eq!(again["reused"], json!(true));
 
-        assert_eq!(dispatch_at(&root, "test.proc", "kill", json!({ "key": "k1" })).unwrap(), Value::Bool(true));
-        assert_eq!(session::list(Some("test.proc")).len(), 0, "kill must release the session");
+        assert_eq!(
+            dispatch_at(&root, "test.proc", "kill", json!({ "key": "k1" })).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            session::list(Some("test.proc")).len(),
+            0,
+            "kill must release the session"
+        );
         assert!(validate_plugin_id("bad/id").is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -892,7 +1167,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn real_sidecar_speaks_the_unified_envelope_protocol() {
-        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/calc-plugin/calc.exe");
+        let src =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/calc-plugin/calc.exe");
         if !src.is_file() {
             eprintln!("SKIP: build tests/fixtures/calc-plugin/calc.exe first (gcc -O2 -o calc.exe calc.c)");
             return;
@@ -903,13 +1179,27 @@ mod tests {
         let root = temp_root("calc");
         let plugin = root.join("calc.demo");
         std::fs::create_dir_all(&plugin).unwrap();
-        std::fs::write(plugin.join("plugin.json"), r#"{"id":"calc.demo","entry":"main.js"}"#).unwrap();
+        std::fs::write(
+            plugin.join("plugin.json"),
+            r#"{"id":"calc.demo","entry":"main.js"}"#,
+        )
+        .unwrap();
         std::fs::write(plugin.join("main.js"), "export default {};").unwrap();
         std::fs::copy(&src, plugin.join("calc.exe")).unwrap();
 
-        let spawn = dispatch_at(&root, "calc.demo", "spawn", json!({ "key": "calc", "exe": "calc.exe" })).unwrap();
+        let spawn = dispatch_at(
+            &root,
+            "calc.demo",
+            "spawn",
+            json!({ "key": "calc", "exe": "calc.exe" }),
+        )
+        .unwrap();
         assert!(spawn["pid"].as_u64().unwrap() > 0);
-        assert_eq!(session::list(Some("calc.demo")).len(), 1, "the sidecar must be tracked");
+        assert_eq!(
+            session::list(Some("calc.demo")).len(),
+            1,
+            "the sidecar must be tracked"
+        );
 
         // 1. a normal request travels as a `req` envelope and answers with `res`
         let ask = |id: u64, op: &str, a: i64, b: i64| {
@@ -917,23 +1207,48 @@ mod tests {
                     "p": { "op": op, "a": a, "b": b } })
             .to_string()
         };
-        dispatch_at(&root, "calc.demo", "send", json!({ "key": "calc", "line": ask(1, "mul", 6, 7) })).unwrap();
-        let line = dispatch_at(&root, "calc.demo", "recv", json!({ "key": "calc", "timeoutMs": 10000 })).unwrap();
+        dispatch_at(
+            &root,
+            "calc.demo",
+            "send",
+            json!({ "key": "calc", "line": ask(1, "mul", 6, 7) }),
+        )
+        .unwrap();
+        let line = dispatch_at(
+            &root,
+            "calc.demo",
+            "recv",
+            json!({ "key": "calc", "timeoutMs": 10000 }),
+        )
+        .unwrap();
         let res: Value = serde_json::from_str(line["line"].as_str().unwrap()).unwrap();
         assert_eq!(res["kind"], json!("res"));
         assert_eq!(res["id"], json!(1));
         assert_eq!(res["p"]["result"], json!(42));
 
         // 2. a protocol error comes back on the SAME envelope, as an `err`
-        dispatch_at(&root, "calc.demo", "send", json!({ "key": "calc", "line": ask(2, "div", 1, 0) })).unwrap();
-        let line = dispatch_at(&root, "calc.demo", "recv", json!({ "key": "calc", "timeoutMs": 10000 })).unwrap();
+        dispatch_at(
+            &root,
+            "calc.demo",
+            "send",
+            json!({ "key": "calc", "line": ask(2, "div", 1, 0) }),
+        )
+        .unwrap();
+        let line = dispatch_at(
+            &root,
+            "calc.demo",
+            "recv",
+            json!({ "key": "calc", "timeoutMs": 10000 }),
+        )
+        .unwrap();
         let err: Value = serde_json::from_str(line["line"].as_str().unwrap()).unwrap();
         assert_eq!(err["kind"], json!("err"));
         assert_eq!(err["id"], json!(2));
         assert_eq!(err["code"], json!("div_by_zero"));
 
         // 3. and the envelope survives a round trip through our own decoder
-        let decoded = crate::protocol::codec::line_json::decode_line(line["line"].as_str().unwrap()).unwrap();
+        let decoded =
+            crate::protocol::codec::line_json::decode_line(line["line"].as_str().unwrap()).unwrap();
         assert_eq!(decoded.kind, crate::protocol::envelope::Kind::Err);
 
         dispatch_at(&root, "calc.demo", "kill", json!({ "key": "calc" })).unwrap();

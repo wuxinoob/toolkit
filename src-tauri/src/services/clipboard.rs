@@ -133,7 +133,7 @@ pub fn encode_image(image: &arboard::ImageData<'_>) -> Result<Vec<u8>, ServiceEr
             "invalid RGBA clipboard image",
         ));
     }
-    let mut png = Vec::new();
+    let mut png = super::image_work::Output::new(MAX_IMAGE_BYTES);
     PngEncoder::new(&mut png)
         .write_image(
             &image.bytes,
@@ -142,12 +142,13 @@ pub fn encode_image(image: &arboard::ImageData<'_>) -> Result<Vec<u8>, ServiceEr
             ExtendedColorType::Rgba8,
         )
         .map_err(|error| {
-            ServiceError::new(code::CODEC, format!("encode clipboard PNG: {error}"))
+            if png.exceeded {
+                ServiceError::bad_params("clipboard PNG exceeds 8 MiB")
+            } else {
+                ServiceError::new(code::CODEC, format!("encode clipboard PNG: {error}"))
+            }
         })?;
-    if png.len() > MAX_IMAGE_BYTES {
-        return Err(ServiceError::bad_params("clipboard PNG exceeds 8 MiB"));
-    }
-    Ok(png)
+    Ok(png.bytes)
 }
 
 fn read_image(params: &Value) -> Result<Vec<u8>, ServiceError> {
@@ -161,6 +162,7 @@ fn read_image(params: &Value) -> Result<Vec<u8>, ServiceError> {
         })
         .transpose()?;
     check_revision(expected)?;
+    let _work = super::image_work::acquire(MAX_IMAGE_PIXELS as u64, MAX_IMAGE_BYTES)?;
     let image = clipboard()?.get_image();
     check_revision(expected)?;
     let image = image.map_err(|error| match error {

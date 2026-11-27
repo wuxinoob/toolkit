@@ -1,221 +1,126 @@
-# Toolbox
+<p align="center"><img src="src-tauri/icons/icon.svg" width="88" alt="Toolkit 图标"></p>
 
-Tauri 2 + Vue 3 desktop toolbox with a **plugin host** and a **unified message
-protocol**. Every frontend ↔ backend message — control calls, pushed streams,
-sidecar pipes, broadcasts — speaks one envelope shape; only the wire framing
-differs, and that is a declared choice rather than an accident of which feature
-happened to need it.
+# Toolkit
 
-## The idea in one table
+基于 **Tauri 2、Vue 3 和 Rust** 的可扩展桌面工具箱。通过内置工具、外置 JavaScript 插件和原生 Sidecar，把进程管理、桌面操作与模型调用放在同一个工作台中。
 
-A scheme is the combination of two independent axes:
+[下载安装](https://github.com/wuxinoob/toolkit/releases/latest) · [插件开发](docs/plugin-dev/README.md) · [文档导航](docs/README.md) · [v0.1.7 更新说明](docs/releases/v0.1.7.md)
 
-| | codec |
+目前交付 **Windows x64** 安装包（NSIS `.exe` / MSI `.msi`），运行依赖 WebView2 Runtime。
+
+## 可以用来做什么
+
+| 功能 | 说明 |
 |---|---|
-| **transport** | `json-envelope` · `line-json` · `raw-binary` · `object` |
+| **Processes：进程管理**（`builtin.procman`） | 保存运行配置，在终端中启动、查看输出和停止进程；支持定时启动与有上限的自动重启。 |
+| **Store：插件与软件商店**（`builtin.store`） | 浏览、安装、更新和卸载外置插件；提供软件官网、winget 和安装包下载入口。 |
+| **宿主模型服务** | 集中管理 API 连接、模型和插件授权。插件及原生 Sidecar 可直接调用已授权模型，无需各自保存 API key。 |
+| **桌面能力** | 为插件提供剪贴板文字/图片、截图、鼠标位置、窗口定位、全局热键、原生对话框与文件区间读写。 |
+| **独立插件窗口** | 支持置顶、透明、自绘标题栏、物理像素定位和无激活展示，适合提示卡片、浮窗等工具。 |
+| **StreamLab：通信实验台**（`builtin.streamlab`） | 对照请求、推送、广播、PTY 和 Sidecar 等通信方案，方便开发和诊断插件。 |
 
-| scheme id | transport · codec | direction | capabilities |
-|---|---|---|---|
-| `rpc` | invoke · json-envelope | up | requestResponse, ordered |
-| `rpc-raw` | invoke · raw-binary | up | requestResponse, binary, ordered |
-| `channel-in` | invoke (batched) · json-envelope | up | uplink, ordered |
-| `channel-json` | channel · json-envelope | down | push, ordered, crossWindow |
-| `channel-raw` | channel · raw-binary | down | push, binary, ordered |
-| `event-bus` | event · json-envelope | down | push, crossWindow |
-| `stdio-line` | stdio · line-json | both | requestResponse, push, pull |
-| `pty-stream` | pty · raw-binary | both | push, binary, ordered |
-| `in-process` | in-process · object | down | push |
+具体工具可以由插件扩展；宿主提供通用能力，工具的业务流程由插件实现。示例插件与测试夹具见 [tests/fixtures](tests/fixtures/README.md)，不等同于默认安装的功能清单。
 
-That is all nine. `channel-in` is the odd one: Tauri's `Channel` is
-one-directional (`JS` gets a receive callback and no `send`), so the plugin→host
-push is carried by **batched `invoke`** rather than by a new carrier.
+## 开始使用
 
-Adding an experiment = one descriptor + one small transport module. Nothing in
-the host, the SDK or the plugins grows a branch — they all resolve a scheme by
-id through `src/protocol/registry.js`.
+1. 在 [Releases](https://github.com/wuxinoob/toolkit/releases/latest) 下载 Windows 安装包并安装。
+2. 从侧栏打开 Processes、Store 或 StreamLab。外置插件也可以放入应用的插件目录，再在 Settings 点击 **Rescan plugins**。
+3. 如需模型能力，在 **Settings → Language models** 中添加连接和模型、授权插件，再保存设置。
 
-## Quick start
+模型连接提供 **DeepSeek、OpenAI、Gemini、Claude、SiliconFlow** 快捷模板，支持 Chat Completions 和 Responses 兼容协议。可读取模型目录并测试生成；模板仅预填连接参数，实际能力仍取决于服务和所选模型。生成测试会调用供应商 API，可能产生费用。
 
-```bash
+API key 保存在 Windows Credential Manager，非敏感模型配置保存在应用数据目录。图片输入需单独开启；思考等级可以由宿主配置默认值和允许范围，再由插件按次选择。完整说明见 [宿主模型与 Sidecar](docs/LLM.md)。
+
+关闭按钮按宿主策略隐藏主窗口，应用可继续在托盘运行；通过托盘菜单显示主窗口或退出。进程、后台 Sidecar 与窗口有各自的生命周期，退出应用会执行原生会话清理。
+
+## 编写插件
+
+一个外置插件包含 `plugin.json` 和单文件 ESM 入口；依赖应在发布前打包。插件安装目录可通过 Settings 的 **Open plugins directory** 打开。
+
+```json
+{
+  "id": "my.plugin",
+  "name": "My Plugin",
+  "version": "0.1.0",
+  "api": 13,
+  "entry": "main.js",
+  "contributes": {
+    "views": [{ "slot": "tool", "id": "main", "title": "My Plugin" }]
+  }
+}
+```
+
+```js
+export default {
+  manifest: { id: 'my.plugin', name: 'My Plugin' },
+  activate(ctx) {
+    ctx.registerView('main', root => {
+      root.textContent = 'Hello, Toolkit';
+    });
+  },
+};
+```
+
+插件可以使用宿主 UI 工厂，也可以自行渲染 DOM；需要系统原生能力时可携带 Sidecar。宿主提供：
+
+- **共享 SDK**：主窗口的 `ctx` 与插件窗口的 `bridge` 共用数据能力，差异见 [对等表](docs/plugin-dev/bridge.md)。
+- **原生 Sidecar RPC**：通过 Windows 命名管道直接调用 Rust 宿主，模型调用和资源访问不依赖前端中转。
+- **二进制与资源交接**：支持双向原始字节 IPC、分块读写、不可变资源引用，以及同插件窗口与 Sidecar 间的一次性交接。
+- **有界通信与回收**：请求、流、进程、文件和内存资源分别管理超时、容量、取消与释放；大文件使用 `fs` 区间读取或 Sidecar 本地 IO。
+- **类型与能力发现**：提供 [TypeScript 数据接口](sdk/types/README.md)、[Rust SDK](sdk/rust/toolkit-host/README.md) 和运行时 `schema()`。
+
+当前宿主接口为 **HOST_API 13**，信封版本为 **1**。协议、字节和文件能力见 [PROTOCOL](docs/PROTOCOL.md)、[BINARY-IPC](docs/BINARY-IPC.md) 与 [插件 API](docs/plugin-dev/api.md)。
+
+<details>
+<summary>开发者：通信方案速查</summary>
+
+请求使用 `rpc` / `rpc-raw`；批量上行为 `channel-in`；推送为 `channel-json` / `channel-raw`；跨窗口广播为 `event-bus`；子进程使用 `stdio-line` / `pty-stream`；窗口内事件为 `in-process`。各方案的流控与生命周期见协议文档。
+
+</details>
+
+插件按可信代码运行。共享 JavaScript 上下文和声明权限用于约束受支持的调用，不能隔离恶意插件；具体限制见 [信任边界](docs/ARCHITECTURE.md#信任边界)。
+
+## 从源码运行
+
+开发环境使用 Node.js 24 和 Rust/MSVC 工具链；Windows 原生依赖按 [Tauri 开发环境](https://v2.tauri.app/start/prerequisites/) 配置。
+
+```powershell
 npm install
-npm run test          # protocol, SDK, lifecycle and documentation checks
-npm run bench         # codec experiment: what each codec costs per message
-npm run build         # build the frontend
-npm run tauri dev     # run the app
+npm run tauri dev
 ```
 
-Rust side:
+纯浏览器 `npm run dev` 可预览部分界面，完整桌面能力需要 Tauri 宿主。
 
-```bash
-cd src-tauri
-cargo check --all-targets
-cargo run --example host-checks   # pure-logic assertions, no test harness
+干净检出后的检查顺序如下。先构建前端和原生检查入口，以生成权限审计所需的 ACL schema：
+
+```powershell
+npm run build
+cargo run --locked --manifest-path src-tauri/Cargo.toml --example host-checks
+npm test
 ```
 
-`cargo test` does **not** work on Windows: `tauri-build` embeds the app manifest
-into bin targets only, so this crate's test binaries load without it and die at
-load with `STATUS_ENTRYPOINT_NOT_FOUND`. `host-checks` is the same assertions
-through a target that can actually load — see the note at the top of it.
+原生回归使用 `examples` 作为可执行入口，覆盖进程、文件、截图、PTY、存储和模型管道；完整检查命令见 [架构与验证](docs/ARCHITECTURE.md)。运行时诊断写入应用数据目录的 `debug.log`，自检与故障排查见 [开发调试手册](docs/plugin-dev/debugging.md)。
 
-Dev builds run an in-app conformance suite (15 checks) at boot and write the
-report — plus the boot trace — to `{appData}/debug.log`, so a runtime problem is
-readable from outside the webview. Re-run it any time with
-`await window.__toolbox.selftest()` in the webview console.
+本地构建安装包：
 
-Current architecture and verification commands: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-Documentation index: [docs/README.md](docs/README.md).
-
-### Closing the window puts it in the tray
-
-The main window's ✕ **hides** it. The app keeps running, so a stray click does not
-tear down live sessions (a pty, a sidecar). Quit from the tray icon: right-click
-for **显示主窗口 / 重新加载界面 / 重启应用 / 退出 Toolbox**, or left-click to bring the
-window back.
-
-**重新加载界面** is the recovery for a window that stopped responding: it rebuilds every
-view in about a second and **keeps the running processes**, because the next boot is told
-not to reap them. Use **重启应用** when you want a clean slate instead — that one drains
-every session on the way out.
-
-**重启应用** is the recovery path, and it is a real restart: it requests an exit,
-drains every live session, then starts a new process — the tray is the only
-place that can do this without orphaning a pty or a sidecar.
-
-If the webview and the host ever stop talking (a resume from standby is the case
-that has been seen), a watchdog notices within about a minute, writes the fact to
-`debug.log` — including how long the frontend was suspended — and says so on
-screen. It never reloads on its own: a reload reaps sessions, and a false
-positive would kill whatever the user was running.
-
-That makes the tray load-bearing, so a tray that will not build is a **fatal**
-startup error rather than a warning — an app that hides on close and has no tray
-cannot be quit from its own UI. To turn the behaviour off, set
-`store.settings.closeToTray = false` (it persists), and ✕ quits as before.
-
-### Releases and signing
-
-Pushing a `v*` tag runs `.github/workflows/release.yml`: it builds the NSIS
-installer and the MSI on a Windows runner and publishes them — plus `latest.json`,
-the manifest the updater reads — as a GitHub Release. The tag must equal
-`v` + `version` from `src-tauri/tauri.conf.json`, or the job stops on purpose: the
-updater compares versions, so a drifting tag only surfaces on a user's machine.
-
-Updates are signed with a minisign key pair:
-
-| half | where it lives | who uses it |
-| --- | --- | --- |
-| public | `plugins.updater.pubkey` in `tauri.conf.json` | the app, to verify a downloaded installer |
-| private | **outside the repo**: `~/.tauri/toolbox-updater.key` | the build, to sign it |
-
-The private half must also be copied into the repository's Actions secrets as
-`TAURI_SIGNING_PRIVATE_KEY` (plus `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if the key
-has a passphrase). With `createUpdaterArtifacts` on and a pubkey in the config, the
-CLI **refuses to finish a build without it** — that is a hard error, not a silent
-skip, so a local `tauri build` needs the same key:
-
-```bash
-TAURI_SIGNING_PRIVATE_KEY=~/.tauri/toolbox-updater.key npm run tauri build
-npm run tauri build -- --no-sign    # unsigned installers, no updater signature
+```powershell
+npm run tauri -- build --no-sign
 ```
 
-The variable accepts the key's content or a path to it. Never commit the private
-key: `.gitignore` blocks `*.key` / `*.pem` / `*.p12` / `*.pfx` / `.env*`, and a key
-that reaches one commit is a key in every clone. Windows Authenticode signing is
-**not** configured, so the installers are unsigned and SmartScreen warns on first
-run.
+正式版本由 [Release workflow](.github/workflows/release.yml) 在 `v*` 标签触发后构建和发布。标签必须与应用配置版本一致；自动更新清单由实际产物和更新签名生成。更新签名与 Windows 代码签名是不同机制，签名私钥不进入仓库。
 
-## Layout
+## 项目结构
 
-```
-src/
-  protocol/                 the message plane
-    envelope.js             kinds + constructors + validate (mirror of envelope.rs)
-    codec.js                json-envelope / line-json / raw-binary / object
-    registry.js             the scheme table + capability negotiation
-    hub.js                  MessageHub: request / stream / sidecar / pty / bus
-    transports/             one module per scheme
-  host/                     plugin kernel
-    boot.js  lifecycle.js  ctx.js  store.js  registry.js  external.js
-    plugin-sdk.js           shared SDK for both windows
-    disposer.js             resource ownership and teardown
-    events.js               the window-local bus (the `in-process` scheme)
-    pluginwin-host.js       secondary plugin windows
-  plugins/                  first-party plugins
-    procman  streamlab  store
-  core/logger.js  core/selftest.js
-src-tauri/src/
-  protocol/{envelope,codec}.rs   the same contract, native side
-  services/{mod,storage,proc,stream,session,external,bus}.rs
-  host/registry.rs               the authoritative permission registry
-  lib.rs                         three table-driven entry points
-tests/fixtures/          plugins the TESTS drive — not shipped, not deployed
-  calc-plugin/              window frontend + native sidecar backend
-  plugins/eyecare/          multi-window + self-drawn chrome
-  plugins/fileprobe/        native dialogs and OS drag-and-drop, by hand
-  plugins/gallery/          the component vocabulary, in one view
-  plugins/msglog/           the broadcast bus, seen from two windows
-  plugins/probe/            drives every interface in one pass (living check)
-  plugins/senses/           clipboard / screen / drag-drop, on real hardware
-docs/
-  README.md                 documentation index
-  ARCHITECTURE.md           current boundaries and improvement priorities
-  archive/                  historical designs and reviews
-  PROTOCOL.md               the protocol reference
-  INTERFACES.md             interface inventory + unification audit + roadmap
-  INTERFACE-REVIEW-2026-09-27.md   interface classification + what is and is not verified
-  UI.md                     design tokens + the .tb-* primitives plugins can use
-  plugin-dev/               the plugin author's manual (start at its README)
+```text
+src/host/            插件加载、共享 SDK、生命周期与外壳状态
+src/plugins/         builtin.procman / builtin.streamlab / builtin.store
+src/protocol/        请求、事件、流与传输适配
+src-tauri/src/       Rust 服务、文件/字节资源、进程与原生接口
+sdk/                 TypeScript 契约与 Rust Sidecar 客户端
+tests/               自动回归与可运行插件夹具
+docs/                架构、协议、插件手册和版本记录
 ```
 
-## Plugins
+## 下一步：i18n
 
-**A built-in is code the user cannot uninstall and every boot pays for**, so the
-bar is deliberately high: it has to exercise a scheme nothing else in the table
-exercises. That leaves three:
-
-| plugin | id | what it demonstrates |
-|---|---|---|
-| Processes | `builtin.procman` | `pty-stream` multi-process management with xterm.js |
-| StreamLab | `builtin.streamlab` | the scheme table, and one experiment per scheme side by side |
-| Store | `builtin.store` | the plugin & software marketplace, with download, install & hot-activation |
-
-`notepad`, `eyecare` and `floatwin` used to be built-ins. They were working
-demos rather than parts of the message plane, and they moved to `tests/fixtures/` —
-where a user who wants one can install it. See `src/host/registry.js` for the
-rule this table encodes.
-
-See `docs/INTERFACES.md` for the full interface inventory, what each feature
-uses, and the known gaps. `tests/fixtures/plugins/probe` is a new plugin that drives
-every interface in one pass — it is both the proof that a drop-in plugin needs
-no host changes and a living integration check.
-
-External plugins need no host changes: drop a folder with `plugin.json` + a
-single-file ESM entry into `{appData}/plugins/` and click **Rescan** in Settings.
-See `tests/fixtures/plugins/probe` (the interface sweep) and `tests/fixtures/calc-plugin`
-(a window frontend plus a native sidecar backend).
-
-Rescan **reconciles** rather than only discovering — new folders load, changed
-ones reload in place (no app restart), deleted ones unload and lose their host
-grant, and unchanged ones are left alone. See `tests/fixtures/README.md`.
-
-## Trust model
-
-Locally installed plugins are trusted code (the same model as Raycast / Quicker).
-Two gates apply, and both must pass:
-
-1. **JS gate** (`ctx`) — fails fast with a readable message.
-2. **Native gate** (`host/registry.rs`) — checks the registered plugin's declared
-   permissions and resource paths; an unregistered id is denied.
-
-Plugin ids are supplied by the caller, and plugins share the host's JavaScript
-context. These checks enforce the trusted-plugin API contract; they do not
-authenticate callers or isolate malicious plugins. See `docs/ARCHITECTURE.md`.
-
-The Settings page shows each plugin's declared permissions and the live session
-registry.
-
-## Recommended IDE setup
-
-VS Code + [Vue - Official](https://marketplace.visualstudio.com/items?itemName=Vue.volar)
-+ [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode)
-+ [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+当前界面仍有中英混合文案。下一阶段计划支持 **简体中文 / English**、跟随系统与手动切换，逐步覆盖多窗口、原生托盘、内置工具和插件语言接口。实施顺序、兼容策略与验收要求见 [i18n 升级计划](docs/I18N-UPGRADE.md)。

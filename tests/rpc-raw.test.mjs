@@ -151,6 +151,74 @@ test('binary SDK sends raw request bodies and reads a payload larger than 1 MiB 
   await assert.rejects(() => transfer.read(0), { code: Code.NOT_FOUND });
 });
 
+test('binary upload seals the exact byte view and closes failed uploads', async () => {
+  const scope = new Disposer();
+  const sdk = createPluginSdk('p.upload', { permissions: ['rpc:binary'] }, scope);
+  const input = new Uint8Array(1024 * 1024 + 37).fill(83).subarray(11, -5);
+  let written = 0; let closed = 0; let sealed = false;
+  impl = async (cmd, args) => {
+    if (cmd === 'plugin_binary_control') {
+      if (args.action.kind === 'open') { assert.equal(args.action.size, input.length); return { maxChunkBytes: 256 * 1024 }; }
+      if (args.action.kind === 'seal') { sealed = true; assert.equal(written, input.length); return { kind: 'resource', id: args.id, size: written }; }
+      if (args.action.kind === 'stat') return { sealed, written, size: input.length };
+      closed++; return true;
+    }
+    assert.equal(cmd, 'plugin_binary_write'); assert.ok(args.byteLength <= 256 * 1024);
+    assert.equal(args[0], 83); written += args.byteLength; return written;
+  };
+  const resource = await sdk.binary.upload(new DataView(input.buffer, input.byteOffset, input.byteLength));
+  assert.equal(resource.source.id, resource.id); assert.equal(resource.source.kind, 'resource');
+  assert.equal((await resource.stat()).sealed, true);
+  await resource.close(); await scope.run(); assert.equal(closed, 1);
+  const failedScope = new Disposer();
+  impl = async (cmd, args) => {
+    if (cmd === 'plugin_binary_control') { if (args.action.kind === 'open') return { maxChunkBytes: 256 * 1024 }; closed++; return true; }
+    throw new Error('upload interrupted');
+  };
+  const failedSdk = createPluginSdk('p.upload', { permissions: ['rpc:binary'] }, failedScope);
+  await assert.rejects(failedSdk.binary.upload(input), /upload interrupted/);
+  await failedScope.run(); assert.equal(closed, 2);
+});
+
+test('native screenshot resources are released after a pending scope is disposed', async () => {
+  const scope = new Disposer();
+  const sdk = createPluginSdk('p.capture', { permissions: ['rpc:screen', 'rpc:binary'] }, scope);
+  let finish; const closed = [];
+  impl = async (cmd, args) => {
+    assert.equal(cmd, 'plugin_rpc'); const req = args.msg;
+    if (req.act === 'capture_resource') return new Promise(resolve => { finish = () => resolve({ v: 1, kind: 'res', id: req.id, p: { kind: 'resource', id: 'picture', size: 12 } }); });
+    if (req.act==='close') closed.push(req.p.id); return { v: 1, kind: 'res', id: req.id, p: true };
+  };
+  const pending = sdk.screen.captureResource({ monitor: 0, rect: { x: 2, y: 3, width: 4, height: 5 } });
+  const rejected=assert.rejects(pending,error=>error.code==='not_found');
+  const disposing = scope.run({ parallel: true }); finish();
+  await Promise.all([rejected, disposing]); assert.deepEqual(closed, ['picture']);
+});
+
+test('screen target selectors and capture metadata preserve resource ownership', async () => {
+  const scope = new Disposer();
+  const sdk = createPluginSdk('p.window', { permissions: ['rpc:screen', 'rpc:binary'] }, scope);
+  const requests = [];
+  impl = async (cmd, args) => {
+    assert.equal(cmd, 'plugin_rpc'); const req = args.msg; requests.push(req);
+    const replies = {
+      windows: [{ id: 7, pid: 42, appName: 'Editor', bounds: { x: -800, y: 100, width: 800, height: 600 } }],
+      pointer: { x: -600, y: 200, unit: 'physical' },
+      capture_resource: { source: { kind: 'resource', id: 'window-crop', size: 123 }, capture: { bounds: { x: -780, y: 130, width: 300, height: 200 }, unit: 'physical' } },
+      close: true,
+    };
+    return { v: 1, kind: 'res', id: req.id, p: replies[req.act] };
+  };
+  assert.equal((await sdk.screen.windows({ pid: 42, appName: 'editor.exe' }))[0].id, 7);
+  assert.equal((await sdk.screen.pointer()).unit, 'physical');
+  const options = { target: { kind: 'window', id: 7, pid: 42 }, rect: { x: 20, y: 30, width: 300, height: 200 }, includeInfo: true };
+  const result = await sdk.screen.captureResource(options);
+  assert.deepEqual(requests.find(req => req.act === 'capture_resource').p, options);
+  assert.equal(result.source.id, 'window-crop');
+  await scope.run();
+  assert.deepEqual(requests.find(req => req.act === 'close_all').p, {});
+});
+
 test('disposing while a binary open is pending closes the eventual native session', async () => {
   const scope = new Disposer();
   const sdk = createPluginSdk('p.pending', { permissions: ['rpc:binary'] }, scope);

@@ -465,6 +465,57 @@ test('stdio-line: sidecar lines decode as envelopes and exit ends the stream', a
 
 // ------------------------------- pty scheme ------------------------------------
 
+test('uplink: byte budget and one active batch bound requests before native dispatch', async () => {
+  let complete, writes = 0;
+  invokeImpl = async (cmd, args) => {
+    if (args.msg.act !== 'write_in') return resEnv(true);
+    writes++;
+    return new Promise(resolve => complete = () => resolve(resEnv({ written: 1 })));
+  };
+  const handle = await hub.uplink('p.batches', 'batches', { sink: 'proc', params: { key: 'helper' } });
+  await assert.rejects(handle.send(Envelope.data('batches', 'x'.repeat(1 << 20))), error => error.code === 'bad_params');
+  assert.equal(writes, 0);
+  const pending = handle.send(Envelope.data('batches', 'one'));
+  await assert.rejects(handle.send(Envelope.data('batches', 'two')), error => error.code === 'conflict');
+  assert.equal(writes, 1);
+  complete();
++  await pending;
+  await handle.close();
+});
+
+test('stdio-line: async consumers finish before the next line is pulled', async () => {
+  let reads = 0, processing = false, overlap = false, ended = false;
+  invokeImpl = async (cmd, args) => {
+    if (args.msg.act !== 'recv') return resEnv(true);
+    if (processing) overlap = true;
+    return resEnv(++reads <= 2 ? { line: `line-${reads}` } : { exited: true, code: 0 });
+  };
+  await hub.sidecar('p.ordered', 'ordered', { exe: 'mock.exe', onFrame: async frame => {
+    if (frame.kind !== 'data') return;
+    processing = true;
+    await sleep(30);
+    processing = false;
+  }, onEnd: () => ended = true });
+  await waitFor(() => ended, 2000, 'ordered stdio end');
+  assert.equal(overlap, false);
+});
+
+test('stdio-line: a legacy dropped-line report is a terminal failure visible to the plugin', async () => {
+  let killed = false, ended;
+  invokeImpl = async (cmd, args) => {
+    if (args.msg.act === 'recv') return resEnv({ line: 'incomplete result', dropped: 7 });
+    if (args.msg.act === 'kill') killed = true;
+    return resEnv(true);
+  };
+  const frames = [];
+  await hub.sidecar('p.loss', 'loss', { exe: 'mock.exe', onFrame: frame => frames.push(frame), onEnd: frame => ended = frame });
+  await waitFor(() => ended, 2000, 'gap failure');
+  assert.equal(ended.kind, 'err');
+  assert.match(ended.msg, /7.*line|line.*7/);
+  assert.equal(frames.length, 1);
+  assert.equal(killed, true);
+});
+
 test('pty-stream: subprocess bytes become data frames and the exit code an exit frame', async () => {
   let sessionOpened = null;
   invokeImpl = async (cmd, args) => {

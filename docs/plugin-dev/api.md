@@ -1,5 +1,7 @@
 # `ctx` 参考 — 按任务组织
 
+数据接口的编辑器类型见 [SDK 类型](../../sdk/types/README.md)，字段定义来源为 sdk/contracts.json。`schema.contracts` 公布已覆盖的请求/返回定义；目前覆盖 binary、screen、llm 与前端 fs 选项，未列出的动作仍应查本文。运行时的授权、动态预算和跨字段约束以各接口说明为准，不能仅凭一个类型合法就认为操作必然成功。
+
 `ctx` 是宿主支持的插件调用契约。插件目前运行在宿主信任的 JavaScript 上下文中，
 共享主窗口的代码可以访问全局对象；接口权限检查不构成恶意插件的隔离沙箱。
 具体边界见 [当前架构](../ARCHITECTURE.md#信任边界)。
@@ -47,15 +49,14 @@ ctx.bus.once('my.topic', (env) => {});
 
 **跨窗口只走 bus 广播，不要用 storage 轮询做同步** —— 那是设计上被否掉的做法。
 
-**同一个 API，两个默认值**：
+两种事件入口：
 
 | | 默认方案 | 范围 |
 |---|---|---|
 | `ctx.events.*` | `in-process` | **本窗口内**，零 IPC，同步送达 |
 | `ctx.bus.*` | `event-bus` | **跨窗口**广播 |
 
-两者**都是异步形状** —— 方案差异只体现在默认值上，不体现在形状上。
-所以你可以把 `ctx.events` 换成 `ctx.bus` 而不改代码结构。
+两者的订阅/发布方法都返回 Promise，但 `events` 回调收到原始 payload，`bus` 回调收到完整信封（payload 在 `env.p`）。替换时必须调整回调。两者均不等待异步回调完成，不提供消费确认；可靠数据应使用请求/响应或逐块拉取。
 
 > 注意：`in-process` 是**窗口本地**的。插件视图在哪个窗口，它的 `events`
 > 就只在那个窗口内。想跨窗口用 `ctx.bus`。
@@ -229,6 +230,10 @@ const s = await ctx.sidecar('helper1', {
 **权限**：`pty` → `rpc:stream`；`sidecar` → `rpc:proc`。
 **两个不同的权限是刻意的** —— 「开一个流」和「运行我自带的二进制」不是一回事。
 
+Sidecar stdout 是可靠的 UTF-8 文本行通道：单行最多 1 MiB，队列最多 4 MiB / 4096 行；超限时停止该进程并报告流错误，不丢弃旧答复后继续。`stdio-line` 会等待 `onFrame` 返回的 Promise，再读取下一行；此规则不适用于 Channel 推送或事件总线。异步回调失败会结束流并停止进程。旧宿主若报告 dropped，SDK 将其转换成明确的终止错误。
+
+stdin 每个进程有独立 writer，最多 8 个排队写入，包含正在写入的数据最多 4 MiB；单行最多 1 MiB。写入在 5 秒内未确认会停止 Sidecar，返回 timeout；已写入多少字节可能未知，不自动重试。成功仅表示字节已写入管道，不代表业务处理成功，业务确认应使用请求 ID。大字节对象走 binary 数据通道，终端输出走 PTY。
+
 参考实现：`builtin.procman`（pty）、`tests/fixtures/` 里的 sidecar 示例。
 
 ---
@@ -242,9 +247,9 @@ const h = await ctx.stream('ticker', 'ch1', { onFrame: (f) => {} });
 // 二进制帧版本，同一个信封形状
 const h2 = await ctx.streamRaw('blob', 'ch2', { onFrame: (f) => {} });
 
-// 我 → 宿主，批量上行（省 IPC：1000 帧 = 1 次往返）
-const up = await ctx.uplink('ch3', { sink: 'proc' });
-up.sendBatch(frames);
+// 我 → 宿主，批量上行（每批最多 256 帧，另受字节预算约束）
+const up = await ctx.uplink('ch3', { sink: 'proc', params: { key: 'helper1' } });
+await up.sendBatch(frames.slice(0, 256));
 
 await ctx.closeStream('ch1');   // 关自己开的流：不要权限
 ```
@@ -254,6 +259,8 @@ await ctx.closeStream('ch1');   // 关自己开的流：不要权限
 **上行流的载体是批量 invoke，不是 Channel。** Tauri 的 `Channel` 是**单向**的 ——
 JS 侧只有接收回调，**没有 `send`**。所以「从 JS 推给 Rust」没有 Channel 可用，
 这是框架约束不是设计选择。
+
+`sendBatch` 最多 256 帧，帧序列化字节合计不超过 1 MiB；每个上行流只允许一个未完成批次，调用方须 await。批次逐帧写入，不是事务；失败前可能已有部分帧到达后端，不能自动重放整批。回收 session 同时关闭上行端点，renderer 恢复后可重新打开同名通道。
 
 ---
 
@@ -298,9 +305,7 @@ ctx.log.info(`drop a plugin folder into ${pluginsDir}`);
 ```
 
 **它是知识，不是权限。** 知道 `documentsDir` 在哪，不等于能读它 ——
-读文件仍然只有两条路：`ctx.files` 让**用户**给你一个文件，
-或 `ctx.onDrop` 让**用户**把文件拖进来（见下面两节，以及
-[FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md)）。
+前端读内容通过 `ctx.fs.open()` 的原生选择器取得文件引用；`ctx.files` 和 `ctx.onDrop` 仅返回路径，供 Sidecar 自行读取。知道路径不自动获得前端文件引用。
 
 通用出口：`ctx.rpc(svc, act, params)`，权限按 `rpc:<svc>` 判。
 
@@ -854,7 +859,7 @@ async function closeMe() {
 |---|---|---|
 | 能力 | `ui` · `windows` · `registerView` · `focusView` | `label` · `close` · `drag` · `dispose` |
 
-**其余 30 个能力两边都有**，包括 `fs` / `binary` / `storage` / `bus` / `events` / `onHotkey` / `onDrop` /
+**其余 32 个能力两边都有**，包括 `fs` / `binary` / `storage` / `bus` / `events` / `onHotkey` / `onDrop` /
 `stream` / `streamRaw` / `uplink` / `sidecar` / `pty` / `clipboard` / `screen` /
 `files` / `log` / `closeStream` / `sessions` / `schemes` / `schema` / `paths` / `protocol` /
 `cleanup`。
@@ -966,3 +971,77 @@ export default {
   你只需清自己 new 的定时器和外部引用
 
 参考 [debugging.md](debugging.md#启动慢)。
+
+## 通用图片资源与区域截图
+
+HOST_API 10 在既有 binary 命名空间增加封存和上传：
+
+```js
+// permissions: rpc:binary + rpc:llm
+const image = await ctx.binary.upload(pngBytes);
+try {
+  await ctx.llm.generate({ profile: 'vision', messages: [{ role: 'user', content: [
+    { type: 'text', text: '描述图片' },
+    { type: 'image', source: image.source, detail: 'auto' },
+  ] }] });
+} finally { await image.close(); }
+```
+
+`binary.open` 返回的句柄新增 `seal()`、`stat()`；封存前必须上传完整声明大小。封存后禁止写入。`binary.close(id)` 可显式关闭原生生产者返回的引用。资源按插件及原生窗口/进程实例归属，HOST_API 13 的 `binary.identity/export/import/revoke` 提供同插件、指定接收方的一次性交接，详见 [资源交接与图像预算](../BINARY-IPC.md#资源交接host_api-13)。领取后以接收方自己的 source 使用，不能直接传其他调用者的 id。模型借用及其他已领取引用不会因发送方关闭而失效，最后引用结束才归还预算。上传缓存不会读一块释放一块，大文件继续使用 fs 区间读取或 Sidecar 自行读写。
+
+`screen.capture({monitor?, rect?:{x,y,width,height}})` 返回 PNG 字节；rect 是所选显示器内的物理像素整数，宽高大于零。负桌面坐标先减去显示器 position，不能混用逻辑像素。超出所选显示器或跨屏时拒绝；插件按屏拆分。省略 rect 保留整屏行为，原生 ROI 只捕获所选区域。
+
+`screen.captureResource(options)` 返回封存的 `{kind:'resource',id,size}`，同时需要 rpc:screen 和 rpc:binary。可直接作为 LLM source，避免图片经 JS 往返。调用者用 binary.close(id) 提前释放；页面重载、窗口销毁、插件停用也回收。原生 Sidecar 可通过 screen/capture_resource 取得属于自身的资源。
+
+## 桌面矩形、应用窗口与鼠标联动（HOST_API 11）
+
+旧的 `screen.capture({monitor,rect})` 和默认主屏截图保持兼容。新选项供 `capture` 与 `captureResource` 共用：
+
+| target | rect 坐标 | 说明 |
+|---|---|---|
+| 不传，或 `{kind:'monitor',index?}` | 所选显示器左上角为原点 | index 与旧 monitor 参数不能同时指定 target |
+| `{kind:'desktop'}` | 桌面物理坐标，可为负 | 必须给 rect，支持跨屏；屏幕间空隙和屏幕外部分透明，没有任何显示器相交时失败 |
+| `{kind:'window',appName?,pid?,id?}` | 窗口可见外框左上角为原点，包含标题栏 | 至少一个选择条件；同时传入的条件按 AND 匹配；省略 rect 返回窗口可见外框区域 |
+
+rect 均为 `{x,y,width,height}` 整数物理像素；monitor/window 的 x/y 必须非负，不能超出目标。desktop 的 x/y 可为负。可显式传 `unit:'physical'`；其他单位拒绝，避免将 CSS/逻辑坐标静默当作像素。单次截图最多 64 MP；内存资源仍受 16 MiB 编码数据预算约束。
+
+`screen.windows({appName?,pid?,id?})` 返回所有匹配窗口的数组，未匹配时为空；每项包含 id、pid、appName、exeName（查询不到时 null）、title、bounds、minimized、focused、unit。bounds 为桌面物理像素矩形，使用 Windows 可见外框，不包含不可见的拖动边界。appName 可精确匹配程序显示名或可执行文件名（如 Code.exe / Code，忽略大小写）。使用 window 目标截图时，多个匹配才返回 conflict，此时先枚举并选择 id；id 是当前窗口标识，不能跨进程重启持久化。超大窗口列表要求按应用或 PID 缩小查询范围。
+
+`screen.pointer()` 在 Windows 返回 `{x,y,unit:'physical'}`，是调用时的鼠标位置快照，不安装全局鼠标钩子。
+
+```js
+// 鼠标附近 400 × 240 物理像素；边缘之外自动保留透明像素。
+const p = await ctx.screen.pointer();
+const png = await ctx.screen.capture({
+  target: { kind: 'desktop' },
+  rect: { x: p.x - 200, y: p.y - 120, width: 400, height: 240 },
+});
+
+// 根据应用和 PID 找窗口，再取窗口内局部。
+const windows = await ctx.screen.windows({ appName: 'Code.exe', pid: 1234 });
+const result = await ctx.screen.captureResource({
+  target: { kind: 'window', id: windows[0].id, pid: 1234 },
+  rect: { x: 40, y: 80, width: 400, height: 240 },
+  includeInfo: true,
+});
+try {
+  // result.source 可直接用于 LLM 图片 source；result.capture 是坐标元数据。
+  console.log(result.capture.bounds, result.capture.unit);
+} finally { await ctx.binary.close(result.source.id); }
+```
+
+默认 captureResource 返回原有 `{kind,id,size}`；仅 includeInfo:true 改为 `{source,capture}`。capture 包含实际截图的桌面物理 bounds、unit、解析后的 target 和 mode:'visible-desktop'。原始字节 capture 不接受 includeInfo；用 captureResource 取得元数据。窗口位置每次调用重新获取，返回元数据用于把图片像素映射回屏幕。
+
+**窗口目标是桌面可见区域定位，不是后台窗口内容捕获。** 遮挡窗口、悬浮条等会进入图片；最小化窗口返回 unsupported。不会激活或切换窗口，也不绕过系统保护内容。显示器分块与窗口几何查询不是原子屏幕快照；目标移动或显示布局变化时应重新获取。接口仍为单次拉取，插件联动鼠标时等待上一帧完成再请求下一帧，避免积压。
+
+系统 125% / 150% 缩放不会改变物理像素参数的含义。若界面要求固定逻辑尺寸，再按目标显示器 scaleFactor 换算宽高；已是物理坐标的鼠标位置不可重复乘缩放。WebView/网页缩放与系统缩放分开处理，不将 DOM clientX/clientY 直接当作桌面坐标。跨不同 DPI 显示器时保持桌面物理坐标，刷新显示器及窗口快照。窗口调整大小会改变可截区域和排版，超出新边界的局部请求报错。
+
+## 调用宿主模型与原生后台 Sidecar
+
+`ctx.llm` / `bridge.llm` 提供 `profiles()`、`generate(request, {signal}?)` 和 `stream(request, {signal}?)`。声明 `rpc:llm` 后仍需用户在 Settings → Language models 中授权模型配置。API key 保留在原生凭据存储；支持文本和资源引用图片输入，流按消费速度逐块拉取，未知 usage 为 `null`。
+
+HOST_API 12：`profiles()` 新增 `reasoning: null | {defaultEffort, allowedEfforts}` 与 `capabilities.reasoning`，描述宿主配置的等级策略。生成请求可传 `reasoningEffort` 覆盖默认值，必须在允许列表内；省略或 null 自动继承宿主默认值。禁用时显式指定返回 `unsupported`，越界返回 `bad_params`。Sidecar 使用相同字段和原生检查；列表由模型配置声明，不固定 low/medium/high，不代表远端参数已验证生效。思考 token 预算尚未提供。
+
+`ctx.sidecars.start({key,exe,args?,hostRpc?})` 启动显式的原生后台实例，默认 `hostRpc:true`；`stop(key)` 停止，`list()` 查看。页面重载不清理后台实例，插件停用、进程退出或宿主退出会回收。普通 `ctx.sidecar({... , hostRpc:true})` 仍保持窗口持有的 stdio 生命周期。Sidecar 可通过独立管道直接调用同一模型服务，无需前端转发。
+
+请求、流事件、限制及两端示例见 [LLM 与 Sidecar 开发说明](../LLM.md)，Rust 客户端见 [toolkit-host](../../sdk/rust/toolkit-host/README.md)。

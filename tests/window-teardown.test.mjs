@@ -133,6 +133,23 @@ test('an existing window is NOT tracked — it may belong to another plugin', as
   }
 });
 
+test('each plugin close listener prevents implicit destruction of a main window kept in the tray', async () => {
+  const { ctx } = makeCtx('t.tray-close');
+  invokes.length = 0;
+  let pluginCalls = 0;
+  await ctx.windows.onCloseRequested(() => { pluginCalls++; });
+  await ctx.windows.onCloseRequested(() => { pluginCalls++; });
+  const listeners = invokes.filter(call => call.cmd === 'plugin:event|listen' && call.args.event === 'tauri://close-requested');
+  assert.equal(listeners.length, 2);
+  invokes.length = 0;
+  for (const listener of listeners) {
+    await callbacks.get(listener.args.handler)({ event: 'tauri://close-requested', id: 7, payload: null });
+  }
+  await flush();
+  assert.equal(pluginCalls, 0, 'hiding the main window does not tear down plugin windows');
+  assert.equal(invokes.filter(call => call.cmd === 'plugin:window|destroy').length, 0, 'independent Tauri close events must all be prevented');
+});
+
 test('reusing an inactive popup preserves its focus and visibility options', async () => {
   const { ctx } = makeCtx('t.popup');
   existingWindows = ['plugin-popup'];

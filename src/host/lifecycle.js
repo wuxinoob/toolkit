@@ -184,6 +184,12 @@ async function releasePlugin(plugin) {
   await releaseHotkeys(plugin);
   clearPluginTheme(plugin.manifest.id);
   await plugin._disposer?.run();
+  // Explicit plugin deactivation also owns native background instances, which
+  // deliberately survive a page reload and are absent from the JS disposer.
+  const permissions = plugin.manifest.permissions ?? [];
+  if (permissions.includes('rpc:proc')) await hub.request(plugin.manifest.id, 'proc', 'kill_all', {}).catch(e => console.warn('[lifecycle] Sidecar cleanup failed', e));
+  if (permissions.includes('rpc:binary')) await hub.request(plugin.manifest.id, 'binary', 'close_all', { scope: 'plugin' }).catch(e => console.warn('[lifecycle] resource cleanup failed', e));
+  if (permissions.includes('rpc:llm')) await hub.request(plugin.manifest.id, 'llm', 'cancel_all', { scope: 'plugin' }).catch(e => console.warn('[lifecycle] model cleanup failed', e));
   plugin._disposer = null;
   plugin._ctx = null;
   hub.dropSubscriptions(plugin.manifest.id);

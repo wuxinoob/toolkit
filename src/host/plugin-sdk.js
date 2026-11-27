@@ -3,8 +3,9 @@ import { hub } from '../protocol/hub.js';
 import { protocolContract } from '../protocol/contract.js';
 import { Code } from '../protocol/codes.js';
 import { ProtocolError } from '../protocol/errors.js';
-import { openBinaryTransfer } from '../protocol/transports/binaryTransfer.js';
+import { openBinaryTransfer, attachBinaryTransfer } from '../protocol/transports/binaryTransfer.js';
 import { fileAccess } from './file-access.js';
+import { createLlmClient } from './llm-client.js';
 
 /** Shared capabilities; window UI, view routing and window ownership stay out. */
 export function createPluginSdk(id, manifest, disposer) {
@@ -83,6 +84,14 @@ export function createPluginSdk(id, manifest, disposer) {
   let openFile;
   const selectFile = (write, options) => gate('fs', () => (openFile ??= fileAccess(id, disposer))(write, options));
 
+  let resourcesTracked = false;
+  const closeResource = (resourceId) => request('binary', 'close', { id: resourceId });
+  function trackResources() {
+    if (resourcesTracked) return;
+    resourcesTracked = true;
+    disposer.track(() => request('binary', 'close_all', {}));
+  }
+
   return {
     manifest,
     protocol: protocolContract(),
@@ -93,10 +102,42 @@ export function createPluginSdk(id, manifest, disposer) {
     },
     request,
     bytes,
-    binary: { open: openBinary },
+    binary: {
+      open: openBinary,
+      async upload(raw, opts) {
+        if (!(raw instanceof ArrayBuffer) && !ArrayBuffer.isView(raw)) throw new ProtocolError(Code.BAD_PARAMS, 'upload requires a byte buffer');
+        const bytes = new Uint8Array(raw.buffer ?? raw, raw.byteOffset ?? 0, raw.byteLength);
+        const resource = await openBinary(bytes.byteLength, opts);
+        try {
+          for (let offset = 0; offset < bytes.length; offset += resource.maxChunkBytes) await resource.write(offset, bytes.subarray(offset, offset + resource.maxChunkBytes));
+          const source = await resource.seal();
+          return Object.freeze({ ...resource, source });
+        } catch (error) { await resource.close().catch(() => {}); throw error; }
+      },
+      close: closeResource,
+      identity: () => request('binary', 'identity', {}),
+      export: (resourceId, {to}) => request('binary', 'export', {id:resourceId,to}),
+      revoke: ({token}) => request('binary', 'revoke', {token}),
+      async import({token}, opts = {}) {
+        if (disposer.closed) throw new ProtocolError(Code.NOT_FOUND, 'plugin scope is closed');
+        trackResources();
+        const result = await request('binary','import',{token},{timeoutMs:0});
+        const resource = attachBinaryTransfer(id,{id:result.source.id,maxChunkBytes:result.maxChunkBytes},opts);
+        if (disposer.closed) { await resource.close(); throw new ProtocolError(Code.NOT_FOUND, 'plugin scope closed during import'); }
+        return Object.freeze({...resource,source:result.source});
+      },
+    },
     fs: {
       open: (options) => selectFile(false, options),
       createWriter: (options) => selectFile(true, options),
+    },
+    llm: createLlmClient((action, params) => request('llm', action, params), disposer),
+    sidecars: {
+      start: ({ key, exe, args = [], hostRpc = true }) => disposer.closed
+        ? Promise.reject(new ProtocolError(Code.NOT_FOUND, 'plugin scope is closed'))
+        : request('proc', 'spawn', { key, exe, args, hostRpc, background: true }),
+      stop: (key) => request('proc', 'kill', { key }),
+      list: () => request('proc', 'list', {}),
     },
     storage: {
       get: (key) => request('storage', 'get', { key }),
@@ -116,7 +157,19 @@ export function createPluginSdk(id, manifest, disposer) {
     },
     screen: {
       monitors: () => request('screen', 'monitors', {}),
+      windows: (selector = {}) => request('screen', 'windows', selector),
+      pointer: () => request('screen', 'pointer', {}),
       capture: (opts = {}) => bytes('screen', 'capture', opts),
+      captureResource: (opts = {}) => gate('binary', () => {
+        if (disposer.closed) return Promise.reject(new ProtocolError(Code.NOT_FOUND, 'plugin scope is closed'));
+        trackResources();
+        const pending = request('screen', 'capture_resource', opts, { timeoutMs: 0 });
+        return pending.then(async result => {
+          const resourceId = (result.source ?? result).id;
+          if (disposer.closed) { await closeResource(resourceId); throw new ProtocolError(Code.NOT_FOUND, 'plugin scope closed during capture'); }
+          return result;
+        });
+      }),
     },
     subscribe: (topic, fn, { scheme = 'event-bus' } = {}) => subscribe(scheme, topic, fn),
     once: (topic, fn, { scheme = 'event-bus' } = {}) => subscribe(scheme, topic, fn, true),

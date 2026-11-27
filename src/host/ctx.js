@@ -423,7 +423,12 @@ export function buildCtx(plugin, disposer) {
              * way back to rebuild them — the tray would restore a window whose
              * widgets had been destroyed.
              */
-            if (closeToTray() && currentWindowLabel() === 'main') return;
+            if (closeToTray() && currentWindowLabel() === 'main') {
+              // Each Tauri listener owns its own close event. Returning without
+              // preventing this one makes that listener destroy the tray window.
+              event.preventDefault();
+              return;
+            }
 
             // Contain a handler failure. Tauri's own implementation calls
             // `destroy()` only AFTER the handler resolves, so a throw here would

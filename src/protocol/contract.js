@@ -57,8 +57,13 @@ import { Code, ALL_CODES } from './codes.js';
  *   8 — windows support inactive presentation, focusability, and explicit
  *       physical position/size units. Monitor snapshots include their physical
  *       origin and work area. Reusing a window respects focus and visibility.
+ *   13 — reliable stdio consumption, bounded writers, resource exchange and API schemas.
+ *   12 — reasoning effort policy in model profiles and per-request plugin overrides.
+ *   11 — desktop regions, application/PID window targets and physical pointer snapshots.
+ *   10 — immutable binary resources, native raw lane, image content and screen ROI.
+ *   9 — host-managed llm profiles, pull streaming, and native background Sidecars.
  */
-export const HOST_API = 8;
+export const HOST_API = 13;
 
 export function protocolContract() {
   return Object.freeze({

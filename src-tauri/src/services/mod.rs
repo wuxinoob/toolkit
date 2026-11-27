@@ -15,14 +15,21 @@
 //! once and cannot drift from the documentation — and the same list backs
 //! `host/schema`, which is how a plugin discovers what the host supports.
 
+pub mod binary;
 pub mod bus;
+pub mod caller;
 pub mod checksum;
 pub mod clipboard;
 pub mod external;
 pub mod hotkey;
+pub mod llm;
 pub mod notify;
 pub mod proc;
+pub mod contracts;
+mod pipe_writer;
+pub mod image_work;
 pub mod screen;
+pub mod screen_capture;
 pub mod session;
 pub mod storage;
 pub mod stream;
@@ -32,6 +39,7 @@ use serde_json::{json, Value};
 use std::sync::OnceLock;
 
 pub use stream::{JsonSink, RawSink, StreamProvider};
+pub type ServiceFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, ServiceError>> + Send>>;
 
 /// A service failure, carrying a code from the closed set in
 /// [`crate::protocol::codes`].
@@ -116,6 +124,12 @@ pub trait Service: Send + Sync {
     /// arm to stay safe.
     fn actions(&self) -> &'static [&'static str];
 
+    fn asynchronous(&self) -> bool { false }
+    fn dispatch_async(&self, _app: tauri::AppHandle, _caller: caller::Caller, _action: String, _params: Value) -> ServiceFuture {
+        Box::pin(async { Err(ServiceError::unsupported("service has no asynchronous dispatcher")) })
+    }
+    fn sidecar_handler(&self, _app: &tauri::AppHandle, _caller: caller::Caller) -> Result<Option<crate::sidecar_rpc::PeerService>, ServiceError> { Ok(None) }
+
     fn dispatch(
         &self,
         app: &tauri::AppHandle,
@@ -173,12 +187,33 @@ pub fn table() -> &'static [Box<dyn Service>] {
             Box::new(notify::NotifyService),
             Box::new(clipboard::ClipboardService),
             Box::new(screen::ScreenService),
+            Box::new(binary::BinaryService),
+            Box::new(llm::LlmService),
         ]
     })
 }
 
 pub fn service_names() -> Vec<&'static str> {
     table().iter().map(|s| s.name()).collect()
+}
+
+/// Long-lived network operations use async IO; existing synchronous services
+/// retain their blocking-pool dispatch. Neither path holds a routing lock.
+pub fn asynchronous(app: &tauri::AppHandle, caller: caller::Caller, service: &str, action: &str, params: &Value) -> Option<ServiceFuture> {
+    let implementation = find(service).ok()?;
+    if !implementation.asynchronous() { return None; }
+    if !implementation.actions().contains(&action) { let error = unknown_action(implementation,service,action); return Some(Box::pin(async move { Err(error) })); }
+    Some(implementation.dispatch_async(app.clone(),caller,action.into(),params.clone()))
+}
+
+pub fn sidecar_services(app: &tauri::AppHandle, caller: caller::Caller) -> Result<crate::sidecar_rpc::Services,ServiceError> {
+    let mut handlers = crate::sidecar_rpc::Services::new();
+    for service in table() {
+        if crate::host::registry::is_allowed(&caller.plugin,&format!("rpc:{}",service.name())).is_ok() {
+            if let Some(handler) = service.sidecar_handler(app,caller.clone())? { handlers.insert(service.name().into(),handler); }
+        }
+    }
+    Ok(handlers)
 }
 
 /// What the host offers: protocol version, every service with its actions, the
@@ -190,10 +225,9 @@ pub fn schema() -> Value {
         .iter()
         .map(|s| (s.name().to_string(), json!(s.actions())))
         .collect();
-    json!({
+    let mut result=json!({
         "protocol": crate::protocol::envelope::PROTOCOL_VERSION,
-        "binaryTransfer": crate::binary_ipc::capabilities(),
-        "fileAccess": crate::file_ipc::capabilities(),
+        "contracts":contracts::schema(),
         "services": services,
         // Which actions can answer with BYTES (`plugin_rpc_raw` / `ctx.bytes`),
         // so a plugin asks instead of finding out by getting `unsupported`.
@@ -220,6 +254,21 @@ pub fn schema() -> Value {
         // The error vocabulary, so a caller can branch on codes it has actually
         // been told about rather than guessing at strings.
         "codes": crate::protocol::codes::ALL,
+    });
+    result.as_object_mut().unwrap().extend(capabilities().as_object().unwrap().clone());
+    result
+}
+
+/// Shared limits and feature versions for both native and WebView discovery.
+pub fn capabilities() -> Value {
+    json!({
+        "binaryTransfer":crate::binary_ipc::capabilities(),
+        "screenCapture":{"version":3,"targets":["monitor","desktop","window"],"unit":"physical","windowMode":"visible-desktop","maxPixels":screen_capture::MAX_PIXELS,"includeInfo":true,"maxRawBytes":image_work::MAX_RAW_BYTES,"workingMemoryBytes":image_work::MAX_WORKING_BYTES,"maxConcurrent":image_work::MAX_CONCURRENT},
+        "fileAccess":crate::file_ipc::capabilities(),
+        "llm":{"version":2,"reasoningEffort":true,"text":true,"images":true,"tools":false,"stream":"pull","maxInputBytes":crate::llm::MAX_INPUT_BYTES,"maxEventBytes":crate::llm::MAX_EVENT_BYTES,"queuedEvents":crate::llm::QUEUED_EVENTS,"maxConcurrent":8,"maxJobs":32,"maxJobsPerPlugin":4},
+        "sidecarHostRpc":{"version":1,"platform":"windows","transport":"named-pipe","framing":"u32le-json","maxFrameBytes":toolkit_host::MAX_FRAME_BYTES,"maxPending":32},
+        "stdio":{"version":2,"overflow":"terminate","maxLineBytes":pipe_writer::MAX_LINE_BYTES,"maxQueuedBytes":pipe_writer::MAX_QUEUED_BYTES,"maxQueuedLines":4096,"writeDeadlineMs":pipe_writer::WRITE_DEADLINE_MS,"maxQueuedWrites":pipe_writer::MAX_QUEUED_WRITES,"asyncConsumer":"await"},
+        "uplink":{"version":2,"maxFramesPerBatch":uplink::MAX_FRAMES_PER_BATCH,"maxBatchBytes":uplink::MAX_BATCH_BYTES,"concurrentBatches":1,"atomic":false}
     })
 }
 
@@ -342,7 +391,7 @@ mod tests {
         let names = service_names();
         let unique: HashSet<_> = names.iter().collect();
         assert_eq!(unique.len(), names.len(), "duplicate service name in table: {names:?}");
-        for expected in ["storage", "host", "proc", "stream", "bus", "hotkey"] {
+        for expected in ["storage", "host", "proc", "stream", "bus", "hotkey", "notify", "clipboard", "screen", "llm", "binary"] {
             assert!(names.contains(&expected), "missing service `{expected}` in {names:?}");
         }
     }

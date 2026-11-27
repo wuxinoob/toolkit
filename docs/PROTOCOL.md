@@ -294,7 +294,7 @@ They move independently, so they are tracked separately. A plugin declares the
 host API it was built for in its manifest:
 
 ```jsonc
-{ "id": "probe.demo", "version": "0.1.0", "api": 8, … }
+{ "id": "probe.demo", "version": "0.1.0", "api": 13, … }
 ```
 
 If the declaration does not match, the host records it on the plugin row and the
@@ -320,7 +320,7 @@ line: `URL.createObjectURL(new Blob([png], { type: 'image/png' }))`. Built-in pl
 why only external examples declare `api`.
 
 A secondary window gets **almost** the same surface through `bridge`
-(`src/host/pluginwin-host.js`): 30 capabilities on both sides, and exactly 8
+(`src/host/pluginwin-host.js`): 32 capabilities on both sides, and exactly 8
 one-sided — `ui` / `windows` / `registerView` / `focusView` exist only
 on `ctx`, while `label` / `close` / `drag` / `dispose` exist only on `bridge`.
 The differences are deliberate except for `ui.notifyOS`, which is collateral.
@@ -330,11 +330,11 @@ Full matrix and the substitute for each:
 ### Timeouts
 
 `ctx.rpc(..., { timeoutMs })` bounds how long the **caller** waits; the default
-is 45 s and `0` waits indefinitely. It is enforced in the transport, not in the
-envelope, because the gateway is synchronous: the host cannot be told to abandon
-a call, so a `deadline` field would promise something the host cannot deliver. A
-timeout raises `ProtocolError` with code `timeout`, worded so it cannot be
-mistaken for a cancellation.
+is 45 s and `0` waits indefinitely. This wait timeout does not cancel native work;
+the eventual outcome may be unknown. Services can separately enforce native
+deadlines: LLM stops its producer, and a blocked Sidecar stdin write stops that
+process. Both use code `timeout`, so callers must use the operation's documented
+semantics and must not automatically replay side effects.
 
 ### Hotkeys
 
@@ -523,7 +523,7 @@ codes**, declared in `protocol/codes.rs` and mirrored in `protocol/codes.js`:
 | `unsupported` | the scheme, provider or codec cannot do what was asked |
 | `io` | a filesystem or OS operation failed |
 | `spawn_failed` | a child process could not be started |
-| `timeout` | the caller stopped waiting (never means the host was cancelled) |
+| `timeout` | a time limit expired; an RPC wait timeout leaves native outcome unknown, while an LLM native deadline stops its producer |
 | `transport` / `protocol` / `codec` | the plumbing: IPC failure, contract violation, undecodable frame |
 | `internal` | an unexpected host-side failure |
 
@@ -643,3 +643,15 @@ And a sidecar answers in the same vocabulary:
 ←  {"v":1,"kind":"res","id":1,"p":{"result":42}}
 ←  {"v":1,"kind":"err","id":2,"code":"div_by_zero","msg":"div_by_zero"}
 ```
+
+## 原生 Sidecar 调用宿主
+
+HOST_API 9 增加 `ctx.llm` / `bridge.llm` 和 `sidecars`。模型服务通过相同的 `start` / `next` / `cancel` 拉取契约服务 WebView 与原生进程；独立命名管道按进程实例绑定身份，与既有 stdio 业务协议并存。管道采用长度前缀和信封版本 1，只开放显式注册的服务，凭据管理不在插件能力面。
+
+HOST_API 10 增加通用封存资源、Sidecar 独立原始字节通道、模型图片输入和原生 ROI 截图。原生控制信封仍为版本 1，WebView scheme 数量不变。
+
+HOST_API 12 增加模型配置的思考等级策略。`llm/profiles` 返回 `reasoning` 元数据，`start` 接受 `reasoningEffort` 并应用宿主默认值与允许范围；WebView 和原生 Sidecar 共用同一 Rust 实现。LLM schema 版本为 2，增加 `reasoningEffort:true`；控制信封版本保持 1。
+
+HOST_API 13 增加资源 identity/export/import/revoke、可靠 stdio 顺序消费、有界 stdin writer 和批量字节预算。WebView 与 Sidecar 共用能力版本来源和 schema.contracts 字段定义，Sidecar 只公布实际开放的服务/动作；定义不能代替用户授权或动态预算。信封版本保持 1。
+
+分帧、能力发现、资源预算、取消与生命周期见 [LLM 与 Sidecar 协议](LLM.md)。前端的 9 个 scheme 描述不因此增加；原生管道并非又一条 WebView scheme。

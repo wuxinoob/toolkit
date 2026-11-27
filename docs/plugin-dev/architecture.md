@@ -30,7 +30,7 @@
 
 | 轴 | 是什么 | 版本号 |
 |---|---|---|
-| **HOST API** | `ctx` 的**形状**（有哪些方法、同步还是异步） | `manifest.api`（当前 **3**） |
+| **HOST API** | `ctx` 的形状与调用语义 | `manifest.api`，现行版本见 [清单参考](manifest.md) |
 | **线协议** | `ctx` 背后发出去的**信封**长什么样 | 信封里的 `v` |
 
 **声明 `api` 很重要**：宿主拿它和你实际的行为比对，不一致时在插件行上写一条说明，
@@ -113,8 +113,7 @@ ctx.pty('ch4', { program: 'node' })          // 跑一个终端程序
 ctx.bus.publish('topic', payload)            // 广播给所有窗口
 ```
 
-**同步还是异步是统一的**：`subscribe` / `once` / `publish` 在所有方案上都是异步。
-`ctx.events` 与 `ctx.bus` 只差**默认方案**，不是一个同步一个异步。
+订阅和发布方法返回 Promise，但回调数据有明确差异：`ctx.events` 收到原始 payload，`ctx.bus` 收到信封（payload 在 `env.p`）。本地事件同步投递，跨窗口广播异步投递；替换方案时必须调整回调，不能只改方法名。两者都不等待异步回调完成，不提供消费背压。
 
 **上行流的载体是批量 invoke**，不是 Channel —— Tauri 的 `Channel` 是单向的，
 JS 侧只有接收回调、**没有 `send`**。所以别去找「从 JS 推给 Rust」的 Channel。
@@ -126,9 +125,7 @@ JS 侧只有接收回调、**没有 `send`**。所以别去找「从 JS 推给 R
 ## ⑤ 表现层 — 长什么样
 
 **样式靠 `.tb-*` 普通 CSS 类，不是组件库。** 原因见 `docs/UI.md` 开篇：
-外部插件是 Blob URL 单文件 ESM，**import 不到任何东西** ——
-所以 JS 组件库（shadcn / HeroUI）永远到不了你手上，Tailwind 工具类也只生成
-「构建时扫描到的」类，而你的源码在项目之外。
+外部插件是 Blob URL 单文件 ESM，不能在运行时按宿主包名或普通目录相对路径加载依赖。插件自己的 npm 依赖可提前打包进入口；宿主组件通过 ctx.ui 工厂注入。Tailwind 只生成构建时扫描到的类，外置插件源码通常不在宿主扫描范围内。
 
 **所以：**
 - 用 `.tb-*` 类（`.tb-pane` / `.tb-card` / `.tb-btn` / `.tb-list` …）—— 永远输出，人人可用
@@ -170,7 +167,7 @@ boot ok: 7 plugins, 9 views, active=builtin.procman/procman
 **`error — <原因>` 就是答案**，不用猜。而 `plugin load` 那一行是分插件的 ——
 **内置插件的加载是串行 await**（`reconcilePlugins` 的 built-in pass），
 所以一个插件慢会拖住后面所有插件的视图。
-（插件总数 = 2 个内置 + 你自己装的那些，所以这个数字每台机器都不同。）
+（插件总数 = 内置插件 + 你自己装的插件，所以总数每台机器都不同。）
 
 ### ② 通信 trace
 
@@ -247,4 +244,4 @@ export async function activate(ctx) {
 | 注册全局热键 | ① `contributes.hotkeys` | `rpc:hotkey` |
 
 > 这张表就是 `docs/INTERFACES.md` 的「一个能力一个权限」原则在你这一侧的体现。
-> 拿不准时问自己：**这是「观察」还是「能力」？** 观察不用权限。
+> 对已取得的对象进行退订、关闭或接收宿主投递的事件不新增权限。读取剪贴板、截图及其他敏感信息仍需要对应权限，不能把“观察”理解为任意读取均无需授权。

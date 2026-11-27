@@ -20,7 +20,7 @@
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use super::{proc, session, ServiceError};
 use crate::protocol::codes::code;
@@ -29,6 +29,7 @@ use crate::protocol::envelope::Envelope;
 /// Most frames accepted in one `write_in` call. A batch is one IPC payload, so
 /// this bounds it — an unbounded batch would just move the memory problem.
 pub const MAX_FRAMES_PER_BATCH: usize = 256;
+pub const MAX_BATCH_BYTES: usize = 1 << 20;
 
 /// What a sink does with the frames it is handed. Returns how many it consumed.
 type SinkFn = fn(&str, &Value, &[Envelope]) -> Result<usize, ServiceError>;
@@ -41,7 +42,10 @@ struct Sink {
 
 /// The sink table — the only place a sink name is bound to an implementation.
 fn sinks() -> &'static [Sink] {
-    &[Sink { name: "proc", write: sink_proc }]
+    &[Sink {
+        name: "proc",
+        write: sink_proc,
+    }]
 }
 
 pub fn sink_names() -> Vec<&'static str> {
@@ -67,10 +71,14 @@ fn sink_proc(plugin_id: &str, params: &Value, frames: &[Envelope]) -> Result<usi
         ServiceError::bad_params("sink `proc` requires params.key (the sidecar channel)")
     })?;
     let mut n = 0;
+    let started = std::time::Instant::now();
     for f in frames {
+        if started.elapsed() >= std::time::Duration::from_secs(30) {
+            return Err(ServiceError::new("timeout", format!("batch native deadline after {n} confirmed writes; remaining frames were not sent")));
+        }
         let line = serde_json::to_string(f)
             .map_err(|e| ServiceError::internal(format!("encode frame: {e}")))?;
-        proc::send_line(plugin_id, key, &line)?;
+        proc::send_line(plugin_id, key, &line).map_err(|e| ServiceError::new(e.code, format!("batch failed after {n} confirmed writes; last write outcome may be partial; do not replay automatically: {}", e.msg)))?;
         n += 1;
     }
     Ok(n)
@@ -80,16 +88,17 @@ fn sink_proc(plugin_id: &str, params: &Value, frames: &[Envelope]) -> Result<usi
 struct Uplink {
     sink: &'static Sink,
     params: Value,
+    writing: Mutex<()>,
 }
 
 /// Open uplinks, keyed by `plugin/ch` — the same identity the session registry
 /// and the hub use, so a stream is addressable the same way everywhere.
-fn registry() -> &'static Mutex<HashMap<String, Uplink>> {
-    static REG: OnceLock<Mutex<HashMap<String, Uplink>>> = OnceLock::new();
+fn registry() -> &'static Mutex<HashMap<String, Arc<Uplink>>> {
+    static REG: OnceLock<Mutex<HashMap<String, Arc<Uplink>>>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn lock() -> std::sync::MutexGuard<'static, HashMap<String, Uplink>> {
+fn lock() -> std::sync::MutexGuard<'static, HashMap<String, Arc<Uplink>>> {
     registry().lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -99,9 +108,19 @@ fn id_of(plugin_id: &str, ch: &str) -> String {
 
 /// Open an uplink stream. Registers it in the session registry too, so it shows
 /// up in `host/sessions` and is released on app exit like every other stream.
-pub fn open(plugin_id: &str, ch: &str, sink_name: &str, params: &Value) -> Result<Value, ServiceError> {
+pub fn open(
+    plugin_id: &str,
+    ch: &str,
+    sink_name: &str,
+    params: &Value,
+) -> Result<Value, ServiceError> {
     let sink = find_sink(sink_name)?;
     let id = id_of(plugin_id, ch);
+    let endpoint = Arc::new(Uplink {
+        sink,
+        params: params.clone(),
+        writing: Mutex::new(()),
+    });
     {
         let mut map = lock();
         if map.contains_key(&id) {
@@ -109,16 +128,23 @@ pub fn open(plugin_id: &str, ch: &str, sink_name: &str, params: &Value) -> Resul
                 "uplink `{id}` is already open"
             )));
         }
-        map.insert(id, Uplink { sink, params: params.clone() });
+        map.insert(id.clone(), endpoint.clone());
     }
-    // No process of our own; the stop closure is a no-op. Registering keeps the
-    // stream visible and uniformly cleaned up.
+    // Renderer recovery and native Stop must release the endpoint, not just its session row.
     if let Err(e) = session::open(
         plugin_id,
         ch,
         session::SessionKind::Stream,
         None,
-        std::sync::Arc::new(|| {}),
+        Arc::new(move || {
+            let mut map = lock();
+            if map
+                .get(&id)
+                .is_some_and(|current| Arc::ptr_eq(current, &endpoint))
+            {
+                map.remove(&id);
+            }
+        }),
     ) {
         lock().remove(&id_of(plugin_id, ch));
         return Err(e);
@@ -138,16 +164,27 @@ pub fn write(plugin_id: &str, ch: &str, frames: &[Value]) -> Result<Value, Servi
             frames.len()
         )));
     }
-    let (sink, params) = {
+    let endpoint = {
         let map = lock();
         let u = map
             .get(&id_of(plugin_id, ch))
             .ok_or_else(|| ServiceError::not_found(format!("uplink `{ch}` is not open")))?;
-        (u.sink, u.params.clone())
+        u.clone()
     };
+    let _writing = endpoint
+        .writing
+        .try_lock()
+        .map_err(|_| ServiceError::conflict("await the previous uplink batch"))?;
 
     let mut parsed: Vec<Envelope> = Vec::with_capacity(frames.len());
+    let mut bytes = 0;
     for (i, raw) in frames.iter().enumerate() {
+        bytes += serde_json::to_vec(raw)
+            .map_err(|_| ServiceError::bad_params("cannot encode batch"))?
+            .len();
+        if bytes > MAX_BATCH_BYTES {
+            return Err(ServiceError::bad_params("batch exceeds 1 MiB; split it"));
+        }
         let env: Envelope = serde_json::from_value(raw.clone()).map_err(|e| {
             ServiceError::bad_params(format!("frame {i} is not a valid envelope: {e}"))
         })?;
@@ -157,7 +194,7 @@ pub fn write(plugin_id: &str, ch: &str, frames: &[Value]) -> Result<Value, Servi
         parsed.push(env);
     }
 
-    let written = (sink.write)(plugin_id, &params, &parsed)?;
+    let written = (endpoint.sink.write)(plugin_id, &endpoint.params, &parsed)?;
     Ok(json!({ "written": written }))
 }
 
@@ -195,19 +232,31 @@ mod tests {
 
         open("u.plugin", "a", "proc", &json!({ "key": "backend" })).unwrap();
         assert!(lock().contains_key(&id_of("u.plugin", "a")));
-        assert_eq!(session::list(Some("u.plugin")).len(), 1, "an uplink is a session too");
+        assert_eq!(
+            session::list(Some("u.plugin")).len(),
+            1,
+            "an uplink is a session too"
+        );
 
         // a second open of the same ch is a conflict, not a silent replacement
         let err = open("u.plugin", "a", "proc", &json!({})).unwrap_err();
         assert_eq!(err.code, code::CONFLICT);
 
         // writing to a stream that is not open is not_found, not a panic
-        let err = write("u.plugin", "missing", &[json!({"v":1,"kind":"data","ch":"a"})]).unwrap_err();
+        let err = write(
+            "u.plugin",
+            "missing",
+            &[json!({"v":1,"kind":"data","ch":"a"})],
+        )
+        .unwrap_err();
         assert_eq!(err.code, code::NOT_FOUND);
 
         close("u.plugin", "a").unwrap();
         assert!(!lock().contains_key(&id_of("u.plugin", "a")));
-        assert!(session::list(Some("u.plugin")).is_empty(), "the session goes with it");
+        assert!(
+            session::list(Some("u.plugin")).is_empty(),
+            "the session goes with it"
+        );
         lock().clear();
     }
 

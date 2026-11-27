@@ -183,7 +183,7 @@ reaching invoke() directly」这句注释与事实相反。
 理由是「拖放要按当前显示的视图路由」。那是**把问题想复杂了** —— 插件窗口只属于一个插件，
 归属写在 URL 里，路由这一层根本不存在。`bridge.onDrop` 已实现（纯净增益、不碰网关、
 不需要新权限），差异因此从 5 + 4 收敛到 **4 + 4**。
-方案与理由见 [`plugin-dev/FILE-ACCESS-PLAN.md` §8](plugin-dev/FILE-ACCESS-PLAN.md)，
+现行拖放契约见 [`plugin-dev/api.md`](plugin-dev/api.md)，
 权威清单见 [`plugin-dev/bridge.md`](plugin-dev/bridge.md)。
 
 顺带查出来两个**此前没人写对**的地方（都已修）：

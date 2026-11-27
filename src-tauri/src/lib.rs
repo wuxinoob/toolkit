@@ -16,12 +16,15 @@
 //! looks the service up. Adding a capability means adding a table entry.
 
 pub mod binary_ipc;
+pub mod resource_pipe;
 pub mod file_ipc;
 pub mod forensics;
 pub mod gateway_stats;
 pub mod host;
+pub mod llm;
 pub mod protocol;
 pub mod services;
+pub mod sidecar_rpc;
 pub mod ui_heartbeat;
 
 use serde_json::{json, Value};
@@ -139,6 +142,14 @@ async fn plugin_rpc(
         return Ok(Envelope::err(Some(id), "denied", e));
     }
 
+    let caller = services::caller::Caller::window(&plugin_id, window.label());
+    if let Some(future) = services::asynchronous(&app, caller, &svc, &act, &params) {
+        in_flight.mark("async");
+        return Ok(match future.await {
+            Ok(value) => Envelope::res(id, value),
+            Err(error) => Envelope::err(Some(id), error.code, error.msg),
+        });
+    }
     run_service(in_flight, move || match services::route(&app, &plugin_id, &svc, &act, params) {
         Ok(v) => Envelope::res(id, v),
         Err(e) => Envelope::err(Some(id), e.code, e.msg),
@@ -451,6 +462,9 @@ async fn host_window_create(
     options: serde_json::Value,
 ) -> Result<(), String> {
     require_main(&window)?;
+    if label == "host-llm-settings" {
+        return Err("this window label is reserved for host model settings".into());
+    }
     let app = window.app_handle().clone();
 
     let mut config: tauri::utils::config::WindowConfig = serde_json::from_value(options)
@@ -518,7 +532,7 @@ async fn plugin_reap_orphans(window: tauri::WebviewWindow, keep: Option<bool>) -
     }
     // Killing a process tree waits on children, so it is blocking work — and it
     // runs on the path that reveals the window at boot.
-    tauri::async_runtime::spawn_blocking(crate::services::session::kill_all)
+    tauri::async_runtime::spawn_blocking(crate::services::session::reap_orphans)
         .await
         .map_err(|e| format!("reap task failed: {e}"))
 }
@@ -863,6 +877,12 @@ pub fn run() {
         .on_page_load(|webview, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Started {
                 webview.state::<file_ipc::FileHandles>().close_window(webview.label());
+                webview.state::<binary_ipc::Transfers>().close_window(webview.label());
+                if let Some(host) = webview.try_state::<llm::Host>() {
+                    if let Some(runtime) = host.initialized() {
+                        runtime.cancel_owner(&format!("window:{}", webview.label()));
+                    }
+                }
             }
         })
         .plugin(tauri_plugin_opener::init())
@@ -903,6 +923,8 @@ pub fn run() {
             file_ipc::plugin_fs_read,
             file_ipc::plugin_fs_write,
             plugin_register,
+            llm::settings::host_llm_open,
+            llm::settings::host_llm_admin,
             plugin_stream_open,
             plugin_stream_open_raw,
             plugin_stream_close,
@@ -922,6 +944,7 @@ pub fn run() {
             services::external::plugin_open_dir
         ])
         .setup(|app| {
+            app.manage(llm::Host::default());
             // The main window starts hidden; the frontend reveals it after
             // mounting its shell DOM (see
             // `src/main.js`). If the frontend never gets that far — a JS error,
@@ -1051,6 +1074,9 @@ pub fn run() {
         // goes through the tray (or `app.exit`), which is the documented UX.
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
+                if let Some(runtime) = window.state::<llm::Host>().initialized() {
+                    runtime.cancel_owner(&format!("window:{}", window.label()));
+                }
                 window.state::<file_ipc::FileHandles>().close_window(window.label());
                 window
                     .state::<binary_ipc::Transfers>()
@@ -1113,7 +1139,11 @@ pub fn run() {
             // PTY sessions alike. Previously only sidecars were stopped, so PTY
             // children were orphaned.
             tauri::RunEvent::Exit => {
+                if let Some(runtime) = app.state::<llm::Host>().initialized() {
+                    runtime.cancel_all();
+                }
                 app.state::<file_ipc::FileHandles>().close_all();
+                app.state::<binary_ipc::Transfers>().close_all();
                 let n = services::session::kill_all();
                 if n > 0 {
                     eprintln!("[host] stopped {n} live session(s) on exit");

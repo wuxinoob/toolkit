@@ -21,9 +21,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use toolkit_lib::protocol::codec::{json_envelope, line_json, raw_binary};
-use toolkit_lib::protocol::envelope::{Envelope, Kind};
 use toolkit_lib::protocol::codes;
-use toolkit_lib::services::{external, hotkey, schema, session, storage, stream, table, ServiceError};
+use toolkit_lib::protocol::envelope::{Envelope, Kind};
+use toolkit_lib::services::{
+    external, hotkey, schema, session, storage, stream, table, ServiceError,
+};
 
 static FAILED: AtomicBool = AtomicBool::new(false);
 static PASSED: AtomicU64 = AtomicU64::new(0);
@@ -39,15 +41,24 @@ fn check(name: &str, ok: bool, detail: &str) {
 }
 
 fn binary_checks() {
-    use toolkit_lib::binary_ipc::{decode_fallback, TransferKey, Transfers, MAX_CHUNK_BYTES, MAX_TRANSFER_BYTES};
+    use toolkit_lib::binary_ipc::{
+        decode_fallback, TransferKey, Transfers, MAX_CHUNK_BYTES, MAX_TRANSFER_BYTES,
+    };
 
     let store = Transfers::default();
-    let key = TransferKey { window: "main".into(), plugin: "test.bytes".into(), id: "transfer".into() };
+    let key = TransferKey {
+        window: "main".into(),
+        plugin: "test.bytes".into(),
+        id: "transfer".into(),
+    };
     let payload: Vec<u8> = (0..2 * 1024 * 1024 + 17).map(|i| (i % 251) as u8).collect();
     store.open(key.clone(), payload.len()).unwrap();
     for (index, chunk) in payload.chunks(MAX_CHUNK_BYTES).enumerate() {
         let offset = index * MAX_CHUNK_BYTES;
-        assert_eq!(store.write(&key, offset, chunk).unwrap(), offset + chunk.len());
+        assert_eq!(
+            store.write(&key, offset, chunk).unwrap(),
+            offset + chunk.len()
+        );
     }
     let mut read = Vec::new();
     while read.len() < payload.len() {
@@ -55,23 +66,40 @@ fn binary_checks() {
         assert!(!chunk.is_empty());
         read.extend(chunk);
     }
-    check("binary-roundtrip", read == payload, "2 MiB and a partial final chunk arrive intact");
+    check(
+        "binary-roundtrip",
+        read == payload,
+        "2 MiB and a partial final chunk arrive intact",
+    );
     check(
         "binary-offset-and-replay",
         store.open(key.clone(), payload.len()).is_ok()
             && store.write(&key, 0, &payload[..MAX_CHUNK_BYTES]).ok() == Some(payload.len())
             && store.write(&key, 0, &[255]).unwrap_err().code == "conflict"
-            && store.read(&key, payload.len(), MAX_CHUNK_BYTES).unwrap().is_empty(),
+            && store
+                .read(&key, payload.len(), MAX_CHUNK_BYTES)
+                .unwrap()
+                .is_empty(),
         "reopening preserves bytes and replay does not append or overwrite",
     );
-    let other_window = TransferKey { window: "plugin-other".into(), ..key.clone() };
-    let other_plugin = TransferKey { plugin: "test.other".into(), ..key.clone() };
+    let other_window = TransferKey {
+        window: "plugin-other".into(),
+        ..key.clone()
+    };
+    let other_plugin = TransferKey {
+        plugin: "test.other".into(),
+        ..key.clone()
+    };
     store.open(other_window.clone(), 10).unwrap();
     check(
         "binary-owner-and-close",
         store.write(&other_window, 2, &[1]).unwrap_err().code == "conflict"
             && store.read(&other_plugin, 0, 1).unwrap_err().code == "not_found"
-            && store.read(&other_window, 0, MAX_CHUNK_BYTES + 1).unwrap_err().code == "bad_params"
+            && store
+                .read(&other_window, 0, MAX_CHUNK_BYTES + 1)
+                .unwrap_err()
+                .code
+                == "bad_params"
             && store.write(&other_window, 9, &[1, 2]).unwrap_err().code == "bad_params"
             && !store.close(&other_plugin),
         "owner, offset and size checks prevent cross-talk and out-of-range access",
@@ -81,20 +109,37 @@ fn binary_checks() {
         "binary-window-cleanup",
         store.read(&key, 0, 1).unwrap_err().code == "not_found"
             && store.read(&other_window, 0, 1).is_ok()
-            && store.close(&other_window) && !store.close(&other_window),
+            && store.close(&other_window)
+            && !store.close(&other_window),
         "a destroyed window releases its own buffers and close is idempotent",
     );
     for i in 0..4 {
-        store.open(TransferKey { id: i.to_string(), ..key.clone() }, MAX_TRANSFER_BYTES).unwrap();
+        store
+            .open(
+                TransferKey {
+                    id: i.to_string(),
+                    ..key.clone()
+                },
+                MAX_TRANSFER_BYTES,
+            )
+            .unwrap();
     }
     check(
         "binary-reservation-budget",
         store.open(key.clone(), 1).unwrap_err().code == "conflict"
-            && store.open(key.clone(), MAX_TRANSFER_BYTES + 1).unwrap_err().code == "bad_params",
+            && store
+                .open(key.clone(), MAX_TRANSFER_BYTES + 1)
+                .unwrap_err()
+                .code
+                == "bad_params",
         "global budget accounts for declared size before data arrives",
     );
     store.close_window("main");
-    check("binary-budget-released", store.open(key, MAX_TRANSFER_BYTES).is_ok(), "cleanup releases reserved capacity");
+    check(
+        "binary-budget-released",
+        store.open(key, MAX_TRANSFER_BYTES).is_ok(),
+        "cleanup releases reserved capacity",
+    );
     check(
         "binary-fallback-validation",
         decode_fallback(&json!([0, 128, 255])).unwrap() == [0, 128, 255]
@@ -104,46 +149,81 @@ fn binary_checks() {
             && decode_fallback(&json!(vec![0; MAX_CHUNK_BYTES + 1])).is_err(),
         "postMessage payloads accept only bounded integer byte arrays",
     );
-    check("schema-binary-transfer", schema()["binaryTransfer"]["maxChunkBytes"] == MAX_CHUNK_BYTES,
-        "schema publishes the native block limit");
+    check(
+        "schema-binary-transfer",
+        schema()["binaryTransfer"]["maxChunkBytes"] == MAX_CHUNK_BYTES,
+        "schema publishes the native block limit",
+    );
 }
 
 #[cfg(windows)]
 fn sidecar_output_check() {
-    use std::{fs, path::PathBuf, time::{Duration, Instant}};
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{Duration, Instant},
+    };
     use toolkit_lib::services::proc::dispatch_at;
 
     let root = tempfile::tempdir().unwrap();
     let dir = root.path().join("fixture");
     fs::create_dir(&dir).unwrap();
-    fs::write(dir.join("plugin.json"), r#"{"id":"test.stdout","entry":"main.js"}"#).unwrap();
+    fs::write(
+        dir.join("plugin.json"),
+        r#"{"id":"test.stdout","entry":"main.js"}"#,
+    )
+    .unwrap();
     fs::write(dir.join("main.js"), "export default {};").unwrap();
     let cmd = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/cmd.exe");
     fs::copy(cmd, dir.join("cmd.exe")).unwrap();
+    fs::copy(std::env::current_exe().unwrap(), dir.join("check.exe")).unwrap();
     fs::write(dir.join("lines.txt"), "\r\n".repeat(20_000)).unwrap();
     fs::write(dir.join("oversize.txt"), vec![b'x'; (1 << 20) + 1]).unwrap();
     let call = |action, params| dispatch_at(root.path(), "test.stdout", action, params);
-    call("spawn", json!({"key":"test", "exe":"cmd.exe", "args":["/d", "/q", "/c",
-        "type lines.txt & echo ready>ready.txt & type oversize.txt & pause >nul"]})).unwrap();
+    call(
+        "spawn",
+        json!({"key":"test", "exe":"cmd.exe", "args":["/d", "/q", "/c",
+        "type lines.txt"]}),
+    )
+    .unwrap();
 
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !dir.join("ready.txt").exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let first = call("recv", json!({"key":"test", "timeoutMs":100}));
-    let bounded = first.as_ref().is_ok_and(|reply| reply["dropped"].as_u64().unwrap_or(0) > 0);
-    let mut terminal = first.err();
+    std::thread::sleep(Duration::from_millis(250));
+    let mut terminal = None;
     while terminal.is_none() && Instant::now() < deadline {
         terminal = call("recv", json!({"key":"test", "timeoutMs":100})).err();
     }
+    check(
+        "sidecar-overflow-is-terminal",
+        terminal.is_some_and(|e| e.code == "io" && e.msg.contains("overflow")),
+        "stdout overflow fails visibly instead of dropping control replies",
+    );
+    call(
+        "spawn",
+        json!({"key":"oversize", "exe":"cmd.exe", "args":["/d", "/q", "/c", "type oversize.txt"]}),
+    )
+    .unwrap();
+    let mut terminal = None;
+    while terminal.is_none() && Instant::now() < deadline {
+        terminal = call("recv", json!({"key":"oversize", "timeoutMs":100})).err();
+    }
     let retired = session::list(Some("test.stdout")).is_empty();
     let _ = call("kill_all", json!({}));
-    check("sidecar-empty-lines-are-bounded", bounded, "a burst of blank lines hits the queue limit");
     check(
         "sidecar-oversize-is-terminal",
-        terminal.is_some_and(|error| error.code == "io" && error.msg.contains("line too long")) && retired,
+        terminal.is_some_and(|error| error.code == "io" && error.msg.contains("line too long"))
+            && retired,
         "oversized stdout reports an error and reaps the failed process",
     );
+    call(
+        "spawn",
+        json!({"key":"blocked", "exe":"check.exe", "args":["--ignore-stdin"]}),
+    )
+    .unwrap();
+    let start = Instant::now();
+    let error = call("send", json!({"key":"blocked","line":"x".repeat(1<<20)})).unwrap_err();
+    check("sidecar-stdin-deadline", error.code=="timeout" && start.elapsed()<Duration::from_secs(10), "a real child that never reads stdin is stopped and releases the writer within its deadline");
+    let _ = call("kill_all", json!({}));
 }
 
 fn clipboard_and_checksum_checks() {
@@ -151,11 +231,20 @@ fn clipboard_and_checksum_checks() {
     use toolkit_lib::services::{checksum, clipboard};
 
     let rgba = [255, 0, 0, 255, 0, 255, 0, 128];
-    let input = arboard::ImageData { width: 2, height: 1, bytes: rgba.as_slice().into() };
+    let input = arboard::ImageData {
+        width: 2,
+        height: 1,
+        bytes: rgba.as_slice().into(),
+    };
     let png = clipboard::encode_image(&input).unwrap();
-    let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png).unwrap().to_rgba8();
-    check("clipboard-image-png", decoded.dimensions() == (2, 1) && decoded.as_raw() == &rgba,
-        "PNG bytes preserve color and alpha");
+    let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+        .unwrap()
+        .to_rgba8();
+    check(
+        "clipboard-image-png",
+        decoded.dimensions() == (2, 1) && decoded.as_raw() == &rgba,
+        "PNG bytes preserve color and alpha",
+    );
 
     let mut file = tempfile::NamedTempFile::new().unwrap();
     let mut block = vec![0; 1024 * 1024];
@@ -169,19 +258,30 @@ fn clipboard_and_checksum_checks() {
     check(
         "checksum-over-memory-session-limit",
         checksum.size == 17 * 1024 * 1024 + 3
-            && checksum.sha256 == "de7dd9d102dd7ce7b9e52ea7a6c840d89287b0699315e65b56ef98d808936bbb",
+            && checksum.sha256
+                == "de7dd9d102dd7ce7b9e52ea7a6c840d89287b0699315e65b56ef98d808936bbb",
         "native streaming SHA-256 includes the partial final block of a 17 MiB file",
     );
 }
 
 fn file_checks() {
-    use std::{fs, io::{Seek, SeekFrom, Write}};
-    use toolkit_lib::{binary_ipc::{TransferKey, MAX_CHUNK_BYTES}, file_ipc::FileHandles};
+    use std::{
+        fs,
+        io::{Seek, SeekFrom, Write},
+    };
+    use toolkit_lib::{
+        binary_ipc::{TransferKey, MAX_CHUNK_BYTES},
+        file_ipc::FileHandles,
+    };
 
     let root = tempfile::tempdir().unwrap();
     let target = root.path().join("result.bin");
     let handles = FileHandles::default();
-    let key = |window: &str, id: &str| TransferKey { window: window.into(), plugin: "test.files".into(), id: id.into() };
+    let key = |window: &str, id: &str| TransferKey {
+        window: window.into(),
+        plugin: "test.files".into(),
+        id: id.into(),
+    };
     let output = key("main", "writer");
     let input = key("main", "reader");
     let source = root.path().join("source.bin");
@@ -192,16 +292,30 @@ fn file_checks() {
         file.seek(SeekFrom::Start(tail)).unwrap();
         file.write_all(b"tail").unwrap();
     }
-    handles.reserve(input.clone()).unwrap().reader(&source).unwrap();
-    check("fs-large-random-read",
+    handles
+        .reserve(input.clone())
+        .unwrap()
+        .reader(&source)
+        .unwrap();
+    check(
+        "fs-large-random-read",
         handles.read_at(&input, tail, 8).unwrap() == b"tail"
             && handles.read_at(&input, 0, 5).unwrap() == b"begin"
             && handles.read_at(&input, tail + 4, 8).unwrap().is_empty()
             && handles.read_at(&input, 0, MAX_CHUNK_BYTES + 1).is_err()
-            && handles.read_at(&key("plugin-other", "reader"), 0, 8).unwrap_err().code == "not_found",
-        "bounded random reads and EOF over a file larger than 16 MiB, scoped to its window");
+            && handles
+                .read_at(&key("plugin-other", "reader"), 0, 8)
+                .unwrap_err()
+                .code
+                == "not_found",
+        "bounded random reads and EOF over a file larger than 16 MiB, scoped to its window",
+    );
 
-    handles.reserve(output.clone()).unwrap().writer(&target).unwrap();
+    handles
+        .reserve(output.clone())
+        .unwrap()
+        .writer(&target)
+        .unwrap();
     let mut offset = 0;
     loop {
         let chunk = handles.read_at(&input, offset, MAX_CHUNK_BYTES).unwrap();
@@ -214,8 +328,12 @@ fn file_checks() {
     check(
         "fs-large-copy",
         offset == tail + 4
-            && toolkit_lib::services::checksum::sha256(&source).unwrap().sha256
-                == toolkit_lib::services::checksum::sha256(&target).unwrap().sha256,
+            && toolkit_lib::services::checksum::sha256(&source)
+                .unwrap()
+                .sha256
+                == toolkit_lib::services::checksum::sha256(&target)
+                    .unwrap()
+                    .sha256,
         "sequential reads and writes copy a file larger than 16 MiB without a byte session",
     );
     handles.close(&output);
@@ -223,65 +341,164 @@ fn file_checks() {
     assert!(!handles.close(&input));
 
     fs::write(&target, b"original").unwrap();
-    handles.reserve(output.clone()).unwrap().writer(&target).unwrap();
+    handles
+        .reserve(output.clone())
+        .unwrap()
+        .writer(&target)
+        .unwrap();
     handles.write(&output, 0, b"discard").unwrap();
     handles.close(&output);
-    check("fs-close-discards-staging", fs::read(&target).unwrap() == b"original"
-        && fs::read_dir(root.path()).unwrap().count() == 2, "closing leaves the original and removes the temporary file");
+    check(
+        "fs-close-discards-staging",
+        fs::read(&target).unwrap() == b"original"
+            && fs::read_dir(root.path()).unwrap().count() == 2,
+        "closing leaves the original and removes the temporary file",
+    );
 
-    handles.reserve(output.clone()).unwrap().writer(&target).unwrap();
+    handles
+        .reserve(output.clone())
+        .unwrap()
+        .writer(&target)
+        .unwrap();
     handles.write(&output, 0, b"edited").unwrap();
-    check("fs-write-replay",
+    check(
+        "fs-write-replay",
         handles.write(&output, 0, b"edited").unwrap() == 6
             && handles.write(&output, 0, b"bad").unwrap_err().code == "conflict"
-            && fs::read(&target).unwrap() == b"original", "replay preserves offset and writes stay staged");
+            && fs::read(&target).unwrap() == b"original",
+        "replay preserves offset and writes stay staged",
+    );
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        let held = fs::OpenOptions::new().read(true).share_mode(1).open(&target).unwrap();
-        check("fs-blocked-replacement", handles.commit(&output).unwrap_err().code == "io"
-            && fs::read(&target).unwrap() == b"original", "Windows file sharing failure preserves target");
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&target)
+            .unwrap();
+        check(
+            "fs-blocked-replacement",
+            handles.commit(&output).unwrap_err().code == "io"
+                && fs::read(&target).unwrap() == b"original",
+            "Windows file sharing failure preserves target",
+        );
         drop(held);
     }
     handles.commit(&output).unwrap();
     handles.commit(&output).unwrap();
-    check("fs-commit-retry", fs::read(&target).unwrap() == b"edited", "commit can be retried and acknowledged again");
+    check(
+        "fs-commit-retry",
+        fs::read(&target).unwrap() == b"edited",
+        "commit can be retried and acknowledged again",
+    );
     handles.close(&output);
 
     let new = root.path().join("new.bin");
-    handles.reserve(output.clone()).unwrap().writer(&new).unwrap();
+    handles
+        .reserve(output.clone())
+        .unwrap()
+        .writer(&new)
+        .unwrap();
     handles.write(&output, 0, b"staged").unwrap();
     fs::write(&new, b"external").unwrap();
-    check("fs-target-conflict", handles.commit(&output).unwrap_err().code == "conflict"
-        && fs::read(&new).unwrap() == b"external", "a file created after selection is not overwritten");
+    check(
+        "fs-target-conflict",
+        handles.commit(&output).unwrap_err().code == "conflict"
+            && fs::read(&new).unwrap() == b"external",
+        "a file created after selection is not overwritten",
+    );
     handles.close(&output);
 
     let pending = handles.reserve(input.clone()).unwrap();
     handles.close(&input);
-    handles.reserve(input.clone()).unwrap().reader(&source).unwrap();
-    check("fs-late-selection", pending.reader(&source).unwrap_err().code == "not_found"
-        && handles.read_at(&input, tail, 4).unwrap() == b"tail", "a closed reservation cannot publish or remove a later reference");
+    handles
+        .reserve(input.clone())
+        .unwrap()
+        .reader(&source)
+        .unwrap();
+    check(
+        "fs-late-selection",
+        pending.reader(&source).unwrap_err().code == "not_found"
+            && handles.read_at(&input, tail, 4).unwrap() == b"tail",
+        "a closed reservation cannot publish or remove a later reference",
+    );
     handles.close(&input);
 
     let max = schema()["fileAccess"]["maxHandles"].as_u64().unwrap();
-    let reservations: Vec<_> = (0..max).map(|i| {
-        let key = key("main", &format!("pending-{i}"));
-        let pending = handles.reserve(key.clone()).unwrap();
-        handles.close(&key);
-        pending
-    }).collect();
-    check("fs-handle-budget", handles.reserve(input.clone()).is_err(), "cancelled but pending dialogs still count against the budget");
+    let reservations: Vec<_> = (0..max)
+        .map(|i| {
+            let key = key("main", &format!("pending-{i}"));
+            let pending = handles.reserve(key.clone()).unwrap();
+            handles.close(&key);
+            pending
+        })
+        .collect();
+    check(
+        "fs-handle-budget",
+        handles.reserve(input.clone()).is_err(),
+        "cancelled but pending dialogs still count against the budget",
+    );
     drop(reservations);
-    check("fs-budget-released", handles.reserve(input).is_ok(), "completed dialog cleanup releases the budget");
+    check(
+        "fs-budget-released",
+        handles.reserve(input).is_ok(),
+        "completed dialog cleanup releases the budget",
+    );
 }
 
 fn main() {
+    if std::env::args().any(|arg| arg == "--ignore-stdin") {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        return;
+    }
     println!("--- host-checks ---");
+    {
+        use std::io::Write;
+        use toolkit_lib::services::image_work;
+        let first = image_work::acquire(100, image_work::MAX_RAW_BYTES).unwrap();
+        let second = image_work::acquire(100, image_work::MAX_RAW_BYTES).unwrap();
+        check(
+            "image-work-concurrency",
+            image_work::acquire(100, 0).is_err(),
+            "image producers are admitted before allocating pixels",
+        );
+        drop(first);
+        drop(second);
+        check(
+            "image-work-released",
+            image_work::acquire(100, 0).is_ok() && image_work::acquire(64_000_000, 0).is_err(),
+            "producer completion releases its working-memory reservation",
+        );
+        let mut output = image_work::Output::new(4);
+        output.write_all(b"1234").unwrap();
+        check(
+            "image-output-bounded",
+            output.write_all(b"5").is_err() && output.bytes.len() == 4 && output.exceeded,
+            "encoding stops at the output byte budget",
+        );
+    }
     binary_checks();
     clipboard_and_checksum_checks();
     file_checks();
     #[cfg(windows)]
     sidecar_output_check();
+    {
+        use toolkit_lib::services::uplink;
+        uplink::open("test.recovery", "up", "proc", &json!({"key":"unused"})).unwrap();
+        session::stop_one("test.recovery", "up");
+        check(
+            "uplink-native-stop-releases-endpoint",
+            uplink::open("test.recovery", "up", "proc", &json!({"key":"unused"})).is_ok(),
+            "same channel can reopen after native Stop",
+        );
+        session::reap_orphans();
+        check(
+            "uplink-orphan-recovery-releases-endpoint",
+            uplink::open("test.recovery", "up", "proc", &json!({"key":"unused"})).is_ok(),
+            "same channel can reopen after renderer recovery",
+        );
+        uplink::close("test.recovery", "up").unwrap();
+    }
 
     // ---- protocol: envelope rules ----
     check(
@@ -292,7 +509,9 @@ fn main() {
     );
     check(
         "envelope-omits-empty",
-        !json_envelope::encode(&Envelope::end("c")).unwrap().contains("svc"),
+        !json_envelope::encode(&Envelope::end("c"))
+            .unwrap()
+            .contains("svc"),
         "optional fields stay off the wire",
     );
     let mut bad = Envelope::data("c", json!(null));
@@ -331,29 +550,111 @@ fn main() {
     let names = table().iter().map(|s| s.name()).collect::<Vec<_>>();
     check(
         "service-table",
-        names == vec![
-            "storage",
-            "host",
-            "proc",
-            "stream",
-            "bus",
-            "hotkey",
-            "notify",
-            "clipboard",
-            "screen",
-        ],
+        names
+            == vec![
+                "storage",
+                "host",
+                "proc",
+                "stream",
+                "bus",
+                "hotkey",
+                "notify",
+                "clipboard",
+                "screen",
+                "binary",
+                "llm",
+            ],
         &format!("{names:?}"),
     );
     let all_declare = table().iter().all(|s| !s.actions().is_empty());
-    check("actions-declared", all_declare, "every service declares its actions");
+    check(
+        "actions-declared",
+        all_declare,
+        "every service declares its actions",
+    );
 
     let sch = schema();
+    let contracts = &sch["contracts"];
+    check(
+        "contracts-actions-exist",
+        contracts["services"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .all(|(name, actions)| {
+                let service = table()
+                    .iter()
+                    .find(|service| service.name() == name)
+                    .unwrap();
+                actions.as_object().unwrap().keys().all(|action| {
+                    service.actions().contains(&action.as_str())
+                        || service.binary_actions().contains(&action.as_str())
+                })
+            }),
+        "published field schemas name real JSON or byte actions",
+    );
+    check(
+        "contracts-resource-limit",
+        contracts["$defs"]["ResourceOpen"]["properties"]["size"]["maximum"]
+            == toolkit_lib::binary_ipc::MAX_TRANSFER_BYTES,
+        "schema capacity agrees with the actual native allocator",
+    );
+    {
+        use toolkit_lib::{services::caller::Caller, sidecar_rpc};
+        let caller = Caller::sidecar("test.discovery", "generation");
+        toolkit_lib::host::registry::register("test.discovery", &["rpc:llm".into()]);
+        let mut exposed = sidecar_rpc::Services::new();
+        for name in ["binary", "screen", "llm"] {
+            let service = table()
+                .iter()
+                .find(|service| service.name() == name)
+                .unwrap();
+            exposed.insert(
+                name.into(),
+                sidecar_rpc::PeerService {
+                    actions: service
+                        .actions()
+                        .iter()
+                        .map(|action| action.to_string())
+                        .collect(),
+                    handler: std::sync::Arc::new(|_, _| {
+                        Box::pin(async { Ok(serde_json::Value::Null) })
+                    }),
+                    close: std::sync::Arc::new(|| {}),
+                },
+            );
+        }
+        let native = sidecar_rpc::schema(&exposed, &caller);
+        check(
+            "schema-shared-feature-versions",
+            native["llm"] == sch["llm"] && native["contracts"]["$defs"] == contracts["$defs"],
+            "Sidecar and WebView discovery use the same definitions",
+        );
+        check(
+            "schema-native-scope-filter",
+            native["services"].as_object().unwrap().len() == 1
+                && native["binaryTransfer"].is_null()
+                && native["contracts"]["webview"].is_null()
+                && native["contracts"]["services"]["binary"].is_null(),
+            "native discovery omits ungranted services and WebView-only file access",
+        );
+        toolkit_lib::host::registry::register("test.discovery", &[]);
+    }
+    check(
+        "schema-parameter-contracts",
+        sch["contracts"]["$defs"]["ModelRequest"]["properties"]["reasoningEffort"].is_object()
+            && sch["contracts"]["$defs"]["ResourceOpen"]["properties"]["size"]["maximum"]
+                == toolkit_lib::binary_ipc::MAX_TRANSFER_BYTES,
+        "published parameter contracts and native limits agree",
+    );
     let agrees = table()
         .iter()
         .all(|s| sch["services"][s.name()] == json!(s.actions()));
     check(
         "schema-agrees-with-table",
-        agrees && sch["protocol"] == json!(1) && sch["providers"] == json!(["ticker", "blob", "clipboard"]),
+        agrees
+            && sch["protocol"] == json!(1)
+            && sch["providers"] == json!(["ticker", "blob", "clipboard"]),
         &format!(
             "protocol={} services={} providers={}",
             sch["protocol"],
@@ -395,7 +696,10 @@ fn main() {
     );
 
     // ---- stream providers ----
-    let providers = stream::providers().iter().map(|p| p.name()).collect::<Vec<_>>();
+    let providers = stream::providers()
+        .iter()
+        .map(|p| p.name())
+        .collect::<Vec<_>>();
     check(
         "stream-providers",
         providers == vec!["ticker", "blob", "clipboard"],
@@ -445,7 +749,10 @@ fn main() {
         // 0ms old — asserting `> 0` there tests the clock's resolution, not us.
         let slow = toolkit_lib::gateway_stats::enter("check/slow");
         std::thread::sleep(std::time::Duration::from_millis(30));
-        let aged = toolkit_lib::gateway_stats::snapshot().1.map(|(ms, _)| ms).unwrap_or(0);
+        let aged = toolkit_lib::gateway_stats::snapshot()
+            .1
+            .map(|(ms, _)| ms)
+            .unwrap_or(0);
         drop(slow);
         check(
             "gateway-stats-age-is-measured",
@@ -474,11 +781,17 @@ fn main() {
         let first = toolkit_lib::gateway_stats::enter("check/same");
         let second = toolkit_lib::gateway_stats::enter("check/same");
         second.mark("returned");
-        let first_name = toolkit_lib::gateway_stats::snapshot().1.map(|(_, name)| name);
+        let first_name = toolkit_lib::gateway_stats::snapshot()
+            .1
+            .map(|(_, name)| name);
         first.mark("running");
-        let first_phase = toolkit_lib::gateway_stats::snapshot().1.map(|(_, name)| name);
+        let first_phase = toolkit_lib::gateway_stats::snapshot()
+            .1
+            .map(|(_, name)| name);
         drop(first);
-        let second_phase = toolkit_lib::gateway_stats::snapshot().1.map(|(_, name)| name);
+        let second_phase = toolkit_lib::gateway_stats::snapshot()
+            .1
+            .map(|(_, name)| name);
         drop(second);
         check(
             "gateway-stats-phases-belong-to-request-tickets",
@@ -499,7 +812,8 @@ fn main() {
         check(
             "gateway-stats-native-work-outlives-a-cancelled-caller",
             during.0 == 1
-                && during.1.as_ref().map(|(_, name)| name.as_str()) == Some("check/cancelled[returned]")
+                && during.1.as_ref().map(|(_, name)| name.as_str())
+                    == Some("check/cancelled[returned]")
                 && after == (0, None),
             &format!("during={during:?}, after={after:?}"),
         );
@@ -529,7 +843,10 @@ fn main() {
         check(
             "gateway-stats-concurrent-tickets-are-reaped",
             during.0 == WORKERS
-                && during.1.as_ref().is_some_and(|(_, name)| name.ends_with("[running]"))
+                && during
+                    .1
+                    .as_ref()
+                    .is_some_and(|(_, name)| name.ends_with("[running]"))
                 && after == (0, None),
             &format!("during={during:?}, after={after:?}"),
         );
@@ -578,7 +895,9 @@ fn main() {
         let waited = t0.elapsed();
         check(
             "proc-lock-gives-up-instead-of-blocking",
-            blocked.is_none() && waited >= Duration::from_millis(25) && waited < Duration::from_millis(600),
+            blocked.is_none()
+                && waited >= Duration::from_millis(25)
+                && waited < Duration::from_millis(600),
             &format!("held lock: got={} after {:?}", blocked.is_some(), waited),
         );
         drop(held);
@@ -752,7 +1071,8 @@ fn main() {
     check(
         "hotkey-owner-delegation",
         hotkey::resolve_owner("a.plugin", &json!({})).unwrap() == "a.plugin"
-            && hotkey::resolve_owner("__host__", &json!({ "owner": "a.plugin" })).unwrap() == "a.plugin"
+            && hotkey::resolve_owner("__host__", &json!({ "owner": "a.plugin" })).unwrap()
+                == "a.plugin"
             && hotkey::resolve_owner("a.plugin", &json!({ "owner": "b.plugin" })).is_err(),
         "only the host may register on behalf of a plugin",
     );
@@ -857,15 +1177,22 @@ fn main() {
         // lookup has to walk the root rather than derive a path from the id.
         let good = root.join("folder-name-is-not-the-id");
         fs::create_dir_all(&good).unwrap();
-        fs::write(good.join("plugin.json"), r#"{"id":"a.demo","entry":"main.js"}"#).unwrap();
+        fs::write(
+            good.join("plugin.json"),
+            r#"{"id":"a.demo","entry":"main.js"}"#,
+        )
+        .unwrap();
         fs::write(good.join("main.js"), "export const manifest={id:'a.demo'}").unwrap();
 
         let scan = external::scan_at(&root).unwrap();
         let info = external::info_at(&root, "a.demo").unwrap();
         check(
             "plugin-info-agrees-with-scan",
-            info.as_ref().map(|i| (i.id.as_str(), i.dir.as_str(), i.entry_file.as_str()))
-                == scan.first().map(|p| (p.id.as_str(), p.dir.as_str(), p.entry_file.as_str())),
+            info.as_ref()
+                .map(|i| (i.id.as_str(), i.dir.as_str(), i.entry_file.as_str()))
+                == scan
+                    .first()
+                    .map(|p| (p.id.as_str(), p.dir.as_str(), p.entry_file.as_str())),
             "one lookup resolves the same plugin to the same place as a full scan",
         );
         check(
@@ -907,7 +1234,8 @@ fn main() {
         check(
             "paths-name-the-documented-layout",
             p["dataDir"] == json!(root.to_string_lossy())
-                && p["pluginDataDir"] == json!(root.join("plugin-data").join("a.demo").to_string_lossy())
+                && p["pluginDataDir"]
+                    == json!(root.join("plugin-data").join("a.demo").to_string_lossy())
                 && p["pluginsDir"] == json!(root.join("plugins").to_string_lossy()),
             &format!("{p:?}"),
         );
@@ -919,11 +1247,18 @@ fn main() {
         let plugins_dir = Path::new(p["pluginsDir"].as_str().unwrap());
         let dir = plugins_dir.join("a.demo");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("plugin.json"), r#"{"id":"a.demo","entry":"main.js"}"#).unwrap();
+        fs::write(
+            dir.join("plugin.json"),
+            r#"{"id":"a.demo","entry":"main.js"}"#,
+        )
+        .unwrap();
         fs::write(dir.join("main.js"), "export const manifest={id:'a.demo'}").unwrap();
         check(
             "paths-point-at-the-folder-the-scanner-reads",
-            external::scan_at(plugins_dir).unwrap().iter().any(|x| x.id == "a.demo"),
+            external::scan_at(plugins_dir)
+                .unwrap()
+                .iter()
+                .any(|x| x.id == "a.demo"),
             "a plugin dropped where host/paths says is a plugin the host finds",
         );
 

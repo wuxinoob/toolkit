@@ -94,6 +94,9 @@ jobs:
       - name: Host checks (also generate the ACL schemas the tests read)
         run: cargo run --locked --manifest-path src-tauri/Cargo.toml --example host-checks
 
+      - name: Screen geometry and window selectors
+        run: cargo run --locked --manifest-path src-tauri/Cargo.toml --example screen-checks
+
       - name: PTY lifecycle regression
         run: cargo run --locked --manifest-path src-tauri/Cargo.toml --example pty-lifecycle-checks
 
@@ -102,6 +105,9 @@ jobs:
 
       - name: Storage concurrency and atomic replacement
         run: cargo run --locked --manifest-path src-tauri/Cargo.toml --example storage-checks
+
+      - name: LLM and native Sidecar RPC regression
+        run: cargo run --locked --manifest-path src-tauri/Cargo.toml --example llm-checks
 
       - run: npm test
 

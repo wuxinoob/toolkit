@@ -438,7 +438,7 @@ test('bridge.md is the single list, and it matches the code exactly', () => {
   // from the code too — a "25 capabilities on both sides" that silently became
   // 26 is exactly the class of drift this file exists to stop.
   const shared = [...ctx].filter((k) => bridge.has(k)).length;
-  assert.equal(shared, 30, `the surfaces now share ${shared} capabilities, not 30`);
+  assert.equal(shared, 32, `the surfaces now share ${shared} capabilities, not 32`);
   assert.match(
     read('docs', 'plugin-dev', 'bridge.md'),
     new RegExp(`\\*\\*${shared} 个能力两边都有\\*\\*`),
@@ -592,7 +592,7 @@ test('ui.md quotes the real vocabulary size, and it is a number it can re-derive
   // Every other page must point at ui.md rather than keep its own copy of a
   // number that only the code can answer.
   const strays = [];
-  for (const rel of ['docs/plugin-dev/recipes.md', 'docs/plugin-dev/debugging.md', 'docs/plugin-dev/FILE-ACCESS-PLAN.md']) {
+  for (const rel of ['docs/plugin-dev/recipes.md', 'docs/plugin-dev/debugging.md', 'docs/plugin-dev/storage.md']) {
     const doc = read(...rel.split('/'));
     for (const m of doc.matchAll(/(\d{3}) 个(?:组件|tag|shadcn)/g)) {
       if (Number(m[1]) !== n) strays.push(`${rel}: "${m[0]}"`);

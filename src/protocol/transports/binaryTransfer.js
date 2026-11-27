@@ -27,6 +27,12 @@ export async function openBinaryTransfer(pluginId, size, { timeoutMs = DEFAULT_T
     throw error;
   }
 
+  return attachBinaryTransfer(pluginId, { id, maxChunkBytes }, { timeoutMs });
+}
+
+export function attachBinaryTransfer(pluginId, { id, maxChunkBytes }, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  const control = (action) => invokeBinary('plugin_binary_control', { pluginId, id, action }, { timeoutMs: 0, what: `binary/${action.kind}` });
+  const release = () => withTimeout(control({kind:'close'}), timeoutMs, 'binary/close');
   let busy = false;
   let closed = false;
   let closing;
@@ -48,6 +54,8 @@ export async function openBinaryTransfer(pluginId, size, { timeoutMs = DEFAULT_T
   return Object.freeze({
     id,
     maxChunkBytes,
+    seal: () => run('seal', 0, 0, () => control({ kind: 'seal' })),
+    stat: () => run('stat', 0, 0, () => control({ kind: 'stat' })),
     async write(offset, raw) {
       if (!(raw instanceof ArrayBuffer) && !ArrayBuffer.isView(raw)) {
         throw new ProtocolError(Code.BAD_PARAMS, 'binary write requires a byte buffer');

@@ -15,7 +15,7 @@
   "id": "my.plugin",
   "name": "My Plugin",
   "version": "0.1.0",
-  "api": 8,
+  "api": 13,
   "entry": "main.js",
   "description": "一句话说明这个插件干什么",
   "contributes": { },
@@ -28,7 +28,7 @@
 | `id` | ✅ | 全局唯一。**同时是数据目录名**（`{appData}/plugin-data/<id>/`），也是 `ctx` 报错前缀 `[plugin:<id>]` |
 | `name` | ✅ | 侧栏与错误信息里显示的名字 |
 | `version` | | 仅展示 |
-| `api` | **强烈建议** | 插件使用的 **HOST API** 版本。当前为 **8**，声明其他版本时宿主显示版本提示 |
+| `api` | **强烈建议** | 插件使用的 **HOST API** 版本。当前为 **13**，声明其他版本时宿主显示版本提示 |
 | `entry` | ✅ | 入口文件，相对插件目录 |
 | `description` | | 仅展示 |
 | `contributes` | | 声明式贡献点，见下 |
@@ -124,8 +124,7 @@
 
 ## `permissions` — 权限清单
 
-**一个能力一个权限。** 拿不准时问自己：**这是「观察」还是「能力」？**
-观察不用权限。
+一个能力一个权限。退订、关闭已取得的资源或接收宿主主动投递的事件不新增权限；读取剪贴板、截图等敏感信息仍需要相应授权。
 
 | 权限 | 给什么 | 典型用途 |
 |---|---|---|
@@ -141,6 +140,7 @@
 | `rpc:clipboard` | 剪贴板文本读写、PNG 读取、格式查询与监听 | `ctx.clipboard.*`（监听还要 `rpc:stream`） |
 | `rpc:screen` | 枚举显示器 + 截屏 | `ctx.screen.*` |
 | `rpc:binary` | 打开、读写和关闭当前窗口的内存字节会话 | `ctx.binary.open` / `bridge.binary.open` |
+| `rpc:llm` | 调用用户授权的模型配置；不含配置和凭据管理 | `ctx.llm` / 原生 Sidecar 模型请求 |
 | `rpc:fs` | 通过原生对话框打开文件或选择保存目标，管理当前窗口持有的文件引用 | `ctx.fs` / `bridge.fs` |
 
 **不需要权限的**（「观察」侧）：
@@ -167,7 +167,7 @@ Rust 侧 `host/registry.rs`（权威，fail-closed，未注册即拒绝）。
   "id": "my.plugin",
   "name": "My Plugin",
   "version": "0.1.0",
-  "api": 8,
+  "api": 13,
   "entry": "main.js",
   "description": "示例",
   "contributes": {

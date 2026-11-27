@@ -275,8 +275,7 @@ payload 是判别联合：`{type:'over', position}` / `{type:'drop', paths}` / `
 **反过来**：要**用 HTML5 拖放**，就得把 `dragDropEnabled` 设成 `false` ——
 两者只能选一个。
 
-**注意它只给路径，不给内容。** 读内容还需要文件系统访问（见
-[FILE-ACCESS-PLAN.md](FILE-ACCESS-PLAN.md)）。
+注意拖放只给路径，不给内容。前端可重新通过 `ctx.fs.open()` 选择文件取得引用；Sidecar 可以直接读取路径，见 [文件读写](api.md#文件读写-ctxfs--bridgefs)。
 
 ## 想知道「我的调用到底发出去了吗」——打开通信 trace
 

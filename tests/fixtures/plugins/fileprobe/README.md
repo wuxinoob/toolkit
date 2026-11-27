@@ -73,9 +73,7 @@ rpc -> fileprobe.demo proc/spawn 1ms err: plugin `fileprobe.demo` lacks permissi
 
 ## 这个插件刻意不做的事
 
-**这个示例只验证路径交接。** 文件内容读写可使用 `ctx.fs`（见
-见 [FILE-ACCESS-PLAN.md](../../../docs/plugin-dev/FILE-ACCESS-PLAN.md)），
-所以拿到路径之后，读内容是插件自己起 sidecar 的事。
+这个示例只验证路径交接。前端文件内容读写可使用 [ctx.fs](../../../docs/plugin-dev/api.md#文件读写-ctxfs--bridgefs) 的原生选择器取得引用；已有路径可交给 Sidecar 自行读写。
 
 **它也不假装拖放能按元素定位。** Tauri 的拖放是**窗口级**的，
 而且 `dragDropEnabled` 默认开启时会压制 HTML5 的 `ondrop` ——

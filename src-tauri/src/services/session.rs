@@ -49,6 +49,8 @@ pub struct Session {
     pub plugin: String,
     pub ch: String,
     pub kind: SessionKind,
+    pub background: bool,
+    pub instance: Option<String>,
     pub pid: Option<u32>,
     pub opened_at_ms: u128,
     /// Shared with the producer so metrics stay live without re-registering.
@@ -98,6 +100,8 @@ pub fn open(
             plugin: plugin.to_string(),
             ch: ch.to_string(),
             kind,
+            background:false,
+            instance:None,
             pid,
             opened_at_ms: now_ms(),
             bytes_out: Arc::clone(&bytes_out),
@@ -110,6 +114,32 @@ pub fn open(
 /// Deregister without stopping (the producer already finished on its own).
 pub fn close(plugin: &str, ch: &str) -> bool {
     lock().remove(&id_of(plugin, ch)).is_some()
+}
+
+pub fn process_owner(plugin: &str, ch: &str, instance: &str, background: bool) {
+    if let Some(session) = lock().get_mut(&id_of(plugin,ch)) { session.background = background; session.instance = Some(instance.into()); }
+}
+pub fn take_process_stop(plugin: &str, ch: &str, instance: &str) -> Option<StopFn> {
+    let mut sessions = lock();
+    let id = id_of(plugin,ch);
+    if sessions.get(&id).and_then(|s|s.instance.as_deref()) != Some(instance) { return None; }
+    sessions.remove(&id).map(|s|s.stop)
+}
+pub fn close_process(plugin: &str, ch: &str, instance: &str) -> bool {
+    take_process_stop(plugin,ch,instance).is_some()
+}
+
+/// Renderer recovery reaps window-owned endpoints; explicit app shutdown still
+/// stops everything through kill_all. A native background owner survives reload.
+pub fn reap_orphans() -> usize {
+    let sessions: Vec<_> = {
+        let mut map = lock();
+        let ids: Vec<_> = map.iter().filter(|(_,session)|!session.background).map(|(id,_)|id.clone()).collect();
+        ids.iter().filter_map(|id|map.remove(id)).collect()
+    };
+    let count = sessions.len();
+    for session in sessions { (session.stop)(); }
+    count
 }
 
 /// Deregister AND run the stop closure (user-initiated cancel).
@@ -145,6 +175,7 @@ pub fn list(plugin: Option<&str>) -> Vec<Value> {
                 "plugin": s.plugin,
                 "ch": s.ch,
                 "kind": s.kind.as_str(),
+                "background": s.background,
                 "pid": s.pid,
                 "openedAt": s.opened_at_ms,
                 "bytesOut": s.bytes_out.load(Ordering::Relaxed),
@@ -203,6 +234,7 @@ fn kill_pid_tree(_pid: u32) {}
 /// Shutdown hook: drain first (so a `stop` that re-enters the registry can
 /// not deadlock), then run every stop closure.
 pub fn kill_all() -> usize {
+    super::proc::cancel_pending_spawns();
     let drained: Vec<Session> = {
         let mut map = lock();
         map.drain().map(|(_, s)| s).collect()

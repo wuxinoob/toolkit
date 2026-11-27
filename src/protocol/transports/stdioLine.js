@@ -70,7 +70,7 @@ export const stdioLineTransport = {
   descriptor: descriptor('stdio-line'),
 
   async open({ pluginId, ch, params = {}, onFrame, onEnd }) {
-    const { exe, args = [], timeoutMs = 200 } = params;
+    const { exe, args = [], timeoutMs = 200, hostRpc = false } = params;
     const pollMs = clampPoll(params.pollMs);
     if (!exe) throw ProtocolError.protocol('stdio-line requires params.exe (a binary in the plugin folder)');
 
@@ -78,7 +78,7 @@ export const stdioLineTransport = {
       pluginId,
       svc: 'proc',
       act: 'spawn',
-      params: { key: ch, exe, args },
+      params: { key: ch, exe, args, ...(hostRpc ? { hostRpc: true } : {}) },
     });
 
     let stopped = false;
@@ -130,11 +130,7 @@ export const stdioLineTransport = {
           delivered = true;
           nonEmpty = r.line.length > 0;
           if (r.dropped) {
-            // The host dropped old output to stay inside its queue cap. Say so:
-            // a silent gap is worse than a noisy one.
-            console.warn(
-              `[stdio-line:${ch}] host dropped ${r.dropped} line(s) — consumer too slow`,
-            );
+            throw ProtocolError.protocol(`Sidecar lost ${r.dropped} stdout line(s); reliable stream terminated`);
           }
           let env;
           try {
@@ -142,7 +138,8 @@ export const stdioLineTransport = {
           } catch {
             env = Envelope.data(ch, r.line); // plain-text backend: wrap it
           }
-          onFrame?.(env);
+          await onFrame?.(env);
+          if (stopped) return;
           // The "does this end the stream" rule is shared, not local: a reply
           // (res/err carrying an id) travels the same channel and must not end it.
           if (Envelope.endsStream(env)) return finish(env);
@@ -161,14 +158,15 @@ export const stdioLineTransport = {
             return finish(Envelope.end(ch));
           }
           const env = Envelope.exit(ch, r.code);
-          onFrame?.(env);
+          await onFrame?.(env);
           return finish(env);
         }
       } catch (e) {
         if (stopped) return;
         // A host-level failure ends the stream with a proper terminal frame.
         const env = Envelope.streamErr(ch, e.code ?? Code.TRANSPORT, String(e.message ?? e));
-        onFrame?.(env);
+        try { await onFrame?.(env); } catch (callbackError) { console.error(`[stdio-line:${ch}] error callback failed`, callbackError); }
+        await rpcTransport.request({ pluginId, svc: 'proc', act: 'kill', params: { key: ch } }).catch(() => {});
         return finish(env);
       }
       // Re-poll IMMEDIATELY when a non-empty line arrived. The host's `recv` is
@@ -187,7 +185,7 @@ export const stdioLineTransport = {
             `control plane; a sidecar that streams data needs a pty or a raw stream`,
         );
       }
-      timer = setTimeout(tick, delivered && nonEmpty && fast ? 0 : pollMs);
+      if (!stopped) timer = setTimeout(tick, delivered && nonEmpty && fast ? 0 : pollMs);
     };
     timer = setTimeout(tick, 0);
 
