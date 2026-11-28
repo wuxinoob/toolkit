@@ -4,11 +4,11 @@
 
 基于 **Tauri 2、Vue 3 和 Rust** 的可扩展桌面工具箱。通过内置工具、外置 JavaScript 插件和原生 Sidecar，把进程管理、桌面操作与模型调用放在同一个工作台中。
 
-[下载安装](https://github.com/wuxinoob/toolkit/releases/latest) · [插件商店](https://github.com/wuxinoob/toolkit_plugins) · [插件开发](docs/plugin-dev/README.md) · [文档导航](docs/README.md) · [开发记录](docs/DEVELOPMENT-LOG.md)
+[下载安装](https://github.com/wuxinoob/toolkit/releases/latest) · [插件商店](https://github.com/wuxinoob/toolkit_plugins) · [v0.1.8 更新说明](docs/releases/v0.1.8.md) · [插件开发](docs/plugin-dev/README.md) · [文档导航](docs/README.md)
 
 目前交付 **Windows x64** 安装包（NSIS `.exe` / MSI `.msi`），运行依赖 WebView2 Runtime。
 
-本文介绍 **main 分支开发版**。下方为 Windows 本地运行实拍；已发布安装包的功能以 [Releases](https://github.com/wuxinoob/toolkit/releases) 对应版本说明为准。
+下方为 Windows 本地运行实拍。README 随 main 分支维护；已发布安装包的功能以 [Releases](https://github.com/wuxinoob/toolkit/releases) 对应版本说明为准。
 
 ![Toolkit 插件与软件商店运行界面](docs/assets/screenshots/plugin-store.jpg)
 
@@ -96,7 +96,7 @@ export default {
 - **有界通信与回收**：请求、流、进程、文件和内存资源分别管理超时、容量、取消与释放；大文件使用 `fs` 区间读取或 Sidecar 本地 IO。
 - **类型与能力发现**：提供 [TypeScript 数据接口](sdk/types/README.md)、[Rust SDK](sdk/rust/toolkit-host/README.md) 和运行时 `schema()`。
 
-当前本地宿主接口为 **HOST_API 14**，信封版本为 **1**。协议、字节和文件能力见 [PROTOCOL](docs/PROTOCOL.md)、[BINARY-IPC](docs/BINARY-IPC.md) 与 [插件 API](docs/plugin-dev/api.md)。
+宿主接口为 **HOST_API 14**，信封版本为 **1**。协议、字节和文件能力见 [PROTOCOL](docs/PROTOCOL.md)、[BINARY-IPC](docs/BINARY-IPC.md) 与 [插件 API](docs/plugin-dev/api.md)。
 
 <details>
 <summary>开发者：通信方案速查</summary>
@@ -136,6 +136,8 @@ npm run tauri -- build --no-sign
 
 正式版本由 [Release workflow](.github/workflows/release.yml) 在 `v*` 标签触发后构建和发布。标签必须与应用配置版本一致；自动更新清单由实际产物和更新签名生成。更新签名与 Windows 代码签名是不同机制，签名私钥不进入仓库。
 
+main 推送执行 CI，版本标签推送执行构建和发布。发版前同步 package.json、package-lock.json、Cargo.toml、Cargo.lock 与 tauri.conf.json 的应用版本，补充 `docs/releases/vX.Y.Z.md` 并提交，再推送对应标签；交付完成以 Release 页面中实际出现安装包为准。
+
 ## 项目结构
 
 ```text
@@ -154,4 +156,4 @@ docs/                架构、协议、插件手册和版本记录
 
 ![Toolkit 设置页与语言选择菜单](docs/assets/screenshots/settings-language.jpg)
 
-这部分属于 main 分支开发版，未包含在 v0.1.7 标签中。内置工具业务界面、第三方插件的翻译与安装器覆盖情况见 [i18n 升级计划](docs/I18N-UPGRADE.md)。
+宿主语言切换与插件语言 API 从 v0.1.8 提供。内置工具业务界面、第三方插件的翻译与安装器覆盖情况见 [i18n 升级计划](docs/I18N-UPGRADE.md)。

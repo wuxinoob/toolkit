@@ -11,7 +11,7 @@
  * 前三者**互相独立**（一个是产品、一个是线协议、一个是编程接口），但各自有内部一致性要求，
  * 而且都曾经是"人写的、没人比对"：
  *
- *   1. 应用版本在**三处各写了一遍**（前端包描述、Rust 包描述、应用配置）。
+ *   1. 应用版本在前端包描述、Rust 包描述、应用配置及锁文件中分别保存。
  *      漂移的后果不是"字符串不好看"：安装包与自动更新读的是配置里那份，
  *      而插件能问到的"宿主版本"读的是 Rust 包描述那份 —— 两边不一致时，
  *      更新器会拿错误的前提去比版本。
@@ -29,20 +29,26 @@ import path from 'node:path';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const read = (...parts) => readFileSync(path.join(root, ...parts), 'utf8');
 
-/** 应用版本的三处声明。`version = "x"` 的第一处就是 Rust 包的版本。 */
+/** 应用声明与锁文件均须指向同一版本。 */
 function appVersions() {
   const pkg = JSON.parse(read('package.json'));
+  const lock = JSON.parse(read('package-lock.json'));
   const cargo = read('src-tauri', 'Cargo.toml').match(/^version\s*=\s*"([^"]+)"/m);
   assert.ok(cargo, 'Cargo.toml 里找不到包版本');
+  const lockedCargo = rustPackageVersion(read('src-tauri', 'Cargo.lock'), 'toolkit');
+  assert.ok(lockedCargo, 'Cargo.lock 里找不到 toolkit 包版本');
   const conf = JSON.parse(read('src-tauri', 'tauri.conf.json'));
   return {
     'package.json': pkg.version,
+    'package-lock.json': lock.version,
+    'package-lock.json packages[""]': lock.packages?.['']?.version,
     'Cargo.toml': cargo[1],
+    'Cargo.lock toolkit': lockedCargo,
     'tauri.conf.json': conf.version,
   };
 }
 
-test('the app version is written in three places and they agree', () => {
+test('the app declarations and lockfiles agree on the released version', () => {
   const v = appVersions();
   const distinct = [...new Set(Object.values(v))];
   assert.equal(
@@ -127,7 +133,7 @@ test('every host API version has a written reason', () => {
 });
 
 /**
- * `tauri` 的版本，从 `Cargo.lock` 里取。
+ * Rust 包版本从 `Cargo.lock` 的对应 package 块中取。
  *
  * **不能假设换行是 `\n`。** 这个仓库没有 `.gitattributes`，而它的 autocrlf 是打开的：
  * 本地这份 `Cargo.lock` 是 cargo 写出来的（LF），CI 上是**新检出**（CRLF）。
@@ -136,10 +142,10 @@ test('every host API version has a written reason', () => {
  *
  * 所以：先定位 `name = "tauri"` 那一行（允许行尾有 `\r`），再取紧随其后的 `version = …`。
  */
-function rustTauriVersion(text) {
-  const at = text.search(/^name = "tauri"[ \t\r]*$/m);
+function rustPackageVersion(text, name = 'tauri') {
+  const at = text.search(new RegExp(`^name = "${name}"[ \\t\\r]*$`, 'm'));
   if (at < 0) return null;
-  return text.slice(at).match(/^version = "([^"]+)"[ \t\r]*$/m)?.[1] ?? null;
+  return text.slice(at).split('[[package]]', 1)[0].match(/^version = "([^"]+)"[ \t\r]*$/m)?.[1] ?? null;
 }
 
 test('the npm tauri package and the Rust crate stay on the same minor', () => {
@@ -160,7 +166,7 @@ test('the npm tauri package and the Rust crate stay on the same minor', () => {
   const npmApi = lock.packages?.['node_modules/@tauri-apps/api']?.version;
   assert.ok(npmApi, 'package-lock.json 里找不到 @tauri-apps/api —— 抽取规则过期了');
 
-  const rust = rustTauriVersion(read('src-tauri', 'Cargo.lock'));
+  const rust = rustPackageVersion(read('src-tauri', 'Cargo.lock'));
   assert.ok(rust, 'src-tauri/Cargo.lock 里找不到 tauri —— 抽取规则过期了');
 
   const minor = (v) => v.split('.').slice(0, 2).join('.');
@@ -177,12 +183,14 @@ test('the Cargo.lock extractor does not assume unix line endings', () => {
   // 这条守卫第一次进 CI 就是因为它红的：本地 LF、CI CRLF。
   // 一个"只在作者机器上成立"的抽取规则比没有守卫更糟 —— 它会在别人那里红。
   const lf = '[[package]]\nname = "tauri"\nversion = "9.9.9"\nsource = "registry+x"\n';
-  assert.equal(rustTauriVersion(lf), '9.9.9');
-  assert.equal(rustTauriVersion(lf.replace(/\n/g, '\r\n')), '9.9.9', 'CRLF 也要读得出来');
+  assert.equal(rustPackageVersion(lf), '9.9.9');
+  assert.equal(rustPackageVersion(lf.replace(/\n/g, '\r\n')), '9.9.9', 'CRLF 也要读得出来');
   assert.equal(
-    rustTauriVersion('[[package]]\nname = "tauri-plugin-opener"\nversion = "2.5.5"\n'),
+    rustPackageVersion('[[package]]\nname = "tauri-plugin-opener"\nversion = "2.5.5"\n'),
     null,
     '别的包不能被当成 tauri（名字必须整行相等）',
   );
-  assert.equal(rustTauriVersion('nonsense'), null);
+  assert.equal(rustPackageVersion('nonsense'), null);
+  assert.equal(rustPackageVersion(lf.replace('"tauri"', '"toolkit"'), 'toolkit'), '9.9.9');
+  assert.equal(rustPackageVersion('[[package]]\nname = "toolkit"\n[[package]]\nname = "other"\nversion = "1.2.3"\n', 'toolkit'), null, '不能取到后一个包的版本');
 });

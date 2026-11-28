@@ -30,7 +30,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '要发布的 tag（形如 v0.1.0），必须与配置里的版本号一致'
+        description: '要发布的已存在 tag（形如 v0.1.8）；按标签源码构建，不使用 main 的后续修改'
         required: true
 
 permissions:
@@ -71,20 +71,32 @@ jobs:
       # 版本号只有一个地方说了算（配置里的版本），tag 只是它的别名。
       # 两者不一致时**立刻失败**：否则会发出一个"安装包说 0.1.0、release 叫 v0.2.0"的版本，
       # 而自动更新是靠比版本号工作的，这种漂移要等到用户端才暴露。
-      - name: Check the tag matches the configured version
+      - name: Check release tag and notes
         shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          TAG="$RELEASE_TAG"
           VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
           echo "tag=$TAG version=$VERSION"
           if [ "v$VERSION" != "$TAG" ]; then
             echo "::error::tag $TAG 与配置里的版本 $VERSION 不一致 —— 先改版本号，或者用对的 tag 重跑"
             exit 1
           fi
+          if [ ! -s "docs/releases/$TAG.md" ]; then
+            echo "::error::缺少非空发布说明 docs/releases/$TAG.md"
+            exit 1
+          fi
 
       # 与 CI 同一条命令、同一个理由：`npm ci` 的"可选平台包"校验随 npm 版本变，
       # 而发布不该因为 runner 自带哪个 npm 而红。详见 ci.yml 里那段注释。
       - run: npm install --no-audit --no-fund
+
+      # 在耗时的原生检查前检查版本和生成文件，CRLF 检出不应误报过时。
+      - name: Validate versions and generated API declarations
+        run: |
+          node --test tests/versions.test.mjs
+          node scripts/generate-api-types.mjs --check
 
       # 发布前的门禁：测试不过就不出包。但测试**需要**一个 Rust 构建产物：
       # 权限审计读 `src-tauri/gen/schemas/acl-manifests.json`（tauri-build 生成、
