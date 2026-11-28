@@ -31,6 +31,9 @@ pub fn schema(services: &Services, caller: &Caller) -> Value {
     if !services.contains_key("screen") {
         map.remove("screenCapture");
     }
+    if !services.contains_key("i18n") {
+        map.remove("i18n");
+    }
     map.extend(json!({"protocol":1,"transport":"named-pipe","framing":"u32le-json","maxFrameBytes":toolkit_host::wire::MAX_FRAME_BYTES,"streaming":"pull","resources":{"version":1,"rawLane":services.contains_key("binary"),"maxChunkBytes":crate::binary_ipc::MAX_CHUNK_BYTES},"services":services.iter().map(|(name,service)|(name.clone(),json!(service.actions))).collect::<serde_json::Map<String,Value>>(),"contracts":crate::services::contracts::for_sidecar(services),"codes":crate::protocol::codes::ALL}).as_object().unwrap().clone());
     let allowed: std::collections::HashSet<_> = services
         .keys()
@@ -51,6 +54,7 @@ pub fn schema(services: &Services, caller: &Caller) -> Value {
         ("binary", "binaryTransfer"),
         ("llm", "llm"),
         ("screen", "screenCapture"),
+        ("i18n", "i18n"),
     ] {
         if !allowed.contains(service) {
             result.as_object_mut().unwrap().remove(capability);

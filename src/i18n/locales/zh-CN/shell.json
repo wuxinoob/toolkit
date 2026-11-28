@@ -1,0 +1,8 @@
+{
+  "shell": {
+    "tools": "工具", "panels": "面板", "system": "系统", "settings": "设置",
+    "loading": "正在加载插件…", "starting": "正在启动…", "loadingDetail": "正在加载插件。",
+    "empty": "暂无插件视图", "emptyDetail": "将插件文件夹放入插件目录，然后点击重新扫描。",
+    "windowFailed": "插件窗口加载失败"
+  }
+}

@@ -15,7 +15,7 @@
   "id": "my.plugin",
   "name": "My Plugin",
   "version": "0.1.0",
-  "api": 13,
+  "api": 14,
   "entry": "main.js",
   "description": "一句话说明这个插件干什么",
   "contributes": { },
@@ -27,8 +27,9 @@
 |---|---|---|
 | `id` | ✅ | 全局唯一。**同时是数据目录名**（`{appData}/plugin-data/<id>/`），也是 `ctx` 报错前缀 `[plugin:<id>]` |
 | `name` | ✅ | 侧栏与错误信息里显示的名字 |
+| `nameKey` / `i18n` | | 可选显示词条键与插件词典，原 name 作为回退 |
 | `version` | | 仅展示 |
-| `api` | **强烈建议** | 插件使用的 **HOST API** 版本。当前为 **13**，声明其他版本时宿主显示版本提示 |
+| `api` | **强烈建议** | 插件使用的 **HOST API** 版本。当前为 **14**，声明其他版本时宿主显示版本提示 |
 | `entry` | ✅ | 入口文件，相对插件目录 |
 | `description` | | 仅展示 |
 | `contributes` | | 声明式贡献点，见下 |
@@ -54,6 +55,7 @@
 | `id` | 视图 id，**`ctx.registerView(id, …)` 必须用它** |
 | `slot` | 侧栏分组：`tool`（默认）/ `panel` / `system` |
 | `title` | 侧栏里显示的文字 |
+| `titleKey` | 可选词条键，按当前语言翻译侧栏；缺失译文回退 title |
 | `icon` | 侧栏里的图标。见下 |
 
 **`icon` 支持三种写法**：
@@ -122,6 +124,25 @@
 
 ---
 
+## `i18n` 与显示元数据
+
+```json
+{
+  "name": "My Plugin",
+  "nameKey": "plugin.name",
+  "i18n": {
+    "fallbackLocale": "en-US",
+    "messages": {
+      "en-US": {"plugin.name":"My Plugin", "view.main":"My tool"},
+      "zh-CN": {"plugin.name":"我的插件", "view.main":"我的工具"}
+    }
+  },
+  "contributes": {"views":[{"id":"main", "title":"My tool", "titleKey":"view.main"}]}
+}
+```
+
+元数据可选，旧插件及无译文插件继续显示 name/title。键为平铺字符串；i18n 不与代码导出深合并，沿用 plugin.json 顶层覆盖规则。切换不修改源清单、digest、ID 或重新加载插件。业务词典可用 createTranslator 内嵌入口，不强制全部放入清单。方法、插值与清理见 [api.md](api.md#我要让插件跟随宿主语言)。
+
 ## `permissions` — 权限清单
 
 一个能力一个权限。退订、关闭已取得的资源或接收宿主主动投递的事件不新增权限；读取剪贴板、截图等敏感信息仍需要相应授权。
@@ -141,6 +162,7 @@
 | `rpc:screen` | 枚举显示器 + 截屏 | `ctx.screen.*` |
 | `rpc:binary` | 打开、读写和关闭当前窗口的内存字节会话 | `ctx.binary.open` / `bridge.binary.open` |
 | `rpc:llm` | 调用用户授权的模型配置；不含配置和凭据管理 | `ctx.llm` / 原生 Sidecar 模型请求 |
+| `rpc:i18n` | 只读界面语言快照、插件词典与变化订阅 | `ctx.i18n` / `bridge.i18n` / Sidecar 的 `i18n/get` |
 | `rpc:fs` | 通过原生对话框打开文件或选择保存目标，管理当前窗口持有的文件引用 | `ctx.fs` / `bridge.fs` |
 
 **不需要权限的**（「观察」侧）：
@@ -167,7 +189,7 @@ Rust 侧 `host/registry.rs`（权威，fail-closed，未注册即拒绝）。
   "id": "my.plugin",
   "name": "My Plugin",
   "version": "0.1.0",
-  "api": 13,
+  "api": 14,
   "entry": "main.js",
   "description": "示例",
   "contributes": {

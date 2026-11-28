@@ -1,13 +1,14 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 import tailwindcss from "@tailwindcss/vite";
+import VueI18nPlugin from '@intlify/unplugin-vue-i18n/vite';
 import process from "node:process";
 import { fileURLToPath, URL } from "node:url";
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
-  plugins: [vue(), tailwindcss()],
+  plugins: [vue(), tailwindcss(), VueI18nPlugin({ include: fileURLToPath(new URL('./src/i18n/locales/**', import.meta.url)) })],
 
   // shadcn-vue's copy-in components import each other and the `cn()` helper
   // through `@/…`. The alias has to exist in Vite (for the bundle) AND in

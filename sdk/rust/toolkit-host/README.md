@@ -1,5 +1,7 @@
 # toolkit-host
 
+HOST_API 14 的界面语言能力需要 plugin.json 声明 rpc:i18n。`client.locale().await?` 直接经原生命名管道返回 mode、locale、resolvedLocale、revision；显示使用 resolvedLocale。此查询不经过前端，也不创建或修改语言设置。本版不提供 Sidecar 语言推送，按业务需要读取；JS 插件的词典与订阅见 [插件 i18n](../../../docs/plugin-dev/api.md#我要让插件跟随宿主语言)。
+
 Windows Sidecar 的异步宿主 RPC 客户端。直接连接宿主注入的命名管道，不依赖 WebView 或 stdout 转发。完整协议与配置见 [docs/LLM.md](../../../docs/LLM.md)。
 
 在自己的 crate 中使用仓库路径依赖（打包时只需携带编译后的 exe）：

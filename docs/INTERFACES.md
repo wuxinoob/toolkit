@@ -11,12 +11,12 @@
 |---|---|
 | **1. 协议是否统一了？** | 插件使用公共 SDK。JSON 与 raw RPC 共用服务表，流、对话框和内存字节会话各有原生入口。 |
 | **2. 新插件能否直接调用已有接口？** | **能，且已验证**。`tests/fixtures/plugins/probe` 不 import 任何模块、不碰 Tauri API，一次调用覆盖 11 项接口全部通过。 |
-| **3. 接口有哪些？** | 28 个原生命令 · 11 个服务 / 53 个动作（+ 2 个字节动作） · 9 个方案 · 3 个流提供者。见 §1–§4。 |
+| **3. 接口有哪些？** | 30 个原生命令 · 12 个服务 / 54 个动作（+ 2 个字节动作） · 9 个方案 · 3 个流提供者。见 §1–§4。 |
 | **4. 有改进空间吗？** | 有。服务表与传输已收敛，流控、生命周期及字段契约持续按原生回归维护；现行边界与后续方向见 ARCHITECTURE.md。§8 保留历史修复记录。 |
 
 ---
 
-## 1. 原生入口：28 个命令
+## 1. 原生入口：30 个命令
 
 此计数覆盖 `src-tauri/src` 注册的宿主命令，含独立的 LLM 设置模块。PTY 的七个兼容命令来自项目内
 `src-tauri/plugins/tauri-plugin-pty`，直接走该插件，不经过网关；其执行和回收边界见
@@ -52,6 +52,8 @@
 | 26 | `host_window_present` | 在事件线程设置可聚焦状态或无激活显示窗口 | `ctx.windows.create` / `control` | 宿主窗口管理 | 仅主窗口 |
 | 27 | `host_llm_open` | 打开固定宿主模型设置窗口 | Settings | 宿主管理 | 仅主窗口 |
 | 28 | `host_llm_admin` | 模型配置、凭据写入和短测试 | 独立模型设置页 | 宿主管理 | 仅 `host-llm-settings` 窗口 |
+| 29 | `host_locale_get` | 读取宿主语言快照与修订号 | 各 WebView 入口 | 宿主偏好 | 只读；不含插件业务数据 |
+| 30 | `host_locale_set` | 原子保存语言偏好，更新托盘并广播新快照 | Settings 语言选择 | 宿主偏好 | 仅主窗口 |
 
 插件 SDK 使用 1–6 和 20–26。7–19 负责加载、窗口及宿主运行管理；27–28 是独立宿主模型设置。字节会话的完整契约见 [BINARY-IPC.md](BINARY-IPC.md)。
 
@@ -145,7 +147,7 @@
 **这三条都不是"优化"，是"别做无关的事"** —— 把不属于插件窗口的模块/样式/文件排除出它的路径。
 **判断标准是「这个窗口真的需要它吗」**，不是「快一点」。
 
-## 2. 网关背后的服务：11 个服务 / 53 个动作
+## 2. 网关背后的服务：12 个服务 / 54 个动作
 
 | 服务 | 动作 | 说明 |
 |---|---|---|
@@ -153,6 +155,7 @@
 | `host` | `info` **`paths`** `write_debug_log` `sessions` **`stop_session`** `plugins` `schema` `unregister` | 路径/元数据、**常用目录（软件 + 系统文件夹）**、调试落盘、**统一会话表**、**按会话停止（仅宿主）**、已授权插件、**能力协商面**、**撤销授权**（仅宿主可调） |
 | `binary` | `open` `seal` `stat` `close` `close_all` `identity` `export` `import` `revoke` | 通用内存资源控制、面向指定调用者的一次性交接；字节独立传输，共享借用期间保留预算 |
 | `llm` | `profiles` `start` `next` `cancel` `cancel_all` | 授权模型配置、文本和图片输入、有界拉取与原生取消；两端共用运行时 |
+| `i18n` | `get` | 只读宿主语言快照；WebView 与 Sidecar 共用，修改仍由宿主设置独占 |
 | `proc` | `spawn` `send` `recv` `kill` `kill_all` `list` | sidecar 行 JSON 管道（`stdio-line` 方案的底层） |
 | `stream` | `close` `providers` `list` `session_open` `session_close` `open_in` `write_in` `close_in` | 推送流生命周期 + 第三方进程的会话登记 + **上行流**（插件按批把帧推给宿主侧 sink） |
 | `bus` | `publish` | 跨窗口广播（宿主 `app.emit` 扇出到所有窗口） |

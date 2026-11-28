@@ -189,6 +189,11 @@ async fn mock_server(
                             {"id":"chat","name":"Mock text model","owned_by":"selftest","input_modalities":["text","image"],"output_modalities":["text"],"context_window":131072,"max_output_tokens":8192,"effort":{"supported_levels":["low","high"],"default_level":"high"}},
                             {"id":"name-contains-reasoner-embedding","object":"model","capabilities":{"effort":{"supported":true}}},
                             {"id":"embed","sub_type":"embedding","max_input_tokens":8192,"max_tokens":1024,"capabilities":{"vision":{"supported":false},"thinking":{"supported":true},"effort":{"low":{"supported":true},"high":{"supported":false}}}},
+                            {"id":"no-effort","capabilities":{"effort":{"supported":false,"low":{"supported":true}}}},
+                            {"id":"boolean-no-effort","capabilities":{"effort":false}},
+                            {"id":"all-efforts-disabled","capabilities":{"effort":{"supported":true,"low":{"supported":false},"high":false}}},
+                            {"id":"empty-efforts","effort":{"supported_levels":[]}},
+                            {"id":"unknown-no-metadata"},
                             {"id":"chat"}
                         ]}).to_string())
                     };
@@ -455,25 +460,28 @@ async fn checks() {
     )
     .unwrap();
     assert_eq!(catalog["status"], "available");
-    assert_eq!(catalog["models"].as_array().unwrap().len(), 3);
-    assert_eq!(catalog["models"][0]["id"], "chat");
-    assert_eq!(
-        catalog["models"][0]["inputModalities"],
-        json!(["text", "image"])
-    );
-    assert_eq!(
-        catalog["models"][0]["reasoningEfforts"],
-        json!(["low", "high"])
-    );
-    assert_eq!(catalog["models"][1]["kind"], "embedding");
-    assert_eq!(
-        catalog["models"][1]["declaredCapabilities"]["vision"],
-        false
-    );
-    assert_eq!(catalog["models"][1]["reasoningEfforts"], json!(["low"]));
-    assert_eq!(catalog["models"][1]["maxInputTokens"], 8192);
-    assert!(catalog["models"][2]["kind"].is_null());
-    assert!(catalog["models"][2]["reasoningEfforts"].is_null());
+    let models = catalog["models"].as_array().unwrap();
+    assert_eq!(models.len(), 8);
+    let model = |id: &str| models.iter().find(|model| model["id"] == id).unwrap();
+    let chat = model("chat");
+    assert_eq!(chat["inputModalities"], json!(["text", "image"]));
+    assert_eq!(chat["reasoningEfforts"], json!(["low", "high"]));
+    assert_eq!(chat["defaultReasoningEffort"], "high");
+    assert_eq!(model("embed")["kind"], "embedding");
+    assert_eq!(model("embed")["declaredCapabilities"]["vision"], false);
+    assert_eq!(model("embed")["reasoningEfforts"], json!(["low"]));
+    assert_eq!(model("embed")["maxInputTokens"], 8192);
+    assert!(model("name-contains-reasoner-embedding")["kind"].is_null());
+    assert!(model("name-contains-reasoner-embedding")["reasoningEfforts"].is_null());
+    assert!(model("unknown-no-metadata")["reasoningEfforts"].is_null());
+    for id in [
+        "no-effort",
+        "boolean-no-effort",
+        "all-efforts-disabled",
+        "empty-efforts",
+    ] {
+        assert_eq!(model(id)["reasoningEfforts"], json!([]), "{id}");
+    }
     assert!(!catalog.to_string().contains("FAKE_KEY"));
     for suffix in [
         "denied",
@@ -494,7 +502,7 @@ async fn checks() {
         };
         let result = runtime.inspect_connection(draft, key).await;
         match suffix {
-            "draft" => assert_eq!(result.unwrap().models.len(), 3),
+            "draft" => assert_eq!(result.unwrap().models.len(), 8),
             "partial" => assert!(result.unwrap().has_more),
             "unsupported" => assert_eq!(result.unwrap().status, "unsupported"),
             "denied" => {

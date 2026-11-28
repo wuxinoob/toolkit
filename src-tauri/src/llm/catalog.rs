@@ -79,6 +79,29 @@ fn supported_flags(value: &Value) -> Option<BTreeMap<String, bool>> {
     }
 }
 
+fn reasoning_efforts(entry: &Value) -> Option<Vec<String>> {
+    let effort = &entry["capabilities"]["effort"];
+    if effort == &Value::Bool(false) || effort["supported"] == false {
+        return Some(Vec::new());
+    }
+    if let Some(levels) = strings(&entry["effort"]["supported_levels"]) {
+        return Some(levels);
+    }
+    let mut flags = supported_flags(effort)?;
+    flags.remove("supported");
+    if flags.is_empty() {
+        // Overall support without per-level declarations leaves the levels unknown.
+        return None;
+    }
+    Some(
+        flags
+            .into_iter()
+            .filter(|(_, supported)| *supported)
+            .map(|(name, _)| name)
+            .collect(),
+    )
+}
+
 fn parse_models(body: &Value) -> Result<(Vec<Model>, bool), ServiceError> {
     let entries = body["data"]
         .as_array()
@@ -104,21 +127,7 @@ fn parse_models(body: &Value) -> Result<(Vec<Model>, bool), ServiceError> {
             max_output_tokens: positive(&entry["max_output_tokens"])
                 .or_else(|| positive(&entry["max_tokens"])),
             declared_capabilities: supported_flags(&entry["capabilities"]),
-            reasoning_efforts: strings(&entry["effort"]["supported_levels"]).or_else(|| {
-                let mut flags = supported_flags(&entry["capabilities"]["effort"])?;
-                flags.remove("supported");
-                if flags.is_empty() {
-                    None
-                } else {
-                    Some(
-                        flags
-                            .into_iter()
-                            .filter(|(_, supported)| *supported)
-                            .map(|(name, _)| name)
-                            .collect(),
-                    )
-                }
-            }),
+            reasoning_efforts: reasoning_efforts(entry),
             default_reasoning_effort: string(&entry["effort"]["default_level"]),
         });
     }

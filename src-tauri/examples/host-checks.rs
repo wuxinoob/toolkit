@@ -563,6 +563,7 @@ fn main() {
                 "screen",
                 "binary",
                 "llm",
+                "i18n",
             ],
         &format!("{names:?}"),
     );

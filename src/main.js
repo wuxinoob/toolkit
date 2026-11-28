@@ -1,6 +1,8 @@
 import { createApp, nextTick } from 'vue';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { initTheme } from './host/theme.js';
+import { initLocale } from './i18n/state.js';
+import { i18n } from './i18n/vue.js';
 
 // Navigation-relative marks include time spent loading this module's imports.
 performance.mark('toolkit:entry');
@@ -33,9 +35,11 @@ async function main() {
   }
 
   initTheme();
+  // Native preference IO must not delay mounting or revealing the shell.
+  initLocale();
   const { default: App } = await import('./App.vue');
   performance.mark('toolkit:shell-imported');
-  createApp(App).mount('#app');
+  createApp(App).use(i18n).mount('#app');
   await nextTick();
   performance.mark('toolkit:mounted');
 

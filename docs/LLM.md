@@ -1,6 +1,6 @@
 # 宿主模型服务与 Sidecar 直连
 
-实现版本：HOST_API 13；信封和原生 Sidecar RPC 版本均为 1。
+实现版本：HOST_API 14；信封和原生 Sidecar RPC 版本均为 1。
 
 ## 配置与边界
 
@@ -42,6 +42,16 @@ Gemini 使用 Google AI Studio 的 Gemini API key；SiliconFlow 预置中国站�
 
 发现按可复用元数据字段解析，不通过模型名称猜测能力。例如 [DeepSeek 的模型目录](https://api-docs.deepseek.com/api/list-models/)提供模态及思考等级；[OpenAI 目录](https://developers.openai.com/api/reference/resources/models/methods/list)主要提供模型标识和所有者；[Claude 目录](https://platform.claude.com/docs/en/api/models/list)还提供嵌套的能力声明。解析支持布尔能力字段及 `capabilities.*.supported`，输入 token 上限与总上下文容量分别展示。缺失或无法识别的字段保留为未知；目录声明不会自动开启模型的图片权限，也不代表远端实际调用已经验证。
 
+思考等级的目录结果区分三种状态，不把缺失字段当作“不支持”：
+
+| 归一字段 `reasoningEfforts` | 含义 | 设置页行为 |
+|---|---|---|
+| `null` | 未声明、仅声明总体支持但未列出等级，或无法识别 | 显示未知；允许按 API 文档手动填写，无预填等级 |
+| `[]` | 明确空列表、总体 effort 支持为 false，或所列等级全部为 false | 显示 API 声明无可用等级；不自动启用等级控制 |
+| 非空列表 | API 明确声明的等级 | 展示等级及有效的声明默认值，可用于新配置或显式采用 |
+
+模型卡片的 **Query API effort declarations / 查询 API 等级声明** 复用连接目录检查。**Apply API-declared levels and default / 采用 API 声明的等级与默认值** 才会替换当前配置的等级列表与默认值，保留已有 Chat 输出 token 字段等设置；仍需保存。修改模型或连接后展示对应模型的本次查询结果，不把其他模型的声明沿用为当前声明。重新打开设置页时目录回到未知，已保存的本地策略仍保留。这里没有新增插件或 Sidecar 的凭据查询权限。
+
 目录读取成功只证明该接口返回了可解析的目录。它不能证明每个模型可生成、账户有足够额度、指定思考参数生效或所有其他模态可用。HTTP 404/405/501 显示目录接口不可用，保留手填模型及生成测试入口；401/403、429、网络、JSON 和响应大小错误分别报告，原始错误正文不回传，避免服务在正文中回显 key。请求总时限为 15 秒，JSON 最大 1 MiB，最多展示 2048 个模型；部分结果明确标记，页面每次显示最多 100 条搜索匹配。目录是当前页的临时结果，修改地址、格式或输入 key 后失效。
 
 模型卡片的 **Test saved model** 使用保存后的真实模型配置执行文本生成，输出上限取配置上限与 256 token 的较小值，可能消费供应商额度。报告耗时、结束原因、usage 和最多 512 字符的响应预览，截断时显示标记。仅收到非空白文字才标记文本生成验证通过，判断依据是完整输出流而非预览；收到完整流但没有可见文字时，显示请求已结束和具体结束原因，不将其算作文本输出验证成功。配置或 key 尚未保存时禁用此按钮，避免测试旧设置。Cancel test 取消生成测试。
@@ -61,9 +71,22 @@ Gemini 使用 Google AI Studio 的 Gemini API key；SiliconFlow 预置中国站�
 
 ### 思考等级（HOST_API 12）
 
-在模型卡片启用 **Configure reasoning effort for plugins**，填写允许等级并选择默认等级。API default 表示不发送等级参数。允许列表支持 1–16 个不重复名称，每个为 1–32 位小写字母、数字、`-` 或 `_`，不固定为三档。旧配置默认关闭，保持原请求行为。从目录新增模型时可使用服务明确声明的等级和默认值；目录查询不会修改已有配置。手动启用时显示的 low/medium/high 是可编辑初值，须按实际模型调整。
+在模型卡片启用 **Enable reasoning effort parameters / 启用思考等级参数**，填写允许等级并选择默认等级。API default 表示不发送等级参数。允许列表支持 1–16 个不重复名称，每个为 1–32 位小写字母、数字、`-` 或 `_`，不固定为三档。旧配置默认关闭，保持原请求行为。从目录新增模型时可使用服务明确声明的等级和默认值；目录查询不会修改已有配置。没有等级声明时，手动启用得到空草稿，至少填写一个等级后才能保存，也可取消等级参数控制。编辑列表会去重；移除当前默认等级时回到 API 默认，不擅自选择另一档。
 
 插件可见的 `reasoning` 为 `null` 或 `{defaultEffort, allowedEfforts}`；`capabilities.reasoning` 表示此配置是否启用等级控制。这里描述的是宿主允许的调用参数，并非远端能力实测结果。现有插件即使不读取新增字段，也会自动使用宿主配置的默认值。禁用等级控制时显式传入等级返回 `unsupported`，超出允许列表返回 `bad_params`；Rust 在读凭据和发送 HTTP 前检查，前端与原生 Sidecar 一致。
+
+默认值来源：目录提供 `effort.supported_levels` / `effort.default_level` 或 `capabilities.effort.<level>.supported` 时使用声明值，不按模型名猜测。缺失声明时不再预填 low/medium/high；声明默认值不属于有效列表时回到 API 默认。API 声明与当前本地允许列表分别展示，二者可能因用户修改或目录更新而不同。Test saved model 仅验证本次请求的文本生成，既不逐档探测，也不能证明服务确实执行了对应思考强度。
+
+等级参数控制与模型是否思考分别处理：取消控制、选择 API 默认都会省略等级字段，不表示关闭思考。DeepSeek 的 `effort.supported_levels` 按其文档仅列出开启思考后的强度，不含关闭用的 `none`；宿主不会据此推断 none 不支持，也不会自动追加 none。需要关闭思考时须核对平台的参数语义；当前两种适配器只映射等级字段，尚无独立的通用 thinking 开关。
+
+| 情况 | 插件可见配置或请求字段 | 生成 API 的字段 |
+|---|---|---|
+| 未启用控制 | 配置 `reasoning: null`；请求省略 reasoningEffort 或传 null | 省略思考等级字段，服务仍可采用自己的默认思考行为 |
+| 启用但默认由 API 决定 | 配置 `reasoning: {defaultEffort:null, allowedEfforts:[…]}`；请求省略或 null | 同样省略字段 |
+| 显式等级 | 请求 `reasoningEffort:"low"`，必须在允许列表中 | Chat 为 `reasoning_effort:"low"`；Responses 为 `reasoning:{effort:"low"}` |
+| 显式 none | `reasoningEffort:"none"`，必须纳入允许列表且由远端支持 | 发送 none 字符串；与省略参数不同 |
+
+请求 null 表示**继承宿主默认值**。宿主默认是 high 时，传 null 仍发送 high，不能借此清除默认值。宿主也无默认值时省略字段，不发送 `reasoning_effort:null` 或 `reasoning:{effort:null}`。
 
 Chat 适配器发送 `reasoning_effort`，Responses 发送 `reasoning: {effort}`。启用等级控制的 Chat 配置还可选择输出上限字段：OpenAI 通常使用 `max_completion_tokens`，兼容平台可能使用 `max_tokens`；常用平台模板预填相应初值，用户仍须按实际接口调整。此适配设置不暴露给插件。未启用的旧 Chat 配置继续发送 `max_tokens`；Responses 使用 `max_output_tokens`。推理模型的输出上限通常包含思考消耗，过小的上限可能导致没有可见文字。
 
@@ -74,7 +97,7 @@ Chat 适配器发送 `reasoning_effort`，Responses 发送 `reasoning: {effort}`
 主窗口 `ctx.llm` 与插件窗口 `bridge.llm` 形状一致。
 
 ```js
-// plugin.json: "api": 13, "permissions": ["rpc:llm"]
+// plugin.json: "api": 14, "permissions": ["rpc:llm"]
 const profiles = await ctx.llm.profiles();
 const request = {
   profile: profiles[0].id, // 可省略，使用用户设定的默认配置

@@ -23,6 +23,7 @@ pub mod clipboard;
 pub mod external;
 pub mod hotkey;
 pub mod llm;
+pub mod i18n;
 pub mod notify;
 pub mod proc;
 pub mod contracts;
@@ -189,6 +190,7 @@ pub fn table() -> &'static [Box<dyn Service>] {
             Box::new(screen::ScreenService),
             Box::new(binary::BinaryService),
             Box::new(llm::LlmService),
+            Box::new(i18n::I18nService),
         ]
     })
 }
@@ -265,6 +267,7 @@ pub fn capabilities() -> Value {
         "binaryTransfer":crate::binary_ipc::capabilities(),
         "screenCapture":{"version":3,"targets":["monitor","desktop","window"],"unit":"physical","windowMode":"visible-desktop","maxPixels":screen_capture::MAX_PIXELS,"includeInfo":true,"maxRawBytes":image_work::MAX_RAW_BYTES,"workingMemoryBytes":image_work::MAX_WORKING_BYTES,"maxConcurrent":image_work::MAX_CONCURRENT},
         "fileAccess":crate::file_ipc::capabilities(),
+        "i18n":{"version":1,"readOnly":true,"locales":["zh-CN","en-US"],"fallbackLocale":"en-US","pluginMessages":"named-placeholders","sidecarChanges":"snapshot"},
         "llm":{"version":2,"reasoningEffort":true,"text":true,"images":true,"tools":false,"stream":"pull","maxInputBytes":crate::llm::MAX_INPUT_BYTES,"maxEventBytes":crate::llm::MAX_EVENT_BYTES,"queuedEvents":crate::llm::QUEUED_EVENTS,"maxConcurrent":8,"maxJobs":32,"maxJobsPerPlugin":4},
         "sidecarHostRpc":{"version":1,"platform":"windows","transport":"named-pipe","framing":"u32le-json","maxFrameBytes":toolkit_host::MAX_FRAME_BYTES,"maxPending":32},
         "stdio":{"version":2,"overflow":"terminate","maxLineBytes":pipe_writer::MAX_LINE_BYTES,"maxQueuedBytes":pipe_writer::MAX_QUEUED_BYTES,"maxQueuedLines":4096,"writeDeadlineMs":pipe_writer::WRITE_DEADLINE_MS,"maxQueuedWrites":pipe_writer::MAX_QUEUED_WRITES,"asyncConsumer":"await"},

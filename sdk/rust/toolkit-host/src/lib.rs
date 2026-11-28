@@ -172,6 +172,11 @@ impl Client {
     pub async fn profiles(&self) -> Result<Value, Error> {
         self.request("llm", "profiles", Value::Null).await
     }
+    /// Read the host language directly. Requires the plugin's rpc:i18n grant.
+    /// Use resolvedLocale for display; locale is the saved manual preference.
+    pub async fn locale(&self) -> Result<Value, Error> {
+        self.request("i18n", "get", Value::Null).await
+    }
     pub async fn stream(&self, request: Value) -> Result<Generation, Error> {
         // Keep the start response alive if this future is dropped. Sending a
         // Generation to a closed receiver drops it and cancels the late job.

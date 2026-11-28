@@ -1,0 +1,8 @@
+{
+  "shell": {
+    "tools": "Tools", "panels": "Panels", "system": "System", "settings": "Settings",
+    "loading": "Loading plugins…", "starting": "Starting up…", "loadingDetail": "Loading plugins.",
+    "empty": "No plugin views yet", "emptyDetail": "Drop a plugin folder into the plugins directory and press Rescan.",
+    "windowFailed": "Plugin window failed to load"
+  }
+}

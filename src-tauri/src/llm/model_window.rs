@@ -45,7 +45,7 @@ pub async fn get_or_create(
                 LABEL,
                 tauri::WebviewUrl::App("llmsettings.html".into()),
             )
-            .title("Toolkit · Model settings")
+            .title(crate::locale::text(&crate::locale::cached_locale(&target), "model.title"))
             .inner_size(820.0, 760.0)
             .min_inner_size(640.0, 480.0)
             .visible(false)

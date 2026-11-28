@@ -83,7 +83,7 @@ export default {
   "id": "my.plugin",
   "name": "My Plugin",
   "version": "0.1.0",
-  "api": 13,
+  "api": 14,
   "entry": "main.js",
   "contributes": { "views": [{ "slot": "tool", "id": "main", "title": "My Plugin", "icon": "lucide:puzzle" }] }
 }
@@ -123,8 +123,8 @@ export default {
 1. **能力声明必须为真。** 在 `contributes` 或 `manifest` 里声明了宿主无法兑现的能力，
    调用方会依赖它然后失败。曾经声明过 `channel-json` 支持 backpressure 但没实现 —— 已移除。
 
-2. **观察不等于能力。** 订阅事件、读自己的热键、关闭自己开的流，都**不需要权限**；
-   只有发布广播、运行自带二进制、控制窗口才带权限。别给自己加不必要的权限。
+2. **按接口声明权限。** 同窗口事件、接收广播、关闭自己取得的资源不新增权限；
+   原生服务仍按 rpc:<svc> 声明，i18n 的只读语言查询也需要 rpc:i18n。只读不等于没有权限检查。
 
 3. **激活要快。** 内置插件的加载是**串行 await** 的（`reconcilePlugins`），一个插件的 `activate()` 慢，
    后面所有插件的视图都要等它 —— 包括**用户自己装的那些**。

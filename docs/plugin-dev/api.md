@@ -11,6 +11,41 @@
 
 ---
 
+## 我要让插件跟随宿主语言
+
+HOST_API 14 提供 `ctx.i18n` / `bridge.i18n`，调用需要 `rpc:i18n`。接口只读，不能更改全局语言。
+
+| 方法或属性 | 返回与约定 |
+|---|---|
+| `await i18n.get()` | 原生语言快照 `{mode, locale, resolvedLocale, revision}`；失败 reject，不把读取失败伪装成默认语言 |
+| `i18n.resolvedLocale` | 当前窗口缓存的实际界面语言。初始渲染前调用 get；启动快照尚未到达时可能是系统回退值 |
+| `i18n.t(key, params?)` | 从当前插件清单的 i18n.messages 翻译，返回普通字符串 |
+| `i18n.createTranslator(messages, {fallbackLocale?}?)` | 返回 `(key, params?) => string`，适合把业务词典打包进 main.js；语言切换后仍用同一个函数 |
+| `i18n.onChange(fn)` | **同步返回**取消函数，无需 await；回调收到原始只读快照，**不是信封**。不立即补发初始值；插件停用或窗口关闭自动取消 |
+
+mode 为 system/manual；locale 是保存的手动偏好，**渲染使用 resolvedLocale**。revision 在当前宿主进程内递增。先订阅再读取，晚到旧响应不覆盖新事件。宿主不等待异步回调完成，回调失败与其他插件隔离。
+
+```js
+// plugin.json: "api": 14, "permissions": ["rpc:i18n"]
+const t = ctx.i18n.createTranslator({
+  'en-US': {'greeting':'Hello {name}'},
+  'zh-CN': {'greeting':'你好 {name}'},
+});
+let currentRoot;
+const paint = () => {
+  if (currentRoot?.isConnected) currentRoot.textContent = t('greeting', {name:'Toolkit'});
+};
+ctx.i18n.onChange(paint);
+await ctx.i18n.get();
+ctx.registerView('main', root => { currentRoot = root; paint(); });
+```
+
+词典为 `{语言标签: {平铺词条键: 字符串}}`。回退顺序：实际语言 → 基础语言（如 zh）→ fallbackLocale（默认 en-US）；仍缺失则返回键。支持 `{name}` 插值，参数为字符串、数字、布尔或 null（null 替换为空串），缺少参数保留占位符。结果不作为 HTML，不执行代码；不支持 ICU、管道复数或 Vue 消息函数。复杂格式可用 Intl 或自行打包翻译库。
+
+清单可提供 nameKey、contributes.views[].titleKey 与 i18n.messages，供宿主翻译设置列表、热键归属名和侧栏。缺少译文保留原 name/title；仅改变显示，不改 ID、排序依据、摘要、权限或激活状态。仅用显示元数据无需 RPC 权限，调用 API 才需 rpc:i18n。格式见 [manifest.md](manifest.md#i18n-与显示元数据)。
+
+Sidecar 同样声明 rpc:i18n，经 `Client::locale().await?` 或 i18n/get 直接读取相同快照，不依赖 WebView 转发。本版 Sidecar 按需读取，不提供语言变化推送；revision 可去重，不建议高频轮询。界面语言与插件业务输出、LLM 提示词语言分别配置。
+
 ## 我要存一点数据
 
 ```js
@@ -859,7 +894,7 @@ async function closeMe() {
 |---|---|---|
 | 能力 | `ui` · `windows` · `registerView` · `focusView` | `label` · `close` · `drag` · `dispose` |
 
-**其余 32 个能力两边都有**，包括 `fs` / `binary` / `storage` / `bus` / `events` / `onHotkey` / `onDrop` /
+**其余 33 个能力两边都有**，包括 `i18n` / `fs` / `binary` / `storage` / `bus` / `events` / `onHotkey` / `onDrop` /
 `stream` / `streamRaw` / `uplink` / `sidecar` / `pty` / `clipboard` / `screen` /
 `files` / `log` / `closeStream` / `sessions` / `schemes` / `schema` / `paths` / `protocol` /
 `cleanup`。
@@ -1041,6 +1076,8 @@ try {
 `ctx.llm` / `bridge.llm` 提供 `profiles()`、`generate(request, {signal}?)` 和 `stream(request, {signal}?)`。声明 `rpc:llm` 后仍需用户在 Settings → Language models 中授权模型配置。API key 保留在原生凭据存储；支持文本和资源引用图片输入，流按消费速度逐块拉取，未知 usage 为 `null`。
 
 HOST_API 12：`profiles()` 新增 `reasoning: null | {defaultEffort, allowedEfforts}` 与 `capabilities.reasoning`，描述宿主配置的等级策略。生成请求可传 `reasoningEffort` 覆盖默认值，必须在允许列表内；省略或 null 自动继承宿主默认值。禁用时显式指定返回 `unsupported`，越界返回 `bad_params`。Sidecar 使用相同字段和原生检查；列表由模型配置声明，不固定 low/medium/high，不代表远端参数已验证生效。思考 token 预算尚未提供。
+
+宿主设置中的 API 等级声明与插件可见的本地允许列表分别处理：声明缺失时显示未知，由用户手动配置，不预填三档。刷新目录不改写现有策略，显式采用后才更新。插件仍以 `profiles().reasoning.allowedEfforts` 为可调用范围，不能将其标记为 API 实测支持。未配置等级或不传参数不等于关闭模型思考，`none` 也不会由宿主自动加入列表；当前没有独立的通用 thinking 开关。
 
 `ctx.sidecars.start({key,exe,args?,hostRpc?})` 启动显式的原生后台实例，默认 `hostRpc:true`；`stop(key)` 停止，`list()` 查看。页面重载不清理后台实例，插件停用、进程退出或宿主退出会回收。普通 `ctx.sidecar({... , hostRpc:true})` 仍保持窗口持有的 stdio 生命周期。Sidecar 可通过独立管道直接调用同一模型服务，无需前端转发。
 

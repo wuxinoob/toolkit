@@ -1,6 +1,9 @@
 <script setup>
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue';
 import { toast as sonner } from 'vue-sonner';
+import { useI18n } from 'vue-i18n';
+import { ConfigProvider } from 'reka-ui';
+import { manifestText } from './i18n/messages.js';
 
 import { store, setToastSink } from './host/store.js';
 import { resolveIcon } from './host/icons.js';
@@ -16,6 +19,7 @@ import { cn } from '@/lib/utils';
 const SettingsView = defineAsyncComponent(() => import('./views/SettingsView.vue'));
 
 const overlayEl = ref(null);
+const { t, locale } = useI18n();
 onMounted(() => {
   store.overlayEl = overlayEl.value;
 });
@@ -53,11 +57,15 @@ const grouped = computed(() => {
   return [...bySlot.entries()];
 });
 
-const SLOT_LABEL = { tool: 'Tools', panel: 'Panels', system: 'System' };
-const label = (slot) => SLOT_LABEL[slot] ?? slot;
+const SLOT_LABEL = { tool: 'shell.tools', panel: 'shell.panels', system: 'shell.system' };
+const label = (slot) => SLOT_LABEL[slot] ? t(SLOT_LABEL[slot]) : slot;
 
 /** The shell's own icons, resolved the same way a plugin's are. */
 const shellIcon = (name) => resolveIcon(`lucide:${name}`);
+const viewTitle = view => {
+  const manifest = store.plugins.find(plugin => plugin.manifest.id === view.pluginId)?.manifest;
+  return manifest ? manifestText(manifest, view.titleKey, locale.value, view.title) : view.title;
+};
 
 /**
  * viewId → resolved icon component, or null meaning "render the raw glyph".
@@ -94,6 +102,7 @@ const navClass = (active) =>
 </script>
 
 <template>
+  <ConfigProvider :locale="locale">
   <TooltipProvider :delay-duration="400">
     <div class="relative flex h-full">
       <!--
@@ -108,7 +117,7 @@ const navClass = (active) =>
             <!-- Where the plugin rows will appear. Saying nothing here while
                  they load looks like an empty list rather than a pending one. -->
             <div v-if="!store.booted" class="px-2.5 py-2 text-xs text-muted-foreground">
-              Loading plugins…
+              {{ t('shell.loading') }}
             </div>
 
             <template v-for="[slot, views] in grouped" :key="slot">
@@ -132,10 +141,10 @@ const navClass = (active) =>
                       <component :is="viewIcons.get(v.viewId)" v-if="viewIcons.get(v.viewId)" class="size-4" />
                       <span v-else>{{ v.icon }}</span>
                     </span>
-                    <span class="truncate">{{ v.title }}</span>
+                    <span class="truncate">{{ viewTitle(v) }}</span>
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent side="right">{{ v.title }} — {{ v.pluginId }}</TooltipContent>
+                <TooltipContent side="right">{{ viewTitle(v) }} — {{ v.pluginId }}</TooltipContent>
               </Tooltip>
             </template>
 
@@ -160,7 +169,7 @@ const navClass = (active) =>
             >
               <component :is="shellIcon('settings')" class="size-4" />
             </span>
-            <span class="truncate">Settings</span>
+            <span class="truncate">{{ t('shell.settings') }}</span>
           </Button>
         </nav>
       </aside>
@@ -189,13 +198,13 @@ const navClass = (active) =>
         -->
         <div v-else-if="!store.booted" class="flex h-full flex-col items-center justify-center gap-1.5 text-muted-foreground">
           <component :is="shellIcon('timer')" class="size-6 opacity-50" />
-          <div class="text-sm">Starting up…</div>
-          <div class="text-xs">Loading plugins.</div>
+          <div class="text-sm">{{ t('shell.starting') }}</div>
+          <div class="text-xs">{{ t('shell.loadingDetail') }}</div>
         </div>
         <div v-else class="flex h-full flex-col items-center justify-center gap-1.5 text-muted-foreground">
           <component :is="shellIcon('puzzle')" class="size-6 opacity-50" />
-          <div class="text-sm">No plugin views yet</div>
-          <div class="text-xs">Drop a plugin folder into the plugins directory and press Rescan.</div>
+          <div class="text-sm">{{ t('shell.empty') }}</div>
+          <div class="text-xs">{{ t('shell.emptyDetail') }}</div>
         </div>
       </main>
 
@@ -205,4 +214,5 @@ const navClass = (active) =>
       <Toaster position="bottom-right" rich-colors close-button />
     </div>
   </TooltipProvider>
+  </ConfigProvider>
 </template>

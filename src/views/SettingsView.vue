@@ -1,6 +1,12 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { useI18n } from 'vue-i18n';
+import { addMessages } from '../i18n/vue.js';
+import { getLocaleSnapshot, onLocaleChange, setLocale } from '../i18n/state.js';
+import { manifestText } from '../i18n/messages.js';
+import en from '../i18n/locales/en-US/settings.json';
+import zh from '../i18n/locales/zh-CN/settings.json';
 
 import { store, saveSettings, toast } from '../host/store.js';
 import { setHotkey } from '../host/lifecycle.js';
@@ -16,6 +22,7 @@ import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   Table,
   TableBody,
@@ -24,6 +31,22 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+
+addMessages(en, zh);
+const { t, te, locale } = useI18n();
+const pluginName = manifest => manifestText(manifest, manifest.nameKey, locale.value, manifest.name ?? manifest.id);
+const language = ref(getLocaleSnapshot());
+const languageBusy = ref(false);
+const languageError = ref('');
+const languageChoice = computed(() => language.value.mode === 'system' ? 'system' : language.value.locale);
+onUnmounted(onLocaleChange(snapshot => { language.value = snapshot; }));
+async function changeLanguage(value) {
+  if (languageBusy.value) return;
+  languageBusy.value = true; languageError.value = '';
+  try { language.value = await setLocale(value); }
+  catch (error) { languageError.value = String(error); }
+  finally { languageBusy.value = false; }
+}
 
 const scanning = ref(false);
 const openingModels = ref(false);
@@ -41,9 +64,9 @@ const liveSessions = ref([]);
 /* --------------------------------- appearance -------------------------------- */
 
 const THEMES = [
-  { value: 'system', label: 'System', icon: '🖥' },
-  { value: 'light', label: 'Light', icon: '☀' },
-  { value: 'dark', label: 'Dark', icon: '🌙' },
+  { value: 'system', label: 'settings.system', icon: '🖥' },
+  { value: 'light', label: 'settings.light', icon: '☀' },
+  { value: 'dark', label: 'settings.dark', icon: '🌙' },
 ];
 
 const themePref = ref(getThemePref());
@@ -59,7 +82,7 @@ onUnmounted(offTheme);
 const pluginRows = computed(() =>
   store.plugins.map((p) => ({
     id: p.manifest.id,
-    name: p.manifest.name,
+    name: pluginName(p.manifest),
     version: p.manifest.version,
     builtin: p.manifest.builtin,
     /**
@@ -97,11 +120,14 @@ const pluginRows = computed(() =>
  */
 const statusVariant = (status) =>
   status === 'active' ? 'secondary' : status === 'error' ? 'destructive' : 'outline';
+const STATUS_LABEL = { active: 'settings.stateActive', inactive: 'settings.stateInactive', error: 'settings.stateError' };
+const statusLabel = status => STATUS_LABEL[status] ? t(STATUS_LABEL[status]) : status;
+const schemeNote = scheme => te(`settings.schemeNotes.${scheme.id}`) ? t(`settings.schemeNotes.${scheme.id}`) : scheme.note;
 
 async function togglePlugin(row) {
   const mod = pluginModule(row.id);
   if (!mod) {
-    toast('Plugin not loaded yet — use Rescan first', 'error');
+    toast(t('settings.pluginNotLoaded'), 'error');
     return;
   }
   if (row.enabled) await deactivate(mod);
@@ -126,7 +152,7 @@ async function reloadRow(row) {
   reloading.value = row.id;
   try {
     const r = await reloadPlugin(row.id, { silent: false });
-    toast(`${row.name} restarted (${r.origin})`, 'info');
+    toast(t('settings.pluginRestarted', { name: row.name, origin: r.origin }), 'info');
     await refreshSessions();
   } catch (e) {
     toast(`${row.name}: ${e?.message ?? e}`, 'error');
@@ -145,12 +171,12 @@ async function rescan() {
     // plugins DIRECTORY. The built-ins have no directory to rescan.
     const { external: r } = await reconcilePlugins({ silent: false, sources: [Origin.EXTERNAL] });
     const parts = [];
-    if (r.added.length) parts.push(`${r.added.length} added`);
-    if (r.reloaded.length) parts.push(`${r.reloaded.length} reloaded`);
-    if (r.removed.length) parts.push(`${r.removed.length} removed`);
-    if (r.failed.length) parts.push(`${r.failed.length} failed`);
-    const detail = parts.length ? ` — ${parts.join(', ')}` : ' — no changes';
-    toast(`Scan: ${r.found} external plugin(s)${detail}`, r.failed.length ? 'error' : 'info');
+    if (r.added.length) parts.push(t('settings.added', { count: r.added.length }));
+    if (r.reloaded.length) parts.push(t('settings.reloaded', { count: r.reloaded.length }));
+    if (r.removed.length) parts.push(t('settings.removed', { count: r.removed.length }));
+    if (r.failed.length) parts.push(t('settings.failed', { count: r.failed.length }));
+    const detail = parts.length ? ` — ${parts.join(', ')}` : t('settings.noChanges');
+    toast(t('settings.scanResult', { count: r.found, detail }), r.failed.length ? 'error' : 'info');
   } finally {
     scanning.value = false;
   }
@@ -192,10 +218,10 @@ async function stopSession(s) {
       plugin: s.plugin,
       ch: s.ch,
     });
-    if (!r?.stopped) toast(`${s.id} was already gone`, 'info', 2000);
+    if (!r?.stopped) toast(t('settings.sessionGone', { id: s.id }), 'info', 2000);
     await refreshSessions();
   } catch (e) {
-    toast(`Could not stop ${s.id}: ${e.message ?? e}`, 'error');
+    toast(t('settings.stopFailed', { id: s.id, error: e.message ?? e }), 'error');
   } finally {
     stopping.value = '';
   }
@@ -244,7 +270,7 @@ const declaredHotkeys = computed(() => {
       rows.push({
         composite,
         pluginId: p.manifest.id,
-        pluginName: p.manifest.name ?? p.manifest.id,
+        pluginName: pluginName(p.manifest),
         action: hk.action,
         key: entry.key ?? hk.key ?? '',
         enabled: !!entry.enabled,
@@ -301,7 +327,7 @@ function onCaptureKey(row, event) {
     // 「还在凑修饰键」与「这个键不能单独绑」都是 null，但只有后者需要解释 ——
     // 否则用户按下一个字母、界面毫无反应，会以为输入框坏了。
     // 反过来，重新去按修饰键说明他读懂了提示，那行字就该消失。
-    captureHint.value = isModifierKey(event.key) ? '' : 'needs a modifier, or an F-key';
+    captureHint.value = isModifierKey(event.key) ? '' : t('settings.modifierRequired');
     return;
   }
 
@@ -365,7 +391,7 @@ async function applySummon(combo) {
   store.settings.summonShortcut = combo;
   saveSettings();
   await applySummonShortcut(); // 失败时它自己会 toast
-  toast(combo ? `Summon shortcut: ${combo}` : 'Summon shortcut cleared');
+  toast(combo ? t('settings.summonChanged', { combo }) : t('settings.summonCleared'));
 }
 
 async function onSummonKey(event) {
@@ -383,7 +409,7 @@ async function onSummonKey(event) {
   }
   const combo = comboFromEvent(event);
   if (!combo) {
-    captureHint.value = isModifierKey(event.key) ? '' : 'needs a modifier, or an F-key';
+    captureHint.value = isModifierKey(event.key) ? '' : t('settings.modifierRequired');
     return;
   }
   event.preventDefault();
@@ -425,9 +451,9 @@ async function setAutostart(enabled) {
     // would be a lie the user only discovers at the next reboot.
     const state = await invoke('host_autostart_set', { enabled });
     autostart.value = typeof state === 'boolean' ? state : null;
-    toast(autostart.value ? 'Toolbox will start with the system' : 'Autostart off');
+    toast(autostart.value ? t('settings.autostartEnabled') : t('settings.autostartDisabled'));
   } catch (e) {
-    toast(`Autostart failed: ${e?.message ?? e}`, 'error');
+    toast(t('settings.autostartFailed', { error: e?.message ?? e }), 'error');
     await loadAutostart();
   } finally {
     autostartBusy.value = false;
@@ -466,7 +492,7 @@ async function installUpdateNow() {
     if (result?.cancelled) return;
     updateError.value = updateState.error;
     if (result?.installed === false && result.reason === 'up to date') {
-      toast('已经是最新版本');
+      toast(t('settings.alreadyLatest'));
       updateResult.value = { ...(updateResult.value ?? {}), available: false };
     }
     // 安装成功后进程会被替换并重启，通常执行不到这里。
@@ -480,51 +506,59 @@ async function installUpdateNow() {
 <template>
   <div class="mx-auto flex max-w-[900px] flex-col gap-4">
     <header class="flex items-end gap-3">
-      <h1 class="m-0 text-[17px] font-medium">Settings</h1>
+      <h1 class="m-0 text-[17px] font-medium"> {{ t('settings.title') }} </h1>
       <span class="pb-[2px] text-xs text-muted-foreground">
-        {{ store.plugins.length }} plugin(s) installed
+        {{ t('settings.installed', { count: store.plugins.length }, store.plugins.length) }}
       </span>
     </header>
 
     <Card>
+      <CardHeader><CardTitle>{{ t('settings.language') }}</CardTitle><CardDescription>{{ t('settings.languageDescription') }}</CardDescription></CardHeader>
+      <CardContent class="flex flex-col gap-2">
+        <Select :model-value="languageChoice" :disabled="languageBusy" @update:model-value="changeLanguage">
+          <SelectTrigger class="w-48" :aria-label="t('settings.language')"><SelectValue /></SelectTrigger>
+          <SelectContent position="popper">
+            <SelectItem value="system">{{ t('settings.system') }}</SelectItem>
+            <SelectItem value="zh-CN">简体中文</SelectItem>
+            <SelectItem value="en-US">English</SelectItem>
+          </SelectContent>
+        </Select>
+        <p class="text-xs text-muted-foreground">{{ t('settings.resolvedLanguage', { locale: language.resolvedLocale === 'zh-CN' ? '简体中文' : 'English' }) }}</p>
+        <p v-if="languageError" role="alert" class="text-xs text-destructive">{{ languageError }}</p>
+      </CardContent>
+    </Card>
+
+    <Card>
       <CardHeader>
-        <CardTitle>Startup</CardTitle>
-        <CardDescription>
-          Whether Toolbox launches with the system. This is an OS setting, not an app setting — it is
-          read back from the system each time, so turning it off elsewhere shows up here too.
-        </CardDescription>
+        <CardTitle> {{ t('settings.startup') }} </CardTitle>
+        <CardDescription>{{ t('settings.startupDescription') }}</CardDescription>
       </CardHeader>
       <CardContent class="flex flex-wrap items-center gap-3">
         <Switch
           :model-value="autostart === true"
           :disabled="autostart === null || autostartBusy"
-          aria-label="Start Toolbox with the system"
+          :aria-label="t('settings.startWithSystem')"
           @update:model-value="setAutostart"
         />
         <span class="text-sm">
-          <template v-if="autostart === null">Could not read the autostart state</template>
-          <template v-else-if="autostart">Starts with the system</template>
-          <template v-else>Does not start with the system</template>
+          <template v-if="autostart === null"> {{ t('settings.autostartUnknown') }} </template>
+          <template v-else-if="autostart"> {{ t('settings.autostartOn') }} </template>
+          <template v-else> {{ t('settings.autostartOff') }} </template>
         </span>
       </CardContent>
     </Card>
 
     <Card>
       <CardHeader>
-        <CardTitle>Updates</CardTitle>
-        <CardDescription>
-          Toolbox checks the release feed quietly on startup and says nothing unless there is
-          something new. Installing stops every running process first, then replaces the app and
-          restarts it.
-        </CardDescription>
+        <CardTitle> {{ t('settings.updates') }} </CardTitle>
+        <CardDescription>{{ t('settings.updatesDescription') }}</CardDescription>
       </CardHeader>
       <CardContent class="flex flex-col gap-3">
         <div class="flex flex-wrap items-center gap-3">
-          <span class="text-sm text-muted-foreground">
-            Version <span class="font-mono">{{ updateResult?.current ?? '—' }}</span>
+          <span class="text-sm text-muted-foreground"> {{ t('settings.version') }} <span class="font-mono">{{ updateResult?.current ?? '—' }}</span>
           </span>
           <Button variant="outline" size="sm" :disabled="updateBusy" @click="checkUpdates">
-            {{ updateBusy ? 'Working…' : 'Check for updates' }}
+            {{ updateBusy ? t('settings.working') : t('settings.checkUpdates') }}
           </Button>
           <Button
             v-if="updateResult?.available"
@@ -533,47 +567,41 @@ async function installUpdateNow() {
             :disabled="updateBusy"
             @click="installUpdateNow"
           >
-            Install {{ updateResult.version }} and restart
+            {{ t('settings.installVersion', { version: updateResult.version }) }}
           </Button>
         </div>
         <p class="text-xs text-muted-foreground">
-          <template v-if="updateError">Last check failed: {{ updateError }}</template>
+          <template v-if="updateError">{{ t('settings.checkFailed', { error: updateError }) }}</template>
           <template v-else-if="updateResult?.available">
-            {{ updateResult.version }} is available.
+            {{ t('settings.available', { version: updateResult.version }) }}
             <template v-if="updateResult.notes">{{ updateResult.notes }}</template>
           </template>
-          <template v-else-if="updateResult">Up to date.</template>
-          <template v-else>Not checked yet.</template>
+          <template v-else-if="updateResult"> {{ t('settings.upToDate') }} </template>
+          <template v-else> {{ t('settings.notChecked') }} </template>
         </p>
       </CardContent>
     </Card>
 
     <Card>
       <CardHeader>
-        <CardTitle>Language models</CardTitle>
-        <CardDescription>Configure model connections, API keys and plugin access in the host model settings window.</CardDescription>
+        <CardTitle> {{ t('settings.models') }} </CardTitle>
+        <CardDescription>{{ t('settings.modelsDescription') }}</CardDescription>
       </CardHeader>
       <CardContent>
-          <Button variant="outline" :disabled="openingModels" @click="openModels">{{ openingModels ? 'Opening…' : 'Manage models' }}</Button>
+          <Button variant="outline" :disabled="openingModels" @click="openModels">{{ openingModels ? t('settings.opening') : t('settings.manageModels') }}</Button>
       </CardContent>
     </Card>
 
     <Card>
       <CardHeader>
-        <CardTitle>Hotkeys</CardTitle>
-        <CardDescription>
-          What each plugin has asked for. A declaration is only a request — nothing is bound to the
-          system until you switch it on here, so a plugin cannot take a global shortcut just by being
-          installed. Click a key and press the new combination to rebind it immediately. Escape cancels; Backspace clears it.
-        </CardDescription>
+        <CardTitle> {{ t('settings.hotkeys') }} </CardTitle>
+        <CardDescription>{{ t('settings.hotkeysDescription') }}</CardDescription>
       </CardHeader>
       <CardContent class="flex flex-col gap-2">
         <div
           v-if="!declaredHotkeys.length"
           class="text-xs text-muted-foreground"
-        >
-          No plugin has declared a hotkey.
-        </div>
+        > {{ t('settings.noHotkeys') }} </div>
         <div
           v-for="row in declaredHotkeys"
           :key="row.composite"
@@ -582,7 +610,7 @@ async function installUpdateNow() {
           <Switch
             :model-value="row.enabled"
             :disabled="hotkeyBusy === row.composite"
-            :aria-label="`Enable ${row.action} for ${row.pluginName}`"
+            :aria-label="t('settings.enableAction', { action: row.action, plugin: row.pluginName })"
             @update:model-value="(v) => applyHotkey(row, { enabled: v })"
           />
           <div class="min-w-0 flex-1">
@@ -600,7 +628,7 @@ async function installUpdateNow() {
             :class="capturing === row.composite ? 'ring-2 ring-primary/40' : ''"
             :value="capturing === row.composite ? '' : row.key"
             :placeholder="
-              capturing === row.composite ? captureHint || 'press a combination…' : 'click to set'
+              capturing === row.composite ? captureHint || t('settings.capture') : t('settings.clickToSet')
             "
             readonly
             :disabled="hotkeyBusy === row.composite"
@@ -610,46 +638,38 @@ async function installUpdateNow() {
             @blur="endCapture"
             @keydown="onCaptureKey(row, $event)"
           />
-          <span v-if="row.error" class="w-full text-xs text-destructive">Not registered: {{ row.error }}</span>
+          <span v-if="row.error" class="w-full text-xs text-destructive">{{ t('settings.notRegistered', { error: row.error }) }}</span>
         </div>
       </CardContent>
     </Card>
 
     <Card>
       <CardHeader>
-        <CardTitle>Appearance</CardTitle>
-        <CardDescription>
-          A theme is one attribute on the root element, so it reaches everything at once — the shell,
-          the built-in views, and any external plugin that styles itself with the shared tokens.
-          Nothing reloads.
-        </CardDescription>
+        <CardTitle> {{ t('settings.appearance') }} </CardTitle>
+        <CardDescription>{{ t('settings.appearanceDescription') }}</CardDescription>
       </CardHeader>
       <CardContent class="flex flex-wrap items-center gap-2">
         <Button
-          v-for="t in THEMES"
-          :key="t.value"
-          :variant="themePref === t.value ? 'default' : 'outline'"
+          v-for="theme in THEMES"
+          :key="theme.value"
+          :variant="themePref === theme.value ? 'default' : 'outline'"
           size="sm"
-          :aria-pressed="themePref === t.value"
-          @click="setTheme(t.value)"
+          :aria-pressed="themePref === theme.value"
+          @click="setTheme(theme.value)"
         >
-          <span aria-hidden="true">{{ t.icon }}</span>
-          {{ t.label }}
+          <span aria-hidden="true">{{ theme.icon }}</span>
+          {{ t(theme.label) }}
         </Button>
         <span class="ml-1 text-xs text-muted-foreground">
-          showing <strong class="text-foreground">{{ resolvedTheme }}</strong>
+          {{ t('settings.showingTheme', { theme: t(`settings.${resolvedTheme}`) }) }}
         </span>
       </CardContent>
     </Card>
 
     <Card>
       <CardHeader>
-        <CardTitle>Global hotkey</CardTitle>
-        <CardDescription>
-          Summons the main window from anywhere. Click the field and press the combination you want —
-          any modifier works (Ctrl, Alt, Shift, Super), and it takes effect immediately. Backspace
-          clears it, Escape cancels.
-        </CardDescription>
+        <CardTitle> {{ t('settings.summon') }} </CardTitle>
+        <CardDescription>{{ t('settings.summonDescription') }}</CardDescription>
       </CardHeader>
       <CardContent class="flex flex-wrap items-center gap-3">
         <!--
@@ -662,12 +682,12 @@ async function installUpdateNow() {
           :class="capturing === SUMMON ? 'ring-2 ring-primary/40' : ''"
           :value="capturing === SUMMON ? '' : store.settings.summonShortcut"
           :placeholder="
-            capturing === SUMMON ? captureHint || 'press a combination…' : 'click to set'
+            capturing === SUMMON ? captureHint || t('settings.capture') : t('settings.clickToSet')
           "
           readonly
           spellcheck="false"
           autocomplete="off"
-          aria-label="Summon shortcut"
+          :aria-label="t('settings.summonShortcut')"
           @focus="startSummonCapture"
           @blur="endCapture"
           @keydown="onSummonKey"
@@ -680,24 +700,19 @@ async function installUpdateNow() {
             >{{ k }}</kbd
           >
         </span>
-        <span v-else class="text-xs text-muted-foreground">
-          not bound — the tray icon still opens the window
-        </span>
+        <span v-else class="text-xs text-muted-foreground"> {{ t('settings.summonUnbound') }} </span>
       </CardContent>
     </Card>
 
     <Card>
       <CardHeader>
-        <CardTitle>Message plane</CardTitle>
-        <CardDescription>
-          Every scheme the host has registered. A plugin declares <em>what</em> it needs; the hub
-          resolves the transport and codec from this table.
-        </CardDescription>
+        <CardTitle> {{ t('settings.messagePlane') }} </CardTitle>
+        <CardDescription>{{ t('settings.messageDescription') }}</CardDescription>
       </CardHeader>
       <CardContent class="flex flex-col gap-3">
         <div class="flex items-center gap-2">
-          <Button variant="outline" size="sm" @click="refreshSessions">Refresh sessions</Button>
-          <Badge variant="outline">{{ liveSessions.length }} live</Badge>
+          <Button variant="outline" size="sm" @click="refreshSessions"> {{ t('settings.refreshSessions') }} </Button>
+          <Badge variant="outline">{{ t('settings.live', { count: liveSessions.length }) }}</Badge>
         </div>
 
         <div class="overflow-x-auto rounded-md border">
@@ -705,10 +720,10 @@ async function installUpdateNow() {
             <TableHeader>
               <TableRow>
                 <TableHead>id</TableHead>
-                <TableHead>transport · codec</TableHead>
-                <TableHead>Direction</TableHead>
-                <TableHead>Capabilities</TableHead>
-                <TableHead>Note</TableHead>
+                <TableHead> {{ t('settings.transportCodec') }} </TableHead>
+                <TableHead> {{ t('settings.direction') }} </TableHead>
+                <TableHead> {{ t('settings.capabilities') }} </TableHead>
+                <TableHead> {{ t('settings.note') }} </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -717,7 +732,7 @@ async function installUpdateNow() {
                 <TableCell>{{ s.label }}</TableCell>
                 <TableCell class="text-xs text-muted-foreground">{{ s.direction }}</TableCell>
                 <TableCell class="text-xs text-muted-foreground">{{ s.capabilities }}</TableCell>
-                <TableCell class="text-xs text-muted-foreground">{{ s.note }}</TableCell>
+                <TableCell class="text-xs text-muted-foreground">{{ schemeNote(s) }}</TableCell>
               </TableRow>
             </TableBody>
           </Table>
@@ -735,53 +750,42 @@ async function installUpdateNow() {
               class="ml-auto"
               :disabled="stopping === s.id"
               @click="stopSession(s)"
-            >
-              Stop
-            </Button>
+            > {{ t('settings.stop') }} </Button>
           </div>
         </div>
-        <p v-else class="text-xs text-muted-foreground">
-          Nothing running. A live sidecar, stream or pty appears here, whichever transport opened it.
-        </p>
+        <p v-else class="text-xs text-muted-foreground"> {{ t('settings.nothingRunning') }} </p>
       </CardContent>
     </Card>
 
     <Card>
       <CardHeader>
-        <CardTitle>External plugins</CardTitle>
-        <CardDescription>
-          Drop a folder with <code class="font-mono text-xs">plugin.json</code> + a single-file ESM
-          entry into the plugins directory, then rescan. A rescan reloads what changed and unloads
-          what was deleted — no restart, no host code changes.
-        </CardDescription>
+        <CardTitle> {{ t('settings.externalPlugins') }} </CardTitle>
+        <CardDescription>{{ t('settings.externalDescription') }}</CardDescription>
       </CardHeader>
       <CardContent class="flex flex-wrap gap-2">
         <Button :disabled="scanning" @click="rescan">
-          {{ scanning ? 'Scanning…' : 'Rescan plugins' }}
+          {{ scanning ? t('settings.scanning') : t('settings.rescan') }}
         </Button>
-        <Button variant="outline" @click="openPluginsDir">Open plugins directory</Button>
+        <Button variant="outline" @click="openPluginsDir"> {{ t('settings.openDirectory') }} </Button>
       </CardContent>
     </Card>
 
     <Card>
       <CardHeader>
-        <CardTitle>Plugins</CardTitle>
-        <CardDescription>
-          Enable or disable an installed plugin. A disabled plugin releases its listeners, streams
-          and DOM.
-        </CardDescription>
+        <CardTitle> {{ t('settings.plugins') }} </CardTitle>
+        <CardDescription>{{ t('settings.pluginsDescription') }}</CardDescription>
       </CardHeader>
       <CardContent>
         <div class="overflow-x-auto rounded-md border">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Plugin</TableHead>
-                <TableHead>Version</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Running</TableHead>
-                <TableHead>Permissions</TableHead>
+                <TableHead> {{ t('settings.plugin') }} </TableHead>
+                <TableHead> {{ t('settings.version') }} </TableHead>
+                <TableHead> {{ t('settings.type') }} </TableHead>
+                <TableHead> {{ t('settings.status') }} </TableHead>
+                <TableHead> {{ t('settings.running') }} </TableHead>
+                <TableHead> {{ t('settings.permissions') }} </TableHead>
                 <TableHead />
               </TableRow>
             </TableHeader>
@@ -793,13 +797,13 @@ async function installUpdateNow() {
                 </TableCell>
                 <TableCell class="text-xs text-muted-foreground">{{ row.version }}</TableCell>
                 <TableCell class="text-xs text-muted-foreground">
-                  {{ row.builtin ? 'built-in' : 'external' }}
+                  {{ row.builtin ? t('settings.builtIn') : t('settings.external') }}
                 </TableCell>
                 <TableCell>
-                  <Badge :variant="statusVariant(row.status)">{{ row.status }}</Badge>
+                  <Badge :variant="statusVariant(row.status)">{{ statusLabel(row.status) }}</Badge>
                 </TableCell>
                 <TableCell class="text-xs text-muted-foreground">
-                  {{ row.sessions ? `${row.sessions} live` : '—' }}
+                  {{ row.sessions ? t('settings.live', { count: row.sessions }) : '—' }}
                 </TableCell>
                 <TableCell class="text-xs text-muted-foreground">{{ row.permissions }}</TableCell>
                 <TableCell class="text-right">
@@ -815,10 +819,10 @@ async function installUpdateNow() {
                     :disabled="reloading === row.id"
                     @click="reloadRow(row)"
                   >
-                    {{ reloading === row.id ? '…' : row.origin === 'external' ? 'Reload' : 'Restart' }}
+                    {{ reloading === row.id ? '…' : row.origin === 'external' ? t('settings.reload') : t('settings.restart') }}
                   </Button>
                   <Button variant="outline" size="sm" @click="togglePlugin(row)">
-                    {{ row.enabled ? 'Disable' : 'Enable' }}
+                    {{ row.enabled ? t('settings.disable') : t('settings.enable') }}
                   </Button>
                 </TableCell>
               </TableRow>

@@ -97,6 +97,12 @@ jobs:
       - name: Screen geometry and window selectors
         run: cargo run --locked --manifest-path src-tauri/Cargo.toml --example screen-checks
 
+      - name: Language preferences and native messages
+        run: cargo run --locked --manifest-path src-tauri/Cargo.toml --example locale-checks
+
+      - name: Plugin locale over native Sidecar RPC
+        run: cargo run --locked --manifest-path src-tauri/Cargo.toml --example locale-rpc-checks
+
       - name: PTY lifecycle regression
         run: cargo run --locked --manifest-path src-tauri/Cargo.toml --example pty-lifecycle-checks
 

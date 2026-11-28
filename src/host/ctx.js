@@ -503,6 +503,7 @@ export function buildCtx(plugin, disposer) {
           pluginId: id,
           slot: decl.slot || 'tool',
           title: decl.title || manifest.name,
+          titleKey: decl.titleKey ?? (decl.title ? undefined : manifest.nameKey),
           icon: decl.icon || '🧩',
           // The view carries its own ordering key, so the list can be re-sorted
           // without looking the plugin up again. `manifest.builtin` is set by

@@ -294,7 +294,7 @@ They move independently, so they are tracked separately. A plugin declares the
 host API it was built for in its manifest:
 
 ```jsonc
-{ "id": "probe.demo", "version": "0.1.0", "api": 13, … }
+{ "id": "probe.demo", "version": "0.1.0", "api": 14, … }
 ```
 
 If the declaration does not match, the host records it on the plugin row and the
@@ -320,7 +320,7 @@ line: `URL.createObjectURL(new Blob([png], { type: 'image/png' }))`. Built-in pl
 why only external examples declare `api`.
 
 A secondary window gets **almost** the same surface through `bridge`
-(`src/host/pluginwin-host.js`): 32 capabilities on both sides, and exactly 8
+(`src/host/pluginwin-host.js`): 33 capabilities on both sides, and exactly 8
 one-sided — `ui` / `windows` / `registerView` / `focusView` exist only
 on `ctx`, while `label` / `close` / `drag` / `dispose` exist only on `bridge`.
 The differences are deliberate except for `ui.notifyOS`, which is collateral.
@@ -436,7 +436,7 @@ modal dialog needs the main thread's message loop and the gateway is
 synchronous. **Every command is `async fn`** — a non-async Tauri command runs on
 the message thread and blocks every window, and the symptom is "the UI is
 laggy", not "a command blocked". `tests/main-thread.test.mjs` enforces it. The
-full inventory of 13 is in [`INTERFACES.md`](INTERFACES.md) §1.
+full current inventory is in [`INTERFACES.md`](INTERFACES.md) §1.
 
 ---
 

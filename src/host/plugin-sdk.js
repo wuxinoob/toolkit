@@ -6,6 +6,7 @@ import { ProtocolError } from '../protocol/errors.js';
 import { openBinaryTransfer, attachBinaryTransfer } from '../protocol/transports/binaryTransfer.js';
 import { fileAccess } from './file-access.js';
 import { createLlmClient } from './llm-client.js';
+import { createPluginI18n } from './plugin-i18n.js';
 
 /** Shared capabilities; window UI, view routing and window ownership stay out. */
 export function createPluginSdk(id, manifest, disposer) {
@@ -102,6 +103,7 @@ export function createPluginSdk(id, manifest, disposer) {
     },
     request,
     bytes,
+    i18n: createPluginI18n(manifest, disposer, () => request('i18n', 'get', {})),
     binary: {
       open: openBinary,
       async upload(raw, opts) {

@@ -62,10 +62,12 @@
  */
 
 import { initTheme } from './host/theme.js';
+import { initLocale } from './i18n/state.js';
 import { mountPluginWindow } from './host/pluginwin-host.js';
 
 // Before anything renders: the theme is one attribute on <html>, and
 // `pluginwin.html` sets it even earlier (inline, pre-paint) to avoid a flash.
 initTheme();
+initLocale();
 
 mountPluginWindow();

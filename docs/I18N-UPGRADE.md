@@ -1,12 +1,14 @@
 # i18n 整体升级计划
 
-状态：2026-11-27 的实施计划，尚未提供语言切换功能。v0.1.7 先发布当前通信与模型能力；国际化按下面阶段升级，不把文案替换与协议变化混在一次提交中。
+状态：2026-11-28 已在本地实施宿主语言基础和插件 i18n API，尚未提交或推送。Settings 通过统一 Select 组件选择跟随系统 / 简体中文 / English；主导航、Settings、模型设置、托盘和标题同步，三个 WebView 入口更新 html.lang。HOST_API 升至 14，提供 ctx/bridge.i18n、nameKey/titleKey 元数据翻译及 Sidecar 原生语言读取，信封仍为 v1。v0.1.7 标签不含这些改动。内置业务界面、安装器、宿主通知及错误映射、双语文档继续后续阶段。
+
+当前落点：src/i18n/locale.js 是无 Vue 依赖的同步客户端；state.js 接原生命令和事件；vue.js 适配 Vue I18n。shell/settings/llm 词典按入口加载，经 Vite 官方插件预编译。src-tauri/src/locale.rs 管理 preferences.json 的 language 字段，保留其他偏好、原子保存，并在释放状态锁后向主线程派发托盘更新与有修订号的广播。首屏不会等待偏好 IO；原生配置到达前使用系统语言回退。
 
 ## 目标与范围
 
 首批支持简体中文 zh-CN 与英语 en-US，默认跟随系统，用户可手动选择。覆盖主窗口、Settings、独立模型设置窗口、托盘、宿主通知、内置插件、外置插件语言元数据及安装器。品牌、协议字段、服务名、插件 ID、视图 ID、热键动作、文件路径、模型 ID 保持稳定；用户内容、终端输出、模型输出及第三方错误正文不自动翻译。
 
-当前入口为 src/main.js、src/llmsettings.js 与 src/host/pluginwin-host.js；设置主要保存在 src/host/store.js 的 localStorage，托盘文案在 src-tauri/src/lib.rs 中，模型设置为独立 WebView。没有统一语言状态，部分控件自行指定 en，不能靠增加一个主窗口翻译插件覆盖全应用。
+入口为 src/main.js、src/llmsettings.js 与 src/pluginwin.js；语言偏好统一由原生持久化，不并入 src/host/store.js 的 localStorage。纯浏览器预览另用 toolkit.preview.language，不会改动桌面应用的设置。模型设置仍是独立 WebView，公共日历控件跟随 ConfigProvider 的语言或插件显式传入的 locale。
 
 ## 语言状态与多窗口
 
@@ -25,7 +27,7 @@
 | 0：盘点与基线 | 盘点 App.vue、SettingsView、LlmSettingsView、内置插件、托盘和原生消息；区分界面文案、用户内容与诊断日志，记录首屏基线。 | 有词条清单、命名规则、两语言最小目录及启动/窗口基准。 |
 | 1：宿主基础，建议 v0.1.8 | 原生持久化 localeMode/locale；纯 JS 语言核心与 Vue I18n Composition API 适配；Settings 语言选择，主窗口、模型窗口和新窗口同步快照；更新 lang 属性。 | 首次启动、系统语言、手动覆盖、重启恢复和并发切换一致；无状态循环及明显首屏回退。 |
 | 2：宿主完整界面，随 v0.1.8 或下一补丁 | 外壳、设置、模型管理、原生托盘/标题/通知、错误映射；按页面拆包词典，公共 UI 组件读取选定 locale。 | 中英词条与参数齐全；表单、快捷键、进行中的模型生成和终端均能在切换后继续使用。 |
-| 3：插件契约，建议 v0.1.9 | Processes/Store/StreamLab；只读 ctx/bridge.i18n、插件元数据翻译与命名空间，原生 Sidecar 读取语言元数据。新增 SDK 表面时升级 HOST_API（预计 14），信封保持 1。 | 老插件原样工作，新插件两端语言与清理一致；翻译不改变 id、摘要、授权或业务数据。 |
+| 3：插件契约，建议 v0.1.9 | ctx/bridge.i18n、nameKey/titleKey 与原生 Sidecar 读取已在本地实施（HOST_API 14）；Processes/Store/StreamLab 业务文案尚待迁移，信封保持 1。 | 老插件原样工作，新插件两端语言与清理一致；翻译不改变 id、摘要、授权或业务数据。 |
 | 4：交付与稳定，建议 v0.2.0 | NSIS/MSI、更新产物、双语开发文档、长文案/缩放/辅助功能与实际安装升级。 | 覆盖安装、升级、回滚、多显示器和生产构建；中英功能覆盖达到同一标准。 |
 
 ## 前端与原生职责
@@ -38,22 +40,17 @@ Rust 管托盘、原生窗口标题和系统通知中的宿主文案。界面错
 
 ## 插件与 Sidecar 的兼容契约
 
-计划在 ctx 与 bridge 提供相同的只读 i18n 能力：读取 resolvedLocale、翻译插件自己的命名空间、订阅变更。订阅纳入已有 disposer；仅宿主设置可更改全局语言，插件可以在自己的业务设置中选择独立输出语言。
+ctx 与 bridge 已提供相同的只读 i18n 能力：get/resolvedLocale、t/createTranslator、onChange，均需 rpc:i18n。快照沿用 mode/locale/resolvedLocale/revision；get 为 Promise，onChange 同步返回取消函数，回调是原始快照，不是信封。订阅纳入 disposer；只保留一个清理器，不随反复订阅积累。仅宿主设置可改全局语言，插件可以单独选择业务输出语言。
 
-清单建议增加可选 i18n 字典和 nameKey/descriptionKey、视图 titleKey 等字段，同时保留原 name/description/title 作为旧宿主与缺失译文的回退。翻译只影响展示，不修改 ID、源清单或 digest，也不触发插件重新激活。外部插件仍可打包为单文件 ESM：小型元数据词典放清单，业务界面词典打包进 main.js；不要求插件额外取得 fs 权限来加载翻译。
+清单现支持可选 i18n.messages、fallbackLocale、nameKey、视图 titleKey；原 name/title 是回退。翻译只影响设置列表、热键归属名和侧栏，不改 ID、源清单、排序依据或 digest，不触发重新激活。descriptionKey 等更多元数据留待有展示入口时增加。小型词典可放清单，业务词典可用 createTranslator 打包进 main.js，无须 fs 权限。词典仅支持平铺字符串与命名插值，不使用 Vue、HTML 或可执行消息函数；复杂格式由插件的 Intl 或自带库处理。
 
-Sidecar 通过明确开放的原生宿主能力读取语言快照、按需接收或拉取修订信息，继续直接连接 Rust，不借前端转发。语言元数据与工具的文本处理语言、LLM 提示词语言分别配置。新增 SDK 能力时提升 HOST_API 并更新 schema、TypeScript/Rust 示例；信封中的现有字段与 v1 编码保持兼容，旧插件可以继续显示原文。
+Sidecar 经 i18n/get 或 Rust Client::locale 按需直读 Rust；本版不提供语言变化推送，避免把原生 RPC 变成前端代理。语言元数据与文本处理、LLM 提示词语言分别配置。TypeScript/schema、Rust 客户端和权限发现已同步；旧插件保持原显示字段可运行。
 
-## 实施阶段与验收
+## 当前实现与后续验收
 
-| 阶段 | 交付 | 验收 |
-|---|---|---|
-| 1：基础与主界面 | 统一偏好、系统匹配、前端适配、zh-CN/en-US 核心词典；迁移导航与 Settings | 首次启动、重启保存、未知语言回退；切换后焦点/表单保留；首屏计时无明显回退 |
-| 2：多窗口与原生 | 模型设置、窗口标题、托盘、通知；Processes/Store/StreamLab 文案 | 已开窗口与新开窗口一致；PTY/Sidecar 不中断；日期/数字、aria 标签、空态与错误态均检查 |
-| 3：插件契约 | 可选清单元数据、ctx/bridge 对等 i18n、Sidecar 读取能力、SDK 与示例 | 老插件无需修改可运行；缺失/无效词典可回退；切换无重复订阅、无重载和资源残留 |
-| 4：交付与质量 | 安装器语言、维护指南、语言贡献流程、CI 门禁 | 中英安装/升级/卸载；签名更新与资产名正确；键/参数一致性、布局、辅助功能与回滚均通过 |
+本轮 Node 回归覆盖语言标签、旧快照竞态、现有/新开窗口同步、失败回退、监听器释放、双语键与参数、实际 Settings 控件切换及热键捕获保留。locale-checks 原生入口覆盖设置保存/重开、其他偏好保留、无效值、失败写入和系统语言解析。前端构建检查预编译词典；原生回归已加入本地 CI/Release 工作流。
 
-每阶段独立提交并保留检查结果；阶段 1 完成前不把 i18n 标为已支持。依赖版本在实施时核对并锁定，避免这次文档计划引入额外运行依赖。后续版本号由阶段实际完成情况决定。
+浏览器已验证设置中英互换、已开模型页同步、新页继承，以及未保存表单值保留；该验证使用纯浏览器预览，原生管理命令在此环境不可用。尚需真实安装环境检查启动计时、混合 DPI、托盘更新、多窗口长文案与辅助功能。旧错误正文、技术诊断、插件自有界面、厂商返回内容保留原文；宿主业务通知和插件契约分阶段迁移。安装器语言尚未调整。本轮遵照用户要求保留本地改动，不执行 git commit 或 push；后续版本号由验收结果决定。
 
 ## 安装器与发布
 

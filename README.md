@@ -4,9 +4,13 @@
 
 基于 **Tauri 2、Vue 3 和 Rust** 的可扩展桌面工具箱。通过内置工具、外置 JavaScript 插件和原生 Sidecar，把进程管理、桌面操作与模型调用放在同一个工作台中。
 
-[下载安装](https://github.com/wuxinoob/toolkit/releases/latest) · [插件开发](docs/plugin-dev/README.md) · [文档导航](docs/README.md) · [v0.1.7 更新说明](docs/releases/v0.1.7.md)
+[下载安装](https://github.com/wuxinoob/toolkit/releases/latest) · [插件商店](https://github.com/wuxinoob/toolkit_plugins) · [插件开发](docs/plugin-dev/README.md) · [文档导航](docs/README.md) · [开发记录](docs/DEVELOPMENT-LOG.md)
 
 目前交付 **Windows x64** 安装包（NSIS `.exe` / MSI `.msi`），运行依赖 WebView2 Runtime。
+
+本文介绍 **main 分支开发版**。下方为 Windows 本地运行实拍；已发布安装包的功能以 [Releases](https://github.com/wuxinoob/toolkit/releases) 对应版本说明为准。
+
+![Toolkit 插件与软件商店运行界面](docs/assets/screenshots/plugin-store.jpg)
 
 ## 可以用来做什么
 
@@ -15,21 +19,44 @@
 | **Processes：进程管理**（`builtin.procman`） | 保存运行配置，在终端中启动、查看输出和停止进程；支持定时启动与有上限的自动重启。 |
 | **Store：插件与软件商店**（`builtin.store`） | 浏览、安装、更新和卸载外置插件；提供软件官网、winget 和安装包下载入口。 |
 | **宿主模型服务** | 集中管理 API 连接、模型和插件授权。插件及原生 Sidecar 可直接调用已授权模型，无需各自保存 API key。 |
+| **语言与主题** | 支持跟随系统、简体中文与 English，以及浅色和深色主题。宿主语言切换同步到已打开窗口，插件可使用共享语言 API。 |
 | **桌面能力** | 为插件提供剪贴板文字/图片、截图、鼠标位置、窗口定位、全局热键、原生对话框与文件区间读写。 |
 | **独立插件窗口** | 支持置顶、透明、自绘标题栏、物理像素定位和无激活展示，适合提示卡片、浮窗等工具。 |
 | **StreamLab：通信实验台**（`builtin.streamlab`） | 对照请求、推送、广播、PTY 和 Sidecar 等通信方案，方便开发和诊断插件。 |
 
 具体工具可以由插件扩展；宿主提供通用能力，工具的业务流程由插件实现。示例插件与测试夹具见 [tests/fixtures](tests/fixtures/README.md)，不等同于默认安装的功能清单。
 
+## 插件商店
+
+插件目录与发布包维护在 **[wuxinoob/toolkit_plugins](https://github.com/wuxinoob/toolkit_plugins)**。打开软件侧栏的 **插件商店**，即可浏览、安装和更新目录中的扩展；也可在该仓库查看插件源码与说明。
+
+| 插件 | 用途 |
+|---|---|
+| 前端常用小工具 | 编码转换、JSON/YAML 格式化、二维码、正则与文本对比等。 |
+| 开发助手 | Windows 端口、文件锁、环境变量与开发服务管理等工具。 |
+| 护眼助手 | 休息提醒、悬浮胶囊与全屏休息遮罩。 |
+| 拾光便签 | 独立悬浮便签、分类归档与 WebDAV 同步。 |
+
+以上为商店扩展，需要单独安装；可用版本及具体能力以插件仓库为准。推荐软件区另提供官网、winget 与安装包入口。
+
 ## 开始使用
 
 1. 在 [Releases](https://github.com/wuxinoob/toolkit/releases/latest) 下载 Windows 安装包并安装。
-2. 从侧栏打开 Processes、Store 或 StreamLab。外置插件也可以放入应用的插件目录，再在 Settings 点击 **Rescan plugins**。
-3. 如需模型能力，在 **Settings → Language models** 中添加连接和模型、授权插件，再保存设置。
+2. 从侧栏打开 **Processes、插件商店或 StreamLab**。手动安装时，将插件文件夹放入应用的插件目录，再在 **设置 → 重新扫描插件** 中加载。
+3. 在 **设置 → 语言** 选择简体中文、English 或跟随系统。需要模型能力时，打开 **设置 → 语言模型 → 管理模型**，添加连接和模型、授权插件，再保存设置。
 
 模型连接提供 **DeepSeek、OpenAI、Gemini、Claude、SiliconFlow** 快捷模板，支持 Chat Completions 和 Responses 兼容协议。可读取模型目录并测试生成；模板仅预填连接参数，实际能力仍取决于服务和所选模型。生成测试会调用供应商 API，可能产生费用。
 
-API key 保存在 Windows Credential Manager，非敏感模型配置保存在应用数据目录。图片输入需单独开启；思考等级可以由宿主配置默认值和允许范围，再由插件按次选择。完整说明见 [宿主模型与 Sidecar](docs/LLM.md)。
+API key 保存在 Windows Credential Manager，非敏感模型配置保存在应用数据目录。图片输入需单独开启；思考等级优先读取 API 声明，未提供时显示未知并允许手动配置。宿主管理默认值和允许范围，插件可按次选择；刷新目录不会覆盖已有配置。不传等级参数不等于关闭模型思考。完整说明见 [宿主模型与 Sidecar](docs/LLM.md)。
+
+<details>
+<summary>查看模型配置界面</summary>
+
+![Toolkit 宿主模型配置与厂商快捷模板](docs/assets/screenshots/model-settings.jpg)
+
+图中为 OpenAI 模板的未保存草稿，未填写 API key，也未发送模型请求。
+
+</details>
 
 关闭按钮按宿主策略隐藏主窗口，应用可继续在托盘运行；通过托盘菜单显示主窗口或退出。进程、后台 Sidecar 与窗口有各自的生命周期，退出应用会执行原生会话清理。
 
@@ -42,7 +69,7 @@ API key 保存在 Windows Credential Manager，非敏感模型配置保存在应
   "id": "my.plugin",
   "name": "My Plugin",
   "version": "0.1.0",
-  "api": 13,
+  "api": 14,
   "entry": "main.js",
   "contributes": {
     "views": [{ "slot": "tool", "id": "main", "title": "My Plugin" }]
@@ -69,7 +96,7 @@ export default {
 - **有界通信与回收**：请求、流、进程、文件和内存资源分别管理超时、容量、取消与释放；大文件使用 `fs` 区间读取或 Sidecar 本地 IO。
 - **类型与能力发现**：提供 [TypeScript 数据接口](sdk/types/README.md)、[Rust SDK](sdk/rust/toolkit-host/README.md) 和运行时 `schema()`。
 
-当前宿主接口为 **HOST_API 13**，信封版本为 **1**。协议、字节和文件能力见 [PROTOCOL](docs/PROTOCOL.md)、[BINARY-IPC](docs/BINARY-IPC.md) 与 [插件 API](docs/plugin-dev/api.md)。
+当前本地宿主接口为 **HOST_API 14**，信封版本为 **1**。协议、字节和文件能力见 [PROTOCOL](docs/PROTOCOL.md)、[BINARY-IPC](docs/BINARY-IPC.md) 与 [插件 API](docs/plugin-dev/api.md)。
 
 <details>
 <summary>开发者：通信方案速查</summary>
@@ -121,6 +148,10 @@ tests/               自动回归与可运行插件夹具
 docs/                架构、协议、插件手册和版本记录
 ```
 
-## 下一步：i18n
+## 界面语言与插件翻译
 
-当前界面仍有中英混合文案。下一阶段计划支持 **简体中文 / English**、跟随系统与手动切换，逐步覆盖多窗口、原生托盘、内置工具和插件语言接口。实施顺序、兼容策略与验收要求见 [i18n 升级计划](docs/I18N-UPGRADE.md)。
+**设置 → 语言** 支持跟随系统、简体中文与 English，覆盖主导航、设置页、模型管理和托盘，切换无需重启。插件可通过 [ctx/bridge.i18n](docs/plugin-dev/api.md#我要让插件跟随宿主语言) 读取语言、翻译自己的词典并订阅变化，Sidecar 可直接查询 Rust 宿主。
+
+![Toolkit 设置页与语言选择菜单](docs/assets/screenshots/settings-language.jpg)
+
+这部分属于 main 分支开发版，未包含在 v0.1.7 标签中。内置工具业务界面、第三方插件的翻译与安装器覆盖情况见 [i18n 升级计划](docs/I18N-UPGRADE.md)。

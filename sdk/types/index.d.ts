@@ -1,5 +1,5 @@
 export * from './contracts';
-import type { ResourceSource, ResourceTicket, ResourceIdentity, ResourceStat, CaptureRequest, Pointer, WindowSelector, WindowInfo, Rectangle, FileOpenOptions, FileWriterOptions, ModelProfile, ModelRequest, ModelEvent, Usage } from './contracts';
+import type { ResourceSource, ResourceTicket, ResourceIdentity, ResourceStat, CaptureRequest, Pointer, WindowSelector, WindowInfo, Rectangle, FileOpenOptions, FileWriterOptions, ModelProfile, ModelRequest, ModelEvent, Usage, LocaleSnapshot } from './contracts';
 export interface ByteOptions { timeoutMs?: number }
 export interface SealedResource {
   readonly id: string;
@@ -55,5 +55,15 @@ export interface LlmApi {
   stream(request: ModelRequest, options?: {signal?: AbortSignal}): AsyncIterable<ModelEvent>;
   generate(request: ModelRequest, options?: {signal?: AbortSignal}): Promise<{output: Array<{type: 'text'; text: string}>; finishReason: string; usage: Usage}>;
 }
+export type TranslationParams = Record<string, string | number | boolean | null>;
+export type PluginMessages = Record<string, Record<string, string>>;
+export interface I18nApi {
+  /** Cached resolved language; call get() before the initial render. */
+  readonly resolvedLocale: string;
+  get(): Promise<Readonly<LocaleSnapshot>>;
+  t(key: string, params?: TranslationParams): string;
+  createTranslator(messages: PluginMessages, options?: {fallbackLocale?: string}): (key: string, params?: TranslationParams) => string;
+  onChange(handler: (snapshot: Readonly<LocaleSnapshot>) => void): () => void;
+}
 /** Shared data APIs on ctx and bridge; window/view/UI methods are documented separately. */
-export interface PluginDataApi { binary: BinaryApi; fs: FileApi; screen: ScreenApi; llm: LlmApi }
+export interface PluginDataApi { binary: BinaryApi; fs: FileApi; screen: ScreenApi; llm: LlmApi; i18n: I18nApi }

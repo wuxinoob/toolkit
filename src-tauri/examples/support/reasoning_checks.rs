@@ -122,5 +122,37 @@ pub async fn checks(runtime: &Arc<Runtime>) {
     assert_eq!(body["reasoning_effort"], "low");
     assert_eq!(body["max_tokens"], 32);
     assert!(body["max_completion_tokens"].is_null());
-    println!("PASS reasoning profile metadata, inherited/overridden effort over real HTTP, two wire formats, level policy, legacy config and incompatible API rejection");
+    for adapter in [
+        llm::config::Adapter::OpenaiChat,
+        llm::config::Adapter::OpenaiResponses,
+    ] {
+        for supplied in [None, Some(serde_json::Value::Null), Some(json!("none"))] {
+            let explicit_none = supplied.as_ref().is_some_and(|value| value == "none");
+            let mut value = json!({"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"maxOutputTokens":32});
+            if let Some(effort) = supplied {
+                value["reasoningEffort"] = effort;
+            }
+            let request: llm::Request = serde_json::from_value(value).unwrap();
+            let body = llm::vision::body(
+                adapter,
+                "compat",
+                request,
+                &Default::default(),
+                llm::reasoning::ChatOutputTokens::MaxTokens,
+            )
+            .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            if explicit_none {
+                if adapter == llm::config::Adapter::OpenaiChat {
+                    assert_eq!(body["reasoning_effort"], "none");
+                } else {
+                    assert_eq!(body["reasoning"]["effort"], "none");
+                }
+            } else {
+                assert!(body.get("reasoning_effort").is_none());
+                assert!(body.get("reasoning").is_none());
+            }
+        }
+    }
+    println!("PASS reasoning profile metadata, inherited/overridden effort over real HTTP, omitted/null/none wire values, level policy, legacy config and incompatible API rejection");
 }

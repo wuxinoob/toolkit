@@ -795,6 +795,34 @@
         "id"
       ],
       "additionalProperties": false
+    },
+    "LocaleSnapshot": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "enum": [
+            "system",
+            "manual"
+          ]
+        },
+        "locale": {
+          "type": "string"
+        },
+        "resolvedLocale": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "mode",
+        "locale",
+        "resolvedLocale",
+        "revision"
+      ],
+      "additionalProperties": false
     }
   },
   "services": {
@@ -1039,6 +1067,25 @@
         },
         "result": {
           "type": "integer"
+        }
+      }
+    },
+    "i18n": {
+      "get": {
+        "transport": "rpc",
+        "params": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false
+            }
+          ]
+        },
+        "result": {
+          "$ref": "#/$defs/LocaleSnapshot"
         }
       }
     }

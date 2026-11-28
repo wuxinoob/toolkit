@@ -4,7 +4,7 @@ export async function resolve(specifier, context, next) {
   const sources = {
     vue: `
       export function createApp() {
-        return { mount() { globalThis.__startupTest.trace.push('mount'); } };
+        return { use() { return this; }, mount() { globalThis.__startupTest.trace.push('mount'); } };
       }
       export async function nextTick() { globalThis.__startupTest.trace.push('dom-ready'); }
     `,
@@ -22,6 +22,8 @@ export async function resolve(specifier, context, next) {
       }
     `,
     './host/theme.js': 'export function initTheme() {}',
+    './i18n/state.js': 'export function initLocale() { return Promise.resolve(); }',
+    './i18n/vue.js': 'export const i18n = {};',
     './host/boot.js': `
       globalThis.__startupTest.trace.push('host-module');
       export async function boot() { globalThis.__startupTest.trace.push('boot'); }

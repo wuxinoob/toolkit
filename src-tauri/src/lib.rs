@@ -22,6 +22,7 @@ pub mod forensics;
 pub mod gateway_stats;
 pub mod host;
 pub mod llm;
+pub mod locale;
 pub mod protocol;
 pub mod services;
 pub mod sidecar_rpc;
@@ -925,6 +926,8 @@ pub fn run() {
             plugin_register,
             llm::settings::host_llm_open,
             llm::settings::host_llm_admin,
+            locale::host_locale_get,
+            locale::host_locale_set,
             plugin_stream_open,
             plugin_stream_open_raw,
             plugin_stream_close,
@@ -944,6 +947,7 @@ pub fn run() {
             services::external::plugin_open_dir
         ])
         .setup(|app| {
+            app.manage(locale::Host::default());
             app.manage(llm::Host::default());
             // The main window starts hidden; the frontend reveals it after
             // mounting its shell DOM (see
@@ -986,15 +990,16 @@ pub fn run() {
             // FATAL instead of a warning: an app that hides on close and has no
             // tray cannot be quit from its own UI at all, and starting broken is
             // worse than not starting.
-            let show = tauri::menu::MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
+            let language = locale::cached_locale(app.handle());
+            let show = tauri::menu::MenuItem::with_id(app, "show", locale::text(&language, "tray.show"), true, None::<&str>)?;
             // Recovery for a wedged window, without losing what it is watching:
             // a reload rebuilds every view in about a second, and the sessions
             // survive because `plugin_reap_orphans` is told to keep them.
             let reload =
-                tauri::menu::MenuItem::with_id(app, "reload", "重新加载界面", true, None::<&str>)?;
+                tauri::menu::MenuItem::with_id(app, "reload", locale::text(&language, "tray.reload"), true, None::<&str>)?;
             let restart =
-                tauri::menu::MenuItem::with_id(app, "restart", "重启应用", true, None::<&str>)?;
-            let quit = tauri::menu::MenuItem::with_id(app, "quit", "退出 Toolbox", true, None::<&str>)?;
+                tauri::menu::MenuItem::with_id(app, "restart", locale::text(&language, "tray.restart"), true, None::<&str>)?;
+            let quit = tauri::menu::MenuItem::with_id(app, "quit", locale::text(&language, "tray.quit"), true, None::<&str>)?;
             let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
             let menu =
                 tauri::menu::Menu::with_items(app, &[&show, &reload, &restart, &separator, &quit])?;
@@ -1055,6 +1060,8 @@ pub fn run() {
                 tray = tray.icon(icon.clone());
             }
             tray.build(app)?;
+            app.manage(locale::TrayLabels { show, reload, restart, quit });
+            locale::warm(app.handle().clone());
 
             Ok(())
         })

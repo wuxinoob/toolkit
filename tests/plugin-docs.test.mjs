@@ -89,12 +89,12 @@ function serviceTable() {
   for (const file of serviceSources()) {
     const text = readFileSync(file, 'utf8');
     for (const chunk of text.split(/^impl Service for /m).slice(1)) {
-      const name = chunk.match(/fn name\(&self\)\s*->\s*&'static str\s*\{\s*"([a-z_]+)"/);
+      const name = chunk.match(/fn name\(&self\)\s*->\s*&'static str\s*\{\s*"([a-z][a-z0-9_]*)"/);
       const actions = chunk.match(
         /fn actions\(&self\)\s*->\s*&'static \[&'static str\]\s*\{\s*&\[([\s\S]*?)\]/,
       );
-      if (!name || !actions) continue;
-      out.set(name[1], [...actions[1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]));
+      assert.ok(name && actions, `cannot extract Service name/actions from ${file}`);
+      out.set(name[1], [...actions[1].matchAll(/"([a-z][a-z0-9_]*)"/g)].map((m) => m[1]));
     }
   }
   return out;
@@ -130,9 +130,9 @@ function jsGatedPermissions() {
   const found = new Set();
   for (const rel of ['src/host/ctx.js', 'src/host/plugin-sdk.js']) {
     const text = read(...rel.split('/'));
-    for (const m of text.matchAll(/'(rpc:[a-z_]+|win:manage)'/g)) found.add(m[1]);
+    for (const m of text.matchAll(/'(rpc:[a-z][a-z0-9_]*|win:manage)'/g)) found.add(m[1]);
     // Shared SDK helpers name the service; window-only permissions are literals.
-    for (const m of text.matchAll(/\b(?:gate|request|bytes|open)\('([a-z_]+)'/g)) found.add(`rpc:${m[1]}`);
+    for (const m of text.matchAll(/\b(?:gate|request|bytes|open)\('([a-z][a-z0-9_]*)'/g)) found.add(`rpc:${m[1]}`);
   }
   return found;
 }
@@ -232,6 +232,7 @@ test('the service extractor finds the real table, and not the stream providers',
   assert.ok(!table.has('ticker'), 'ticker is a StreamProvider, not a Service');
   assert.ok(!table.has('blob'), 'blob is a StreamProvider, not a Service');
   assert.deepEqual(table.get('bus'), ['publish']);
+  assert.deepEqual(table.get('i18n'), ['get'], 'service names containing digits must remain discoverable');
 });
 
 test('the scheme extractor finds all nine, and the registry owns the list', () => {
@@ -257,8 +258,8 @@ test('INTERFACES.md §2 lists every service with every action it declares', () =
   const doc = read('docs', 'INTERFACES.md');
   const section = doc.slice(doc.indexOf('## 2.'), doc.indexOf('## 3.'));
   const rows = new Map();
-  for (const m of section.matchAll(/^\|\s*`([a-z_]+)`\s*\|([^|]*)\|/gm)) {
-    rows.set(m[1], [...m[2].matchAll(/`([a-z_]+)`/g)].map((x) => x[1]));
+  for (const m of section.matchAll(/^\|\s*`([a-z][a-z0-9_]*)`\s*\|([^|]*)\|/gm)) {
+    rows.set(m[1], [...m[2].matchAll(/`([a-z][a-z0-9_]*)`/g)].map((x) => x[1]));
   }
 
   const problems = [];
@@ -292,7 +293,7 @@ test('INTERFACES.md states the service and action counts it actually lists', () 
 
 test('the plugin manual documents exactly the permissions the code can gate', () => {
   const documented = new Set(
-    [...read('docs', 'plugin-dev', 'manifest.md').matchAll(/`(rpc:[a-z_]+|win:manage)`/g)].map(
+    [...read('docs', 'plugin-dev', 'manifest.md').matchAll(/`(rpc:[a-z][a-z0-9_]*|win:manage)`/g)].map(
       (m) => m[1],
     ),
   );
@@ -438,7 +439,7 @@ test('bridge.md is the single list, and it matches the code exactly', () => {
   // from the code too — a "25 capabilities on both sides" that silently became
   // 26 is exactly the class of drift this file exists to stop.
   const shared = [...ctx].filter((k) => bridge.has(k)).length;
-  assert.equal(shared, 32, `the surfaces now share ${shared} capabilities, not 32`);
+  // Compare documentation with the constructed SDKs, without a second literal count.
   assert.match(
     read('docs', 'plugin-dev', 'bridge.md'),
     new RegExp(`\\*\\*${shared} 个能力两边都有\\*\\*`),

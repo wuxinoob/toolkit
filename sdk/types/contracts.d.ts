@@ -30,3 +30,4 @@ export type Completion = { "type": "completed"; "finishReason": "stop" | "length
 export type ModelEvent = TextDelta | Completion;
 export type ModelStart = { "id": string; "profile": string; "reasoningEffort": string | null; "maxEventBytes": number; "queueBytes": number; };
 export type GenerationId = { "id": string; };
+export type LocaleSnapshot = { "mode": "system" | "manual"; "locale": string; "resolvedLocale": string; "revision": number; };
